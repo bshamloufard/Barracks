@@ -22,7 +22,8 @@ function runAsAgent(script: string): string {
   return execFileSync(
     "docker",
     ["exec", "--user", "barrack-agent", containerName, "sh", "-c", script],
-    { encoding: "utf8", timeout: 60_000 },
+    // Firefox reports on its standard error that it runs without user namespaces.
+    { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] },
   );
 }
 
