@@ -237,6 +237,44 @@ describe("the agent's workspace", () => {
     });
   });
 
+  it("gives the agent no message before the workspace is described, saying why, and does once it is", async () => {
+    const sandbox = await makeSandbox("undescribed");
+    const workspace = createWorkspace(sandbox);
+
+    const beforeDescription = await workspace.isReadyForMessages();
+    await workspace.prepare({
+      type: "prepare_workspace",
+      repository: describeRepository(publicRepository, "none"),
+      agentHasWorkedBefore: false,
+    });
+
+    expect(beforeDescription).toBe(false);
+    expect(events[0]).toEqual({
+      type: "repository_clone_failed",
+      errorMessage: expect.stringContaining("has not been told what its workspace should hold"),
+    });
+    expect(events.at(-1)).toMatchObject({ type: "repository_cloned" });
+    expect(await workspace.isReadyForMessages()).toBe(true);
+    await workspace.stop();
+  });
+
+  it("clones a repository whose base branch has a name Git accepts beyond plain letters", async () => {
+    const sandbox = await makeSandbox("unusual-branch");
+    const workspace = createWorkspace(sandbox);
+    const baseBranch = "développement+1#12";
+    await gitIn(publicRepository.directory, ["branch", baseBranch, "main"]);
+
+    await workspace.prepare({
+      type: "prepare_workspace",
+      repository: { ...describeRepository(publicRepository, "none"), baseBranch },
+      agentHasWorkedBefore: false,
+    });
+
+    expect(events.at(-1)).toMatchObject({ type: "repository_cloned", baseBranch });
+    expect(await workspace.isReadyForMessages()).toBe(true);
+    await workspace.stop();
+  });
+
   it("reports a repository that does not exist", async () => {
     const sandbox = await makeSandbox("missing");
     const workspace = createWorkspace(sandbox);

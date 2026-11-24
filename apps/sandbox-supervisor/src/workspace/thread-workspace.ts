@@ -63,7 +63,11 @@ type WorkspaceState = "waiting_for_description" | "ready" | "needs_clone";
  * agent had worked in an earlier one clones again and says the earlier
  * work was lost. A clone that fails is reported, and the agent is given no
  * message while the workspace lacks the repository; each message tries the
- * clone again first.
+ * clone again first. Nor is the agent given any message before the control
+ * plane has described the workspace (it does after every welcome): one
+ * that arrives first, because the description was refused as invalid, say,
+ * is withheld and reported the same way, rather than reaching an agent
+ * without the repository it was promised.
  *
  * The clone is partial (`--filter=blob:none`): the whole history, so the
  * agent can read logs and blame and publishing can bundle against the base
@@ -104,9 +108,14 @@ export class ThreadWorkspace {
 
   /**
    * Whether the agent may be given a message now. A repository that is not
-   * cloned yet is cloned first; until that succeeds, the answer is no.
+   * cloned yet is cloned first; until that succeeds, the answer is no. Before
+   * the workspace has been described, the answer is no, and the user is told.
    */
   async isReadyForMessages(): Promise<boolean> {
+    if (this.#state === "waiting_for_description") {
+      this.#reportMissingDescription();
+      return false;
+    }
     if (this.#state !== "needs_clone" || this.#repository === undefined) {
       return true;
     }
@@ -135,6 +144,17 @@ export class ThreadWorkspace {
 
   async stop(): Promise<void> {
     await this.#credentialServer?.stop();
+  }
+
+  #reportMissingDescription(): void {
+    this.#settings.logger.error(
+      "A user message arrived before the control plane described the workspace; withholding it",
+    );
+    this.#settings.reportEvent({
+      type: "repository_clone_failed",
+      errorMessage:
+        "This sandbox has not been told what its workspace should hold (the control plane's description of it did not arrive, or could not be read), so the agent is given no messages. Stop the thread and resume it to try again.",
+    });
   }
 
   async #startCredentialServer(repository: WorkspaceRepository): Promise<void> {

@@ -349,8 +349,9 @@ export class Supervisor {
       return;
     }
     if (!(await this.#workspace.isReadyForMessages())) {
-      // The clone failed, and the user was told so in its event; the
-      // message is acknowledged without reaching an agent with no repository.
+      // The clone failed, or the workspace was never described, and the
+      // user was told so in an event; the message is acknowledged without
+      // reaching an agent with no repository.
       this.#logger.warn(
         { sequence, messageId },
         "Withheld a user message from an agent without its repository",

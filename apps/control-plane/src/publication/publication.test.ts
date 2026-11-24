@@ -794,6 +794,57 @@ describe("publishing within limits", () => {
 });
 
 describe("creating a thread on a repository", () => {
+  /** A repository of Ada's, linked again so that Barrack knows it, with `defaultBranch` as its default. */
+  async function linkRepositoryWithDefaultBranch(defaultBranch: string): Promise<FakeRepository> {
+    repositoryCount += 1;
+    const other = await github.createRepository({
+      owner: "octo",
+      name: `app-${repositoryCount}`,
+      isPrivate: true,
+      defaultBranch,
+    });
+    github.addUser({ login: "octocat", name: "Octo Cat", push: [repository, other] });
+    github.installApp([other]);
+    await linkGithub(controlPlane, github, "octocat", adaToken);
+    return other;
+  }
+
+  it("starts from a default branch Git accepts though it is not plain letters, and the supervisor is told it", async () => {
+    const other = await linkRepositoryWithDefaultBranch("développement+1#12");
+
+    const response = await controlPlane.postThread(
+      browserHeaders(adaToken),
+      JSON.stringify({ repository: { url: other.cloneUrl, access: "github_app" } }),
+    );
+    const { threadId } = threadResponseSchema.parse(await response.json()).thread;
+    await controlPlane.whenOperationsSettle();
+    const supervisor = await controlPlane.connectSupervisor({
+      threadId,
+      supervisorToken: controlPlane.supervisorTokenGivenFor(threadId),
+    });
+
+    const preparation = await supervisor.inbox.waitFor(
+      "the workspace's description",
+      (message) => message.type === "prepare_workspace",
+    );
+    expect(response.status).toBe(201);
+    expect(preparation).toMatchObject({ repository: { baseBranch: "développement+1#12" } });
+  });
+
+  it("is refused, saying why, when the repository's default branch is not a name Barrack can use", async () => {
+    const other = await linkRepositoryWithDefaultBranch("hidden\u0085control");
+
+    const response = await controlPlane.postThread(
+      browserHeaders(adaToken),
+      JSON.stringify({ repository: { url: other.cloneUrl, access: "github_app" } }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(errorOf(await response.json()).message).toContain(
+      'default branch, "hidden\\u0085control", is not a branch name Barrack can use. Name a base branch',
+    );
+  });
+
   it("is refused for a user not verified for the repository", async () => {
     const graceToken = await issuer.mintAccessToken(grace);
 

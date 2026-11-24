@@ -50,6 +50,8 @@ async function startSupervisor(): Promise<void> {
   await waitUntil(() => controlPlane.hellos.length > helloCount, "the supervisor says hello");
   // The welcome follows the hello; a message sent before it would race it.
   await pause(20);
+  // As the real control plane does after every welcome, before any message.
+  controlPlane.send({ type: "prepare_workspace", repository: null, agentHasWorkedBefore: false });
 }
 
 beforeEach(async () => {

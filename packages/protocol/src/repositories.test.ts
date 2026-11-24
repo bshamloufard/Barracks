@@ -8,7 +8,19 @@ import {
 } from "./workspace-messages.js";
 
 describe("branch names", () => {
-  it.each(["main", "release/2.0", "feature/add-login", "v1.2_fix"])("accepts %s", (name) => {
+  it.each([
+    "main",
+    "release/2.0",
+    "feature/add-login",
+    "v1.2_fix",
+    "release+1",
+    "fix#12",
+    "développement",
+    "feature/100%",
+    "a@b",
+    "user's-branch",
+    "main.locked",
+  ])("accepts %s, as Git does", (name) => {
     expect(branchNameSchema.safeParse(name).success).toBe(true);
   });
 
@@ -17,16 +29,30 @@ describe("branch names", () => {
     "../main",
     "a..b",
     "main/",
+    "/main",
     "main.",
     ".hidden",
     "feature/.hidden",
     "a//b",
     "main.lock",
+    "HEAD",
+    "@",
     "HEAD@{1}",
     "main~1",
+    "main^",
+    "a:b",
+    "what?",
+    "a*",
+    "a[1]",
+    "back\\slash",
     "has space",
+    "tab\there",
+    "new\nline",
+    "del\u007f",
+    "c1\u0085control",
+    "lone\ud800surrogate",
     "",
-  ])("refuses %j, which Git could read as something other than a branch", (name) => {
+  ])("refuses %j, which Git refuses or could read as something other than a branch", (name) => {
     expect(branchNameSchema.safeParse(name).success).toBe(false);
   });
 

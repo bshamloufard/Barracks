@@ -24,31 +24,41 @@ export const maximumRepositoryUrlLength = 2048;
 export const maximumBranchNameLength = 255;
 
 /**
- * A branch name Barrack accepts: a conservative subset of what
- * `git check-ref-format --branch` allows, so that no name can be read as an
- * option, a revision expression or a path outside `refs/heads`.
+ * A branch name Barrack accepts: what `git check-ref-format --branch`
+ * accepts, rule for rule, so that any branch a repository can have can be a
+ * thread's base, and nothing else, which also means no name can be read as
+ * an option (`-` first), a revision expression (`~`, `^`, `:`, `@{`, `..`)
+ * or a path outside `refs/heads` (`..`, a part starting with `.`, a leading
+ * or doubled `/`). Letters beyond ASCII are allowed, as Git allows them;
+ * control characters of every kind are not.
  * https://git-scm.com/docs/git-check-ref-format
  */
 export const branchNameSchema = z
   .string()
   .min(1)
   .max(maximumBranchNameLength)
-  .regex(/^[A-Za-z0-9._/-]+$/, "may contain only letters, digits, '.', '_', '-' and '/'")
   .refine(isAcceptableBranchName, {
     error:
-      "must not start with '-', '.' or '/', end with '/' or '.', or contain '..', '//', a part starting with '.' or ending with '.lock'",
+      "must be a name Git accepts for a branch: not '-' first, no spaces, control characters or any of ~ ^ : ? * [ \\, no '..', '@{', '//', no '/' or '.' at either end, no part starting with '.' or ending with '.lock', and not 'HEAD' or '@'",
   });
 
+/** Characters `git check-ref-format` refuses anywhere: controls (DEL included), space, ~ ^ : ? * [ and backslash. */
+const refusedCharacters = /[\p{Cc} ~^:?*[\\]/u;
+
 function isAcceptableBranchName(name: string): boolean {
-  if (name.startsWith("-") || name.endsWith("/") || name.endsWith(".")) {
+  if (!name.isWellFormed() || refusedCharacters.test(name)) {
     return false;
   }
-  if (name.includes("..") || name.includes("//")) {
+  if (name === "HEAD" || name === "@" || name.startsWith("-")) {
     return false;
   }
-  return name
-    .split("/")
-    .every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"));
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) {
+    return false;
+  }
+  if (name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) {
+    return false;
+  }
+  return name.split("/").every((part) => !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
 /** A full SHA-1 commit name; repositories using SHA-256 are refused. */

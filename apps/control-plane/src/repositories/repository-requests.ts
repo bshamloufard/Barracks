@@ -1,4 +1,4 @@
-import type { ThreadRepositoryRequest } from "@barrack/protocol";
+import { branchNameSchema, type ThreadRepositoryRequest } from "@barrack/protocol";
 import type { GithubApi } from "../github/github-api.js";
 import type { GithubConnectionStore } from "../github/github-connection-store.js";
 import { githubUnavailableReason } from "../github/github-connections.js";
@@ -101,12 +101,22 @@ export class RepositoryRequests {
     if (!access.ok) {
       return { kind: "not_allowed", message: access.reason };
     }
+    // A name the user gave was checked with the request; GitHub's default
+    // branch is checked here, since the sandbox refuses a description of
+    // the workspace with a branch name the protocol does not accept.
+    const chosenBaseBranch = baseBranch ?? repository.defaultBranch;
+    if (!branchNameSchema.safeParse(chosenBaseBranch).success) {
+      return {
+        kind: "invalid",
+        message: `${repository.fullName}'s default branch, ${describeBranchName(chosenBaseBranch)}, is not a branch name Barrack can use. Name a base branch to start from instead.`,
+      };
+    }
     return {
       kind: "accepted",
       choice: {
         url: repository.cloneUrl,
         access: "github_app",
-        baseBranch: baseBranch ?? repository.defaultBranch,
+        baseBranch: chosenBaseBranch,
         github: {
           repositoryId: repository.id,
           installationId: repository.installationId,
@@ -116,4 +126,13 @@ export class RepositoryRequests {
       },
     };
   }
+}
+
+/** Quoted, with any control character spelled out, since it would be invisible on the page. */
+function describeBranchName(name: string): string {
+  const spelled = name.replace(
+    /\p{Cc}/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  return `"${spelled}"`;
 }

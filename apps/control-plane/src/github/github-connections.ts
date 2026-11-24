@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { GithubConnection } from "@barrack/protocol";
+import { branchNameSchema, type GithubConnection } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import type { Clock } from "../sandbox-lifecycle/lifecycle-settings.js";
 import type { GithubApi, GithubRepository } from "./github-api.js";
@@ -171,6 +171,7 @@ export class GithubConnections {
           .map((repository) => toLinkedRepository(repository, installationId)),
       );
     }
+    this.#warnOfUnusableDefaultBranches(userId, repositories);
     return {
       userId,
       githubUserId: user.id,
@@ -181,6 +182,24 @@ export class GithubConnections {
         first.fullName.localeCompare(second.fullName),
       ),
     };
+  }
+
+  /**
+   * A repository whose default branch is not a name Barrack accepts (one
+   * with a control character in it, or longer than 255 characters) is still
+   * linked: a thread can start from it on a base branch the user names, and
+   * starting from its default branch is refused, saying so.
+   */
+  #warnOfUnusableDefaultBranches(userId: string, repositories: LinkedGithubRepository[]): void {
+    const unusable = repositories.filter(
+      (repository) => !branchNameSchema.safeParse(repository.defaultBranch).success,
+    );
+    if (unusable.length > 0) {
+      this.#options.logger.warn(
+        { userId, repositories: unusable.map((repository) => repository.fullName) },
+        "Linked repositories whose default branch Barrack cannot use; threads on them must name a base branch",
+      );
+    }
   }
 
   #describeConnected(connection: GithubConnectionRecord): GithubConnection {
