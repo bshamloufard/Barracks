@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { type ConversationEntry, isWaitingForAgent } from "../thread-state/thread-state";
 import { AssistantMessage, StreamingAssistantMessage } from "./assistant-message";
+import { RepositoryEventView } from "./repository-event";
 import { ToolExecution } from "./tool-execution";
 import { useStickToBottom } from "./use-stick-to-bottom";
 
@@ -66,5 +67,7 @@ function ConversationEntryView({
       );
     case "agent_interrupted":
       return <p className="quiet-note">Interrupted.</p>;
+    case "repository_event":
+      return <RepositoryEventView event={entry.event} />;
   }
 }

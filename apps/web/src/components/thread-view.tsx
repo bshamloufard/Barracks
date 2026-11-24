@@ -4,6 +4,7 @@ import { useThread } from "../use-thread";
 import { AccountBar } from "./account-bar";
 import { Conversation } from "./conversation";
 import { MessageComposer } from "./message-composer";
+import { RepositoryPanel } from "./repository-panel";
 import { SandboxControls } from "./sandbox-controls";
 import { StatusLine } from "./status-line";
 
@@ -43,6 +44,9 @@ export function ThreadView({ threadId }: { threadId: string }) {
             onConfirmDeletion={controls.confirmDeletion}
             onCancelDeletion={controls.cancelDeletion}
           />
+        )}
+        {record.name === "found" && record.thread.repository !== null && (
+          <RepositoryPanel thread={record.thread} repository={record.thread.repository} />
         )}
       </header>
       <main>

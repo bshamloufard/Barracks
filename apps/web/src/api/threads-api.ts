@@ -3,6 +3,7 @@ import {
   buildResumeThreadApiPath,
   buildStopThreadApiPath,
   buildThreadApiPath,
+  type ThreadRepositoryRequest,
   type ThreadSummary,
   threadListResponseSchema,
   threadResponseSchema,
@@ -43,9 +44,18 @@ export class ThreadsApi {
     return parseAnswer(threadResponseSchema, await response.json(), "load the thread").thread;
   }
 
-  /** Refused when the user already runs as many sandboxes as allowed; the error says which. */
-  createThread(): Promise<ThreadSummary> {
-    return this.#change("POST", threadsApiPath, "create a thread");
+  /**
+   * Starts a thread, from `repository` if given. Refused when the user
+   * already runs as many sandboxes as allowed, or may not use the
+   * repository; the error says why.
+   */
+  createThread(repository?: ThreadRepositoryRequest): Promise<ThreadSummary> {
+    return this.#change(
+      "POST",
+      threadsApiPath,
+      "create a thread",
+      repository === undefined ? {} : { repository },
+    );
   }
 
   /** Stops the thread's sandbox, keeping its files; answers with the thread now stopping. */
@@ -63,11 +73,16 @@ export class ThreadsApi {
     return this.#change("DELETE", buildThreadApiPath(threadId), "delete the thread");
   }
 
-  async #change(method: "POST" | "DELETE", path: string, attempt: string): Promise<ThreadSummary> {
+  async #change(
+    method: "POST" | "DELETE",
+    path: string,
+    attempt: string,
+    body: object = {},
+  ): Promise<ThreadSummary> {
     const response = await this.#request(
       path,
       method === "POST"
-        ? { method, headers: { "Content-Type": "application/json" }, body: "{}" }
+        ? { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
         : { method },
     );
     if (!response.ok) {

@@ -14,6 +14,7 @@ const thread: ThreadSummary = {
   title: null,
   isAgentWorking: false,
   sandbox: { state: "running" },
+  repository: null,
 };
 
 function stateAfter(...actions: ThreadListAction[]): ThreadListState {

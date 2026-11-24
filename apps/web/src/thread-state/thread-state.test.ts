@@ -20,6 +20,7 @@ const exampleThread: ThreadSummary = {
   title: "Fix the build",
   isAgentWorking: false,
   sandbox: { state: "running" },
+  repository: null,
 };
 
 function recorded(sequence: number, event: ThreadEvent): ThreadAction {
@@ -93,6 +94,33 @@ describe("thread events", () => {
     const replayedAgain = reduceThreadState(once, recorded(1, userMessage));
 
     expect(replayedAgain).toBe(once);
+  });
+});
+
+describe("repository events", () => {
+  it("each become an entry in the conversation, in order, without starting a run", () => {
+    const cloned: ThreadEvent = {
+      type: "repository_cloned",
+      baseBranch: "main",
+      baseCommit: "0123456789abcdef0123456789abcdef01234567",
+      workBranch: "barrack/thread-1",
+      lostEarlierWork: false,
+    };
+    const state = stateAfter(
+      recorded(1, {
+        type: "repository_clone_started",
+        repositoryUrl: "https://github.com/octo/app",
+        baseBranch: null,
+      }),
+      recorded(2, cloned),
+    );
+
+    expect(state.entries.map((entry) => entry.kind)).toEqual([
+      "repository_event",
+      "repository_event",
+    ]);
+    expect(state.entries[1]).toEqual({ kind: "repository_event", key: "event:2", event: cloned });
+    expect(state.isAgentWorking).toBe(false);
   });
 });
 

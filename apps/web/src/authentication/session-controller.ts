@@ -1,4 +1,5 @@
 import { createAuthorizedFetch } from "../api/authorized-fetch";
+import { RepositoriesApi } from "../api/repositories-api";
 import { ThreadsApi } from "../api/threads-api";
 import { reconnectDelayInMilliseconds } from "../connection/reconnect-delay";
 import type {
@@ -25,6 +26,7 @@ export class SessionController {
   readonly hasSignIn: boolean;
   readonly accessTokens: AccessTokenSource;
   readonly threadsApi: ThreadsApi;
+  readonly repositoriesApi: RepositoriesApi;
   readonly #service: SignInService;
   readonly #stateListeners = new Set<() => void>();
   readonly #tokenListeners = new Set<(accessToken: string) => void>();
@@ -36,12 +38,12 @@ export class SessionController {
     this.#service = service;
     this.hasSignIn = service.hasSignIn;
     this.accessTokens = service;
-    this.threadsApi = new ThreadsApi(
-      createAuthorizedFetch(service, {
-        onSignInRequired: () => void this.signOut(),
-        onNotAllowed: () => this.#dispatch({ type: "access_refused" }),
-      }),
-    );
+    const authorizedFetch = createAuthorizedFetch(service, {
+      onSignInRequired: () => void this.signOut(),
+      onNotAllowed: () => this.#dispatch({ type: "access_refused" }),
+    });
+    this.threadsApi = new ThreadsApi(authorizedFetch);
+    this.repositoriesApi = new RepositoriesApi(authorizedFetch);
   }
 
   readonly getState = (): SignInState => this.#state;

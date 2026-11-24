@@ -5,6 +5,7 @@ import type {
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
   ReplayAnnouncement,
+  RepositoryEvent,
   ThreadSummary,
   ToolArguments,
   ToolOutput,
@@ -69,13 +70,21 @@ export type AgentFailedEntry = { kind: "agent_failed"; key: string; errorMessage
 
 export type AgentInterruptedEntry = { kind: "agent_interrupted"; key: string };
 
+/** Something that happened to the thread's repository: cloning it, or publishing its branch. */
+export type RepositoryEventEntry = {
+  kind: "repository_event";
+  key: string;
+  event: RepositoryEvent;
+};
+
 export type ConversationEntry =
   | UserMessageEntry
   | StreamingAssistantMessageEntry
   | AssistantMessageEntry
   | ToolExecutionEntry
   | AgentFailedEntry
-  | AgentInterruptedEntry;
+  | AgentInterruptedEntry
+  | RepositoryEventEntry;
 
 export type ConnectionState =
   | { name: "connecting" }
@@ -314,6 +323,12 @@ function applyThreadEvent(
         key: `event:${sequence}`,
         errorMessage: event.errorMessage,
       });
+    case "repository_clone_started":
+    case "repository_cloned":
+    case "repository_clone_failed":
+    case "repository_published":
+    case "repository_publication_failed":
+      return appendEntry(state, { kind: "repository_event", key: `event:${sequence}`, event });
   }
 }
 

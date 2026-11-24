@@ -1,4 +1,4 @@
-import type { ThreadSummary } from "@barrack/protocol";
+import type { ThreadRepositoryRequest, ThreadSummary } from "@barrack/protocol";
 import { useCallback, useEffect, useReducer } from "react";
 import { useSession } from "../authentication/session-context";
 import { threadPageAddress } from "../page-address";
@@ -12,8 +12,8 @@ import {
 export type ThreadListControls = {
   state: ThreadListState;
   reloadThreads: () => void;
-  /** Creates a thread and, once it exists, opens its page. */
-  createThreadAndOpenIt: () => void;
+  /** Creates a thread, from the repository if one is given, and once it exists opens its page. */
+  createThreadAndOpenIt: (repository?: ThreadRepositoryRequest) => void;
 };
 
 /** While a listed sandbox is changing state, how often the list is fetched again. */
@@ -68,13 +68,16 @@ export function useThreadList(): ThreadListControls {
     };
   }, [threadsApi]);
 
-  const createThreadAndOpenIt = useCallback(() => {
-    dispatch({ type: "creation_started" });
-    threadsApi.createThread().then(
-      (thread) => window.location.assign(threadPageAddress(thread.threadId)),
-      (error: unknown) => dispatch({ type: "creation_failed", reason: describeError(error) }),
-    );
-  }, [threadsApi]);
+  const createThreadAndOpenIt = useCallback(
+    (repository?: ThreadRepositoryRequest) => {
+      dispatch({ type: "creation_started" });
+      threadsApi.createThread(repository).then(
+        (thread) => window.location.assign(threadPageAddress(thread.threadId)),
+        (error: unknown) => dispatch({ type: "creation_failed", reason: describeError(error) }),
+      );
+    },
+    [threadsApi],
+  );
 
   return { state, reloadThreads, createThreadAndOpenIt };
 }
