@@ -8,7 +8,7 @@ import {
 import { protocolVersion } from "./protocol-version.js";
 
 describe("supervisor endpoint", () => {
-  it.each(["thread-1", "a/b?c=d&e#f", "ünïcødé thread"])(
+  it.each(["thread-1", "Thread_2", "a".repeat(64)])(
     "parses back the thread identifier %j it was built with",
     (threadId) => {
       const path = buildSupervisorEndpointPath({ threadId });
@@ -36,6 +36,13 @@ describe("supervisor endpoint", () => {
     expect(parseSupervisorEndpointPath("/threads/thread-1/supervisor").ok).toBe(false);
   });
 
+  it("rejects a thread identifier that could escape a path or a file name", () => {
+    for (const unsafeThreadId of ["a%2Fb", "..", "thread%20one", "a".repeat(65)]) {
+      const requestTarget = `/threads/${unsafeThreadId}/supervisor?protocolVersion=${protocolVersion}`;
+      expect(parseSupervisorEndpointPath(requestTarget).ok).toBe(false);
+    }
+  });
+
   it("rejects the client endpoint", () => {
     const clientPath = buildClientEndpointPath({ threadId: "thread-1", lastSeenSequence: 0 });
 
@@ -57,7 +64,7 @@ describe("client endpoint", () => {
   it.each([
     { threadId: "thread-1", lastSeenSequence: 0 },
     { threadId: "thread-1", lastSeenSequence: 42 },
-    { threadId: "a/b?c=d", lastSeenSequence: Number.MAX_SAFE_INTEGER },
+    { threadId: "Thread_2", lastSeenSequence: Number.MAX_SAFE_INTEGER },
   ])(
     "parses back the parameters it was built with: $threadId after $lastSeenSequence",
     (parameters) => {

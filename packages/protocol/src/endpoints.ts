@@ -1,4 +1,4 @@
-import { identifierSchema } from "./identifier.js";
+import { threadIdSchema } from "./identifier.js";
 import type { ParseResult } from "./parse-result.js";
 import { protocolVersion } from "./protocol-version.js";
 
@@ -125,7 +125,7 @@ function parseThreadId(pathname: string, endpointName: string): ParseResult<stri
   if (!threadId.ok) {
     return threadId;
   }
-  if (!identifierSchema.safeParse(threadId.value).success) {
+  if (!threadIdSchema.safeParse(threadId.value).success) {
     return { ok: false, errorMessage: `Thread identifier in path "${pathname}" is not valid.` };
   }
   return threadId;

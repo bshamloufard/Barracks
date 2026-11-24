@@ -1,5 +1,5 @@
 import path from "node:path";
-import { identifierSchema } from "@barrack/protocol";
+import { threadIdSchema } from "@barrack/protocol";
 import { z } from "zod";
 
 /**
@@ -17,7 +17,7 @@ const sharedVariablesSchema = z.object({
   BARRACK_CONTROL_PLANE_URL: z
     .url({ protocol: /^wss?$/, error: "must be a ws:// or wss:// URL" })
     .transform((url) => url.replace(/\/+$/, "")),
-  BARRACK_THREAD_ID: identifierSchema,
+  BARRACK_THREAD_ID: threadIdSchema,
   BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
   BARRACK_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
