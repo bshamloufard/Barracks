@@ -122,6 +122,26 @@ describeWithTestDatabase("the Postgres repository and GitHub stores", () => {
     expect(await repositories.find("thread-1")).toBeUndefined();
   });
 
+  it("keeps a recorded pull request when a later publication records none", async () => {
+    const { threads, repositories } = await stores();
+    await createThread(threads, "thread-1", true);
+    const pullRequest = { number: 3, url: "https://github.com/octo/app/pull/3" };
+    await repositories.recordPublication("thread-1", {
+      lastPublishedCommit: "0123456789abcdef0123456789abcdef01234567",
+      pullRequest,
+    });
+
+    await repositories.recordPublication("thread-1", {
+      lastPublishedCommit: "89abcdef0123456789abcdef0123456789abcdef",
+      pullRequest: undefined,
+    });
+
+    expect(await repositories.find("thread-1")).toMatchObject({
+      lastPublishedCommit: "89abcdef0123456789abcdef0123456789abcdef",
+      pullRequest,
+    });
+  });
+
   it("refuses a repository that says it is reached through the App without saying which", async () => {
     const { threads } = await stores();
 

@@ -284,7 +284,14 @@ export class ThreadPublisher {
     await isolated.fetchBranchFromBundle(bundlePath, reference);
     const commit = header.value.tipCommit;
     const remoteCommit = await isolated.readRemoteBranch(reference);
-    if (remoteCommit !== undefined && remoteCommit !== repository.lastPublishedCommit) {
+    // A branch already at the commit being published needs nothing: an
+    // earlier publication pushed it but could not record that it did, or
+    // another control plane published the same commit a moment ago.
+    if (
+      remoteCommit !== undefined &&
+      remoteCommit !== commit &&
+      remoteCommit !== repository.lastPublishedCommit
+    ) {
       throw new PublicationError(
         `${repository.workBranch} in the repository has commits Barrack did not push there. Barrack never overwrites someone else's work; delete or rename that branch on GitHub to publish again.`,
       );

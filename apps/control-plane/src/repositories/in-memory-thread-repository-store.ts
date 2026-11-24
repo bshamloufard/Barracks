@@ -47,7 +47,11 @@ export class InMemoryThreadRepositoryStore implements ThreadRepositoryStore {
   async recordPublication(threadId: string, publication: RepositoryPublication): Promise<void> {
     const record = this.#records.get(threadId);
     if (record !== undefined) {
-      this.#records.set(threadId, { ...record, ...publication });
+      this.#records.set(threadId, {
+        ...record,
+        lastPublishedCommit: publication.lastPublishedCommit,
+        pullRequest: record.pullRequest ?? publication.pullRequest,
+      });
     }
   }
 }

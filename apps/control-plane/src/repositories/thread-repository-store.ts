@@ -51,6 +51,11 @@ export interface ThreadRepositoryStore {
   /** The repositories of those of the threads that have one. */
   findMany(threadIds: readonly string[]): Promise<Map<string, ThreadRepositoryRecord>>;
 
-  /** Records a publication: the commit pushed and, once there is one, the pull request. */
+  /**
+   * Records a publication: the commit pushed and, once there is one, the
+   * pull request. A pull request already recorded is kept, so a
+   * publication that did not open one (another control plane's, finishing
+   * second) never makes the thread forget it.
+   */
   recordPublication(threadId: string, publication: RepositoryPublication): Promise<void>;
 }

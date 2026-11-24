@@ -96,7 +96,9 @@ export class PostgresThreadRepositoryStore implements ThreadRepositoryStore {
   async recordPublication(threadId: string, publication: RepositoryPublication): Promise<void> {
     await this.#pool.query(
       `update ${this.#table} set
-          last_published_commit = $2, pull_request_number = $3, pull_request_url = $4
+          last_published_commit = $2,
+          pull_request_number = coalesce(pull_request_number, $3),
+          pull_request_url = coalesce(pull_request_url, $4)
         where thread_id = $1`,
       [
         threadId,

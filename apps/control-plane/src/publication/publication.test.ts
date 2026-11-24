@@ -307,6 +307,24 @@ describe("publishing a thread's branch", () => {
     ]);
   });
 
+  it("finishes a publication whose push went through but was never recorded", async () => {
+    const thread = await startPublishingThread();
+    const agentCommit = await commit(thread.clone, "agent.txt");
+    await runGit(
+      ["push", "--quiet", repository.directory, `${thread.workBranch}:${thread.workBranch}`],
+      thread.clone,
+    );
+
+    const answer = await publish(
+      thread,
+      await bundleOf(thread.clone, [`${thread.baseCommit}..${thread.workBranch}`]),
+      false,
+    );
+
+    expect(answer).toMatchObject({ status: 200, body: { commit: agentCommit } });
+    expect(await github.readBranch(repository, thread.workBranch)).toBe(agentCommit);
+  });
+
   it("refuses a bundle that would update any other branch", async () => {
     const thread = await startPublishingThread();
     await commit(thread.clone, "agent.txt");
