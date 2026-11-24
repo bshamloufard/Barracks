@@ -83,7 +83,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Rootless Docker keeps its socket elsewhere; set DOCKER_SOCKET in .env.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
     networks:
       - docker-api
     healthcheck:
