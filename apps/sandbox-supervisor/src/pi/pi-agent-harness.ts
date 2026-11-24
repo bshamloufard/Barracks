@@ -16,6 +16,7 @@ import type {
   UserMessage,
 } from "../agent-harness.js";
 import type { AgentProcessLauncher } from "../agent-process/agent-process-launcher.js";
+import type { DesktopConfiguration } from "../configuration.js";
 import { finishesWithin } from "../finishes-within.js";
 import type { Logger } from "../logger.js";
 import {
@@ -48,6 +49,8 @@ export type PiAgentHarnessSettings = {
   sourceEnvironment: NodeJS.ProcessEnv;
   /** Decides which operating-system user Pi runs as. */
   agentProcessLauncher: AgentProcessLauncher;
+  /** The sandbox's desktop, which Pi's computer tool uses; undefined gives Pi no such tool. */
+  desktop?: DesktopConfiguration | undefined;
   logger: Logger;
   mintIdentifier?: () => string;
   stopTiming?: Partial<PiStopTiming>;
@@ -67,6 +70,18 @@ export function resolvePiEntryPointPath(): string {
   // The package exports its RPC entry point under the `import` condition
   // only, so `require.resolve` cannot find it.
   return fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent/rpc-entry"));
+}
+
+/**
+ * The computer tool, as an extension Pi loads (`--extension`). Pi compiles
+ * extensions itself, so this is the built file in the image and the source
+ * file when the supervisor runs from its sources.
+ */
+export function resolveComputerUseExtensionPath(): string {
+  const fileExtension = path.extname(fileURLToPath(import.meta.url));
+  return fileURLToPath(
+    new URL(`./computer-use/computer-use-extension${fileExtension}`, import.meta.url),
+  );
 }
 
 export function getPiDirectories(stateDirectory: string) {
@@ -481,11 +496,13 @@ export class PiAgentHarness implements AgentHarness {
       this.#sessionFile !== undefined && existsSync(this.#sessionFile)
         ? this.#sessionFile
         : undefined;
+    const { desktop } = this.#settings;
     this.#logger.info(
       {
         model,
         sessionFile: sessionFileToResume ?? null,
         runsAs: this.#settings.agentProcessLauncher.description,
+        hasComputerTool: desktop !== undefined,
       },
       "Starting Pi",
     );
@@ -497,7 +514,8 @@ export class PiAgentHarness implements AgentHarness {
         sessionId: this.#settings.threadId,
         sessionFileToResume,
         model,
-        environment: buildPiEnvironment(this.#settings.sourceEnvironment, agentDirectory),
+        extensionPaths: desktop === undefined ? [] : [resolveComputerUseExtensionPath()],
+        environment: buildPiEnvironment(this.#settings.sourceEnvironment, agentDirectory, desktop),
         launcher: this.#settings.agentProcessLauncher,
         stopTiming: this.#stopTiming,
       },

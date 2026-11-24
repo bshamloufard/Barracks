@@ -54,6 +54,8 @@ async function connect(
     logger: createSilentLogger(),
     onAgentRequest: (request) => agentRequests.push(request),
     onWorkspaceMessage: () => undefined,
+    onDesktopMessage: () => undefined,
+    onWelcomed: () => undefined,
     onFatalError: (error) => fatalErrors.push(error),
     timing: { ...fastTiming, ...options.timing },
   });

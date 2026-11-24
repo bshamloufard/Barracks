@@ -9,10 +9,10 @@ import { z } from "zod";
  * checked once at startup, and every problem is reported together.
  */
 
-const absoluteDirectorySchema = z
+const absolutePathSchema = z
   .string()
   .min(1)
-  .transform((directory) => path.resolve(directory));
+  .transform((givenPath) => path.resolve(givenPath));
 
 const sharedVariablesSchema = z.object({
   BARRACK_CONTROL_PLANE_URL: z
@@ -20,10 +20,17 @@ const sharedVariablesSchema = z.object({
     .transform((url) => url.replace(/\/+$/, "")),
   BARRACK_THREAD_ID: threadIdSchema,
   BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
-  BARRACK_SUPERVISOR_STATE_DIRECTORY: absoluteDirectorySchema,
-  BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema.optional(),
-  BARRACK_GIT_HELPER_SOCKET: absoluteDirectorySchema.optional(),
+  BARRACK_SUPERVISOR_STATE_DIRECTORY: absolutePathSchema,
+  BARRACK_WORKSPACE_DIRECTORY: absolutePathSchema.optional(),
+  BARRACK_GIT_HELPER_SOCKET: absolutePathSchema.optional(),
   BARRACK_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  BARRACK_DESKTOP_COMMAND: absolutePathSchema.optional(),
+  BARRACK_DESKTOP_VNC_PORT: z.coerce.number().int().min(1).max(65_535).default(5900),
+  BARRACK_DESKTOP_CONTROL_FILE: absolutePathSchema.optional(),
+  DISPLAY: z
+    .string()
+    .regex(/^:[0-9]{1,4}$/, 'must name a local display, such as ":1"')
+    .optional(),
 });
 
 /**
@@ -34,8 +41,8 @@ const maximumSocketPathLength = 100;
 
 const piVariablesSchema = sharedVariablesSchema.extend({
   BARRACK_AGENT_HARNESS: z.literal("pi").default("pi"),
-  BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema,
-  BARRACK_STATE_DIRECTORY: absoluteDirectorySchema,
+  BARRACK_WORKSPACE_DIRECTORY: absolutePathSchema,
+  BARRACK_STATE_DIRECTORY: absolutePathSchema,
   BARRACK_AGENT_USER: z
     .string()
     .regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "must be the name of an operating-system user")
@@ -75,6 +82,28 @@ type SharedConfiguration = {
    */
   gitCredentialSocketPath: string;
   logLevel: LogLevel;
+  /** The sandbox's graphical desktop; undefined for a sandbox without one. */
+  desktop: DesktopConfiguration | undefined;
+};
+
+/**
+ * A sandbox has a desktop when its image names a command that runs one
+ * (`BARRACK_DESKTOP_COMMAND`, which Barrack's sandbox image sets): a program
+ * that runs, as the agent and in the foreground until its standard input
+ * closes, an X display and a VNC server for it on loopback.
+ */
+export type DesktopConfiguration = {
+  command: string;
+  /** The X display it runs, such as ":1"; the agent's programs are given it. */
+  display: string;
+  /** The loopback port its VNC server listens on. */
+  vncPort: number;
+  /**
+   * Where the supervisor writes who holds the desktop's input, "agent" or
+   * "user", for the agent's computer tool to read. The agent must be able to
+   * read it and must not be able to write it.
+   */
+  controlFile: string;
 };
 
 /**
@@ -114,6 +143,15 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
   if (!validation.success) {
     return { ok: false, problems: describeProblems(validation.error, harnessName) };
   }
+  const { BARRACK_DESKTOP_COMMAND: desktopCommand, DISPLAY: display } = validation.data;
+  if (desktopCommand !== undefined && display === undefined) {
+    return {
+      ok: false,
+      problems: [
+        "DISPLAY: is required with BARRACK_DESKTOP_COMMAND, to name the desktop's display",
+      ],
+    };
+  }
   return { ok: true, configuration: toConfiguration(validation.data) };
 }
 
@@ -131,6 +169,7 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
         variables.BARRACK_THREAD_ID,
       ),
     logLevel: variables.BARRACK_LOG_LEVEL,
+    desktop: toDesktopConfiguration(variables),
     agentHarness:
       variables.BARRACK_AGENT_HARNESS === "fake"
         ? { kind: "fake" }
@@ -142,6 +181,25 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
             agentMayShareSupervisorUser:
               variables.BARRACK_AGENT_SHARES_SUPERVISOR_USER === "development-only",
           },
+  };
+}
+
+/**
+ * The agent is given a display only when the sandbox has a desktop, so on a
+ * developer's machine the agent never opens windows on the developer's own.
+ */
+function toDesktopConfiguration(variables: Variables): DesktopConfiguration | undefined {
+  const { BARRACK_DESKTOP_COMMAND: command, DISPLAY: display } = variables;
+  if (command === undefined || display === undefined) {
+    return undefined;
+  }
+  return {
+    command,
+    display,
+    vncPort: variables.BARRACK_DESKTOP_VNC_PORT,
+    controlFile:
+      variables.BARRACK_DESKTOP_CONTROL_FILE ??
+      path.join(variables.BARRACK_SUPERVISOR_STATE_DIRECTORY, "desktop-control"),
   };
 }
 

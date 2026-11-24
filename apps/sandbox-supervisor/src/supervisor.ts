@@ -22,6 +22,8 @@ import {
 } from "./control-plane/control-plane-connection.js";
 import { createAgentHarness } from "./create-agent-harness.js";
 import { DeliveredUserMessages } from "./delivery/delivered-user-messages.js";
+import type { DesktopTiming } from "./desktop/sandbox-desktop.js";
+import { ThreadDesktop } from "./desktop/thread-desktop.js";
 import { fitAgentEventInFrame, measureAgentEventFrame } from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
 import type { SecretRedactor } from "./secret-redactor.js";
@@ -46,6 +48,7 @@ export type SupervisorSettings = {
   connectionTiming?: Partial<ConnectionTiming>;
   /** How long a credential request waits for the control plane. */
   credentialRequestTimeoutInMilliseconds?: number;
+  desktopTiming?: Partial<DesktopTiming>;
 };
 
 const defaultCredentialRequestTimeoutInMilliseconds = 30_000;
@@ -61,6 +64,7 @@ export class Supervisor {
   readonly #connection: ControlPlaneConnection;
   readonly #harness: AgentHarness;
   readonly #workspace: ThreadWorkspace;
+  readonly #desktop: ThreadDesktop;
   readonly #credentialRequestTimeoutInMilliseconds: number;
   readonly #secretRedactor: SecretRedactor;
   /** Credential requests sent to the control plane, by request identifier. */
@@ -88,6 +92,8 @@ export class Supervisor {
       logger,
       onAgentRequest: (request) => this.#queueAgentRequest(request),
       onWorkspaceMessage: (message) => this.#handleWorkspaceMessage(message),
+      onDesktopMessage: (message) => this.#desktop.handle(message),
+      onWelcomed: () => this.#desktop.reportAvailability(),
       onFatalError: settings.onFatalError,
       ...(settings.connectionTiming === undefined ? {} : { timing: settings.connectionTiming }),
     });
@@ -104,10 +110,28 @@ export class Supervisor {
       requestCredential: () => this.#requestCredential(),
       logger,
     });
+    this.#desktop = new ThreadDesktop({
+      configuration: configuration.desktop,
+      controlPlaneUrl: configuration.controlPlaneUrl,
+      threadId: configuration.threadId,
+      supervisorToken: configuration.supervisorToken,
+      launcher: settings.agentProcessLauncher,
+      sourceEnvironment: settings.sourceEnvironment,
+      sendDesktopMessage: (message) => this.#connection.sendDesktopMessage(message),
+      logger,
+      ...(settings.desktopTiming === undefined ? {} : { timing: settings.desktopTiming }),
+    });
     this.#harness = createAgentHarness(configuration.agentHarness, this.#createObserver(), {
       threadId: configuration.threadId,
       sourceEnvironment: settings.sourceEnvironment,
       agentProcessLauncher: settings.agentProcessLauncher,
+      desktop:
+        configuration.desktop === undefined
+          ? undefined
+          : {
+              configuration: configuration.desktop,
+              readControlHolder: () => this.#desktop.controlHolder,
+            },
       logger,
     });
   }
@@ -119,6 +143,7 @@ export class Supervisor {
       this.#configuration.supervisorStateDirectory,
       this.#logger,
     );
+    await this.#desktop.start();
     this.#connection.open();
     await this.#harness.start();
   }
@@ -130,6 +155,7 @@ export class Supervisor {
   async stop(): Promise<void> {
     this.#logger.info("Stopping the supervisor");
     await this.#harness.stop();
+    await this.#desktop.stop();
     await this.#workspace.stop();
     await this.#connection.close();
     this.#logger.info("Stopped the supervisor");

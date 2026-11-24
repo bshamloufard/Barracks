@@ -3,6 +3,7 @@ import {
   type AgentEventMessage,
   buildSupervisorEndpointPath,
   type ConfigureModelAccess,
+  type ControlPlaneDesktopMessage,
   type ControlPlaneToSupervisorMessage,
   type CreatePublicationBundle,
   closeCodes,
@@ -13,6 +14,7 @@ import {
   parseControlPlaneToSupervisorMessage,
   type RepositoryCredential,
   type StreamFragment,
+  type SupervisorDesktopMessage,
   type SupervisorEvent,
   type SupervisorToControlPlaneMessage,
   type SupervisorWorkspaceMessage,
@@ -70,6 +72,10 @@ export type ControlPlaneConnectionSettings = {
   logger: Logger;
   onAgentRequest: (request: AgentRequest) => void;
   onWorkspaceMessage: (message: WorkspaceMessage) => void;
+  /** The desktop's requests, which need not wait behind the agent's either. */
+  onDesktopMessage: (message: ControlPlaneDesktopMessage) => void;
+  /** A connection was welcomed, so whatever the control plane must hear on each may be sent. */
+  onWelcomed: () => void;
   /** The connection can never succeed again; the supervisor should exit. */
   onFatalError: (error: Error) => void;
   timing?: Partial<ConnectionTiming>;
@@ -176,6 +182,15 @@ export class ControlPlaneConnection {
    * up and may ask again.
    */
   sendWorkspaceMessage(message: SupervisorWorkspaceMessage): boolean {
+    return this.#sendOnWelcomedSocket(JSON.stringify(message));
+  }
+
+  /**
+   * Sends a desktop report if the connection is welcomed; returns whether it
+   * went out. Not kept for resending: the desktop's availability is sent
+   * again after every welcome, and a failed stream's viewer gives up.
+   */
+  sendDesktopMessage(message: SupervisorDesktopMessage): boolean {
     return this.#sendOnWelcomedSocket(JSON.stringify(message));
   }
 
@@ -304,6 +319,7 @@ export class ControlPlaneConnection {
     for (const { frame } of this.#unconfirmedEvents.frames) {
       this.#sendFrame(socket, frame);
     }
+    this.#settings.onWelcomed();
   }
 
   #handleEventsRecorded(throughEventNumber: number): void {
@@ -377,6 +393,10 @@ export class ControlPlaneConnection {
       case "repository_credential":
       case "create_publication_bundle":
         this.#settings.onWorkspaceMessage(message);
+        return;
+      case "open_desktop_stream":
+      case "desktop_control":
+        this.#settings.onDesktopMessage(message);
         return;
     }
   }

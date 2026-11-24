@@ -21,6 +21,8 @@ export type PiLaunchSettings = {
   /** Reopens this session file instead, when it exists. */
   sessionFileToResume: string | undefined;
   model: string;
+  /** Pi extensions to load besides any the workspace configures, such as the computer tool. */
+  extensionPaths: readonly string[];
   environment: NodeJS.ProcessEnv;
   /** Decides which operating-system user Pi runs as. */
   launcher: AgentProcessLauncher;
@@ -63,6 +65,7 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
     ...sessionArguments,
     "--model",
     settings.model,
+    ...settings.extensionPaths.flatMap((extensionPath) => ["--extension", extensionPath]),
     // Trust the repository's own Pi configuration. Untrusted settings would
     // otherwise be skipped silently in RPC mode; the sandbox is the boundary.
     "--approve",

@@ -2,8 +2,10 @@ import type {
   AgentEvent,
   ConfigureModelAccess,
   DeliverUserMessage,
+  DesktopControlHolder,
   StreamFragment,
 } from "@barrack/protocol";
+import type { DesktopConfiguration } from "./configuration.js";
 
 /**
  * The boundary around "an agent the supervisor can run". Everything a
@@ -75,3 +77,10 @@ export type AgentHarnessObserver = {
 };
 
 export type AgentProcessEnding = { wasExpected: boolean; description: string };
+
+/** The sandbox's desktop, for a harness that gives its agent a computer tool. */
+export type AgentDesktop = {
+  configuration: DesktopConfiguration;
+  /** Who holds the desktop's input now: while it is the user, the agent's tool must not use it. */
+  readControlHolder: () => DesktopControlHolder;
+};

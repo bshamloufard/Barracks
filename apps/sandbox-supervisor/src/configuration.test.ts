@@ -23,6 +23,7 @@ describe("readConfiguration", () => {
         workspaceDirectory: undefined,
         gitCredentialSocketPath: "/var/lib/barrack/supervisor/git-credential.sock",
         logLevel: "info",
+        desktop: undefined,
         agentHarness: { kind: "fake" },
       },
     });
@@ -162,5 +163,53 @@ describe("readConfiguration", () => {
     });
 
     expect(JSON.stringify(result)).not.toContain("not a url");
+  });
+
+  it("has no desktop unless the sandbox names a command that runs one, whatever DISPLAY says", () => {
+    const result = readConfiguration({
+      ...sharedVariables,
+      BARRACK_AGENT_HARNESS: "fake",
+      DISPLAY: ":0",
+    });
+
+    expect(result).toMatchObject({ ok: true, configuration: { desktop: undefined } });
+  });
+
+  it("reads the desktop's command, display, VNC port and control file", () => {
+    const result = readConfiguration({
+      ...sharedVariables,
+      BARRACK_AGENT_HARNESS: "fake",
+      BARRACK_DESKTOP_COMMAND: "/usr/local/bin/barrack-desktop",
+      DISPLAY: ":1",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      configuration: {
+        desktop: {
+          command: "/usr/local/bin/barrack-desktop",
+          display: ":1",
+          vncPort: 5900,
+          controlFile: "/var/lib/barrack/supervisor/desktop-control",
+        },
+      },
+    });
+  });
+
+  it("refuses a desktop command without a display, or with a display on another machine", () => {
+    const desktopVariables = {
+      ...sharedVariables,
+      BARRACK_AGENT_HARNESS: "fake",
+      BARRACK_DESKTOP_COMMAND: "/usr/local/bin/barrack-desktop",
+    };
+
+    expect(readConfiguration(desktopVariables)).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^DISPLAY: is required with BARRACK_DESKTOP_COMMAND/)],
+    });
+    expect(readConfiguration({ ...desktopVariables, DISPLAY: "example.com:0" })).toMatchObject({
+      ok: false,
+      problems: [expect.stringMatching(/^DISPLAY: must name a local display/)],
+    });
   });
 });
