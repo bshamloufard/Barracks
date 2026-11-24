@@ -81,7 +81,10 @@ describe("readConfiguration", () => {
   });
 
   it("never repeats a variable's value in its problems", () => {
-    const result = readConfiguration({ BARRACK_SUPERVISOR_TOKEN: "x", BARRACK_MODEL: "not a model" });
+    const result = readConfiguration({
+      BARRACK_SUPERVISOR_TOKEN: "x",
+      BARRACK_MODEL: "not a model",
+    });
 
     expect(JSON.stringify(result)).not.toContain("not a model");
   });
