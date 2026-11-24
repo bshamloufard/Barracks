@@ -39,9 +39,12 @@ export interface ThreadRuns {
   forgetDeletedThread(threadId: string): Promise<void>;
 
   /**
-   * Whether the thread's supervisor is attached to this control plane now,
-   * welcomed. False says nothing of other control planes: during a
-   * redeploy's overlap it may be attached to the other one.
+   * When the thread's supervisor attached to this control plane now was
+   * welcomed, or undefined if none is attached here. Undefined says nothing
+   * of other control planes: during a redeploy's overlap it may be attached
+   * to the other one. A supervisor is not disconnected when its sandbox
+   * stops, so one welcomed before the sandbox last began starting may be
+   * the stopped sandbox's.
    */
-  isSupervisorAttached(threadId: string): boolean;
+  whenSupervisorWelcomed(threadId: string): Date | undefined;
 }

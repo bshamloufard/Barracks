@@ -134,9 +134,19 @@ export class InMemoryThreadStore implements ThreadStore {
     }
   }
 
-  async recordSupervisorAttached(threadId: string, at: Date): Promise<void> {
+  async recordSupervisorAttached(
+    threadId: string,
+    at: Date,
+    onlyIfAwaitingSupervisorSince?: Date,
+  ): Promise<void> {
     const current = this.#find(threadId);
-    if (current === undefined || current.awaitingSupervisorSince === undefined) {
+    const awaitingSince = current?.awaitingSupervisorSince;
+    if (
+      current === undefined ||
+      awaitingSince === undefined ||
+      (onlyIfAwaitingSupervisorSince !== undefined &&
+        awaitingSince.getTime() !== onlyIfAwaitingSupervisorSince.getTime())
+    ) {
       return;
     }
     const lastActivityAt = new Date(Math.max(current.lastActivityAt.getTime(), at.getTime()));

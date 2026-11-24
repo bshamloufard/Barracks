@@ -1,4 +1,4 @@
-import { findCatalogueProvider } from "@barrack/model-catalogue";
+import { findModelLimits } from "@barrack/model-catalogue";
 import { parseModelReference } from "@barrack/protocol";
 import type { OwnerAdmission } from "../authentication/owner-admission.js";
 import { UnreadableCredentialError } from "../model-access/credential-keyring.js";
@@ -36,22 +36,32 @@ export type ModelProxyAuthorizationOptions = {
   usage: ModelUsage;
 };
 
+/** The owner may spend their key on the thread's requests: whose key, the key, and the thread's model. */
+export type OwnerAuthorization = {
+  kind: "allowed";
+  ownerUserId: string;
+  ownerKey: string;
+  threadModel: string | undefined;
+};
+
+export type ProxyRefused = { kind: "refused"; refusal: ProxyRefusal; reason: string };
+
 /** Allowed: whose key to use, and the key itself, for this one request. */
-export type ProxyAuthorization =
-  | { kind: "allowed"; ownerUserId: string; ownerKey: string }
-  | { kind: "refused"; refusal: ProxyRefusal; reason: string };
+export type ProxyAuthorization = OwnerAuthorization | ProxyRefused;
 
 /**
  * Decides, for each request, whether the model proxy may spend a user's key
  * on it, from the records alone, read afresh every time so a change takes
  * effect on the next request. First, alone, whether the caller presents a
  * token minted for this very thread and provider (`authenticate`, see
- * `ModelProxyTokens`), before anything else is spent on the request; then
- * (`decide`) the thread's sandbox recorded running; the model the request
- * names the thread's own, or the one before a switch made while the run
- * still open began (see `ModelSwitchAllowances`); its owner still admitted;
- * the owner's own key for that provider; and the owner's usage cap not
- * reached.
+ * `ModelProxyTokens`), before anything else is spent on the request; then,
+ * before its body is read, what needs no body (`authorizeOwner`): the
+ * thread's sandbox recorded running; the provider the thread's model's, or
+ * that of the model before a switch made while the run still open began
+ * (see `ModelSwitchAllowances`); its owner still admitted; the owner's own
+ * key for that provider; and the owner's usage cap not reached. Last, once
+ * the body is read (`checkRequestedModels`), the model it names the
+ * thread's own or that one before a switch.
  *
  * The owner and the key come from the thread named in the request path,
  * which is the thread the token was minted for, so a token can only ever
@@ -74,16 +84,26 @@ export class ModelProxyAuthorization {
   }
 
   /**
-   * Whether an authenticated request may spend its owner's key. Throws when
-   * it cannot decide (the database is unreachable, say), which is not a refusal.
+   * Whether the token was accepted by a lookup moments ago, from memory
+   * alone (see `ModelProxyTokens.isRecentlyAccepted`); if not, it must be
+   * looked up.
    */
-  async decide(
-    request: ProxyAuthorizationRequest,
-    requested: RequestedModels,
-  ): Promise<ProxyAuthorization> {
+  isRecentlyAuthenticated(request: ProxyAuthorizationRequest, presentedToken: string): boolean {
+    return this.#options.tokens.isRecentlyAccepted(
+      request.threadId,
+      request.providerId,
+      presentedToken,
+    );
+  }
+
+  /**
+   * Whether an authenticated request may spend its owner's key, as far as
+   * that can be known without its body. Throws when it cannot decide (the
+   * database is unreachable, say), which is not a refusal.
+   */
+  async authorizeOwner(request: ProxyAuthorizationRequest): Promise<ProxyAuthorization> {
     const { threadId, providerId } = request;
-    const { threadStore } = this.#options;
-    const thread = await threadStore.find(threadId);
+    const thread = await this.#options.threadStore.find(threadId);
     const ownerUserId = thread?.ownerUserId;
     if (thread === undefined || ownerUserId === undefined) {
       return refused(proxyRefusals.tokenRefused, "the thread is gone");
@@ -91,9 +111,9 @@ export class ModelProxyAuthorization {
     if (thread.sandbox.state !== "running") {
       return refused(proxyRefusals.tokenRefused, `its sandbox is ${thread.sandbox.state}`);
     }
-    const modelRefused = await this.#checkModel(request, thread.model, requested);
-    if (modelRefused !== undefined) {
-      return modelRefused;
+    const providerRefused = await this.#checkProviderInUse(request, thread.model);
+    if (providerRefused !== undefined) {
+      return providerRefused;
     }
     if (!(await this.#options.ownerAdmission.isStillAdmitted(ownerUserId))) {
       return refused(proxyRefusals.ownerNotAdmitted, "the owner is not admitted");
@@ -106,7 +126,7 @@ export class ModelProxyAuthorization {
     if (cap.isReached) {
       return refused(usageCapRefusal(describeReachedCap(cap)), "the owner's usage cap is reached");
     }
-    return { kind: "allowed", ownerUserId, ownerKey };
+    return { kind: "allowed", ownerUserId, ownerKey, threadModel: thread.model };
   }
 
   /**
@@ -114,41 +134,68 @@ export class ModelProxyAuthorization {
    * compaction and summaries use the model it runs on too), so a request
    * for any other is refused: otherwise a sandbox could spend its owner's
    * key on the dearest model the key allows. The one exception is the
-   * model before a switch, for the run still open on it. Anthropic's
-   * `fallbacks`, which the agent sends for some models, may name only
-   * models its catalogue lists for the provider. A provider in use by
-   * neither has its tokens retired.
+   * model before a switch, for the run still open on it. `fallbacks`
+   * may name only what `allowedFallbacks` allows. Throws when it cannot
+   * decide.
    */
-  async #checkModel(
+  async checkRequestedModels(
     request: ProxyAuthorizationRequest,
     threadModel: string | undefined,
     requested: RequestedModels,
-  ): Promise<ProxyAuthorization | undefined> {
+  ): Promise<ProxyRefused | undefined> {
     const { threadId, providerId } = request;
     const current = modelIdFor(threadModel, providerId);
-    const previousModel =
-      current === requested.model
-        ? undefined
-        : await this.#options.modelSwitchAllowances.findPreviousModel(threadId);
-    const previous = modelIdFor(previousModel, providerId);
-    if (current === undefined && previous === undefined) {
-      const providersInUse = [threadModel, previousModel].flatMap((model) =>
-        model === undefined ? [] : [parseModelReference(model).providerId],
-      );
-      await this.#options.tokens.retainProviders(threadId, providersInUse);
-      return refused(proxyRefusals.tokenRefused, "the thread runs on another provider now");
-    }
-    const isOwnModel = requested.model === current || requested.model === previous;
-    const listedModelIds = new Set(
-      findCatalogueProvider(providerId)?.models.map((model) => model.modelId),
+    const isOwnModel =
+      requested.model === current ||
+      requested.model ===
+        modelIdFor(
+          await this.#options.modelSwitchAllowances.findPreviousModel(threadId),
+          providerId,
+        );
+    const allowed = allowedFallbacks(providerId, requested.model);
+    const areFallbacksAllowed = requested.fallbackModels.every((fallback) =>
+      allowed.includes(fallback),
     );
-    const areFallbacksListed = requested.fallbackModels.every((fallback) =>
-      listedModelIds.has(fallback),
-    );
-    if (!isOwnModel || !areFallbacksListed) {
+    if (!isOwnModel || !areFallbacksAllowed) {
       return refused(modelRefusal(threadModel ?? "none"), "the request names another model");
     }
     return undefined;
+  }
+
+  /** Both of the above, for a request in flight checked again. */
+  async decide(
+    request: ProxyAuthorizationRequest,
+    requested: RequestedModels | undefined,
+  ): Promise<ProxyAuthorization> {
+    const owner = await this.authorizeOwner(request);
+    if (owner.kind === "refused" || requested === undefined) {
+      return owner;
+    }
+    return (await this.checkRequestedModels(request, owner.threadModel, requested)) ?? owner;
+  }
+
+  /**
+   * A thread's requests go to its model's provider, or to the provider of
+   * the model before a switch while that run lasts. A provider in use by
+   * neither has its tokens retired.
+   */
+  async #checkProviderInUse(
+    request: ProxyAuthorizationRequest,
+    threadModel: string | undefined,
+  ): Promise<ProxyRefused | undefined> {
+    const { threadId, providerId } = request;
+    if (modelIdFor(threadModel, providerId) !== undefined) {
+      return undefined;
+    }
+    const previousModel = await this.#options.modelSwitchAllowances.findPreviousModel(threadId);
+    if (modelIdFor(previousModel, providerId) !== undefined) {
+      return undefined;
+    }
+    const providersInUse = [threadModel, previousModel].flatMap((model) =>
+      model === undefined ? [] : [parseModelReference(model).providerId],
+    );
+    await this.#options.tokens.retainProviders(threadId, providersInUse);
+    return refused(proxyRefusals.tokenRefused, "the thread runs on another provider now");
   }
 
   /**
@@ -170,6 +217,20 @@ export class ModelProxyAuthorization {
   }
 }
 
+/**
+ * The models a request for `model` may name as `fallbacks`: for Anthropic,
+ * those the pinned agent sends for that very model (its server-side
+ * fallbacks, which it adds for some models); for OpenRouter's Anthropic
+ * format, where the field is OpenRouter's own routing to other models,
+ * only the model itself; for any other provider, none.
+ */
+function allowedFallbacks(providerId: string, model: string): readonly string[] {
+  if (providerId === "openrouter") {
+    return [model];
+  }
+  return findModelLimits(providerId, model)?.fallbackModelIds ?? [];
+}
+
 /** The model's identifier at its provider, if `model` is that provider's. */
 function modelIdFor(model: string | undefined, providerId: string): string | undefined {
   if (model === undefined) {
@@ -179,6 +240,6 @@ function modelIdFor(model: string | undefined, providerId: string): string | und
   return reference.providerId === providerId ? reference.modelId : undefined;
 }
 
-function refused(refusal: ProxyRefusal, reason: string): ProxyAuthorization {
+function refused(refusal: ProxyRefusal, reason: string): ProxyRefused {
   return { kind: "refused", refusal, reason };
 }

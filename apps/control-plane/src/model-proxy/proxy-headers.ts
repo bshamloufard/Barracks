@@ -13,7 +13,6 @@ import { bearerTokenFrom } from "../bearer-token.js";
  */
 
 const forwardedRequestHeaders = new Set([
-  "content-type",
   "accept",
   "anthropic-version",
   "anthropic-beta",
@@ -61,6 +60,10 @@ export function buildUpstreamHeaders(
       headers[name] = value;
     }
   }
+  // The body is JSON the scanner found to be UTF-8, whatever the agent
+  // said it was (a charset given with it could make the provider read it
+  // otherwise than the proxy did).
+  headers["content-type"] = "application/json";
   // The proxy reads usage from the answer, so it asks for it uncompressed;
   // one compressed all the same is decompressed (see `model-proxy.ts`).
   headers["accept-encoding"] = "identity";

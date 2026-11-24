@@ -60,10 +60,28 @@ export const proxyRefusals = {
     message:
       "Barrack's model proxy does not relay background or deferred requests: what the provider generated after answering could not be counted towards the usage cap.",
   },
+  modelRoutingRefused: {
+    status: 403,
+    errorType: "permission_error",
+    message:
+      "Barrack's model proxy relays this thread's requests only to its own model, and this request could be answered by another (OpenRouter's models, route, preset, provider options or a model-choosing plugin).",
+  },
   requestTooLarge: {
     status: 413,
     errorType: "request_too_large",
     message: "The request is larger than Barrack's model proxy relays.",
+  },
+  requestBodyTooSlow: {
+    status: 408,
+    errorType: "request_timeout",
+    message: "The request's body took longer to arrive than Barrack's model proxy waits.",
+  },
+  tooManyBytesAtOnce: {
+    status: 429,
+    errorType: "rate_limit_error",
+    message:
+      "This thread's requests, or its owner's, hold as many bytes at once as Barrack's model proxy allows them.",
+    retryAfterSeconds: 2,
   },
   tooManyAtOnce: {
     status: 429,
@@ -116,12 +134,15 @@ export function usageCapRefusal(explanation: string): ProxyRefusal {
   return { status: 403, errorType: "permission_error", message: explanation };
 }
 
-/** Writes the refusal as the format's own error body. */
+/** Writes the refusal as the format's own error body, unless the agent has hung up. */
 export function sendRefusal(
   response: ServerResponse,
   format: ProviderApiFormat | undefined,
   refusal: ProxyRefusal,
 ): void {
+  if (response.destroyed) {
+    return;
+  }
   if (response.headersSent) {
     response.destroy();
     return;

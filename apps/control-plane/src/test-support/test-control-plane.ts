@@ -29,6 +29,7 @@ import { OwnerModelAccess } from "../model-access/owner-model-access.js";
 import { assembleModelProxy } from "../model-proxy/assemble-model-proxy.js";
 import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
 import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
+import type { ModelProxy } from "../model-proxy/model-proxy.js";
 import type { ModelProxyLimits } from "../model-proxy/model-proxy-limits.js";
 import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
 import { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
@@ -181,6 +182,8 @@ export class TestControlPlane {
   readonly modelCredentials: ModelCredentials;
   readonly modelUsage: ModelUsage;
   readonly modelProxyTokens: ModelProxyTokens;
+  /** The model proxy itself, whose activity a test can read. */
+  readonly modelProxy: ModelProxy;
   /** Every line the control plane logged, at every level. */
   readonly logLines: string[];
   readonly #closeServer: () => Promise<void>;
@@ -196,6 +199,7 @@ export class TestControlPlane {
     modelCredentials: ModelCredentials;
     modelUsage: ModelUsage;
     modelProxyTokens: ModelProxyTokens;
+    modelProxy: ModelProxy;
     logLines: string[];
     closeServer: () => Promise<void>;
   }) {
@@ -209,6 +213,7 @@ export class TestControlPlane {
     this.modelCredentials = fields.modelCredentials;
     this.modelUsage = fields.modelUsage;
     this.modelProxyTokens = fields.modelProxyTokens;
+    this.modelProxy = fields.modelProxy;
     this.logLines = fields.logLines;
     this.#closeServer = fields.closeServer;
   }
@@ -342,8 +347,10 @@ export class TestControlPlane {
       modelCredentials,
       modelUsage,
       modelProxyTokens,
+      modelProxy,
       logLines,
       closeServer: async () => {
+        await modelProxy.shutDown(5_000);
         await server.close();
         await threadServices.operations.whenSettled();
       },

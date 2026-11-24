@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "model-catalogue.json"
+    "model-catalogue.json",
+    "model-limits.json"
   ],
   "scripts": {
     "build": "tsc --project tsconfig.build.json",

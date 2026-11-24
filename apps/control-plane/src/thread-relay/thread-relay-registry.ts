@@ -22,6 +22,8 @@ export type ThreadRelayRegistryOptions = {
   workspaces?: ThreadWorkspaces;
   modelAccess?: ThreadModelAccess;
   desktops?: ThreadDesktopState;
+  /** The lifecycle's clock, for when each supervisor was welcomed. */
+  clock?: () => Date;
   logger: Logger;
 };
 
@@ -52,9 +54,13 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
   readonly #options: ThreadRelayRegistryOptions;
   readonly #relaysByThreadId = new Map<string, ThreadRelay>();
   readonly #endings = new ThreadEndings();
+  /** When each thread's supervisor attached here now was welcomed; dropped with its relay. */
+  readonly #welcomedAt = new Map<string, Date>();
+  readonly #clock: () => Date;
 
   constructor(options: ThreadRelayRegistryOptions) {
     this.#options = options;
+    this.#clock = options.clock ?? (() => new Date());
   }
 
   /** Returns the relay the supervisor is now attached to. */
@@ -167,6 +173,11 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
     return this.#relaysByThreadId.get(threadId)?.isSupervisorAttached ?? false;
   }
 
+  /** When the supervisor attached here was welcomed, if one is. */
+  whenSupervisorWelcomed(threadId: string): Date | undefined {
+    return this.isSupervisorAttached(threadId) ? this.#welcomedAt.get(threadId) : undefined;
+  }
+
   #relayFor(threadId: string): ThreadRelay {
     const existingRelay = this.#relaysByThreadId.get(threadId);
     if (existingRelay !== undefined) {
@@ -176,7 +187,13 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
     const relay: ThreadRelay = new ThreadRelay({
       threadId,
       threadEventLog: this.#options.threadEventLog,
-      threadActivity: this.#options.threadActivity,
+      threadActivity: {
+        ...this.#options.threadActivity,
+        recordSupervisorAttached: (attachedThreadId) => {
+          this.#welcomedAt.set(attachedThreadId, this.#clock());
+          return this.#options.threadActivity.recordSupervisorAttached(attachedThreadId);
+        },
+      },
       ...(this.#options.workspaces === undefined ? {} : { workspaces: this.#options.workspaces }),
       ...(this.#options.modelAccess === undefined
         ? {}
@@ -199,6 +216,7 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
       return;
     }
     this.#relaysByThreadId.delete(relay.threadId);
+    this.#welcomedAt.delete(relay.threadId);
     logger.info("Dropped the thread's relay, which has no connections left");
   }
 }

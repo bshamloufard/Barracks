@@ -507,6 +507,35 @@ export function describeThreadStoreContract(
       );
     });
 
+    it("notes a supervisor attached again only if the sandbox still awaits it since the time read", async () => {
+      const store = await createEmptyStore();
+      const created = await createThread(store, "thread-a");
+      await changeTo(store, created, "running", secondsAfterStart(30));
+      await changeTo(store, await threadOrThrow(store, "thread-a"), "stopping");
+      await changeTo(store, await threadOrThrow(store, "thread-a"), "stopped");
+      await changeTo(
+        store,
+        await threadOrThrow(store, "thread-a"),
+        "starting",
+        secondsAfterStart(60),
+      );
+
+      await store.recordSupervisorAttached(
+        "thread-a",
+        secondsAfterStart(65),
+        secondsAfterStart(30),
+      );
+      const afterAStaleNote = await threadOrThrow(store, "thread-a");
+      await store.recordSupervisorAttached(
+        "thread-a",
+        secondsAfterStart(70),
+        secondsAfterStart(60),
+      );
+
+      expect(afterAStaleNote.awaitingSupervisorSince).toEqual(secondsAfterStart(60));
+      expect((await threadOrThrow(store, "thread-a")).awaitingSupervisorSince).toBeUndefined();
+    });
+
     it("fails a sandbox for want of its supervisor only if it still awaits it since the time read", async () => {
       const store = await createEmptyStore();
       const created = await createThread(store, "thread-a");

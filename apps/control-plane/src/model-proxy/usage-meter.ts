@@ -38,6 +38,11 @@ export type MeteredUsage = {
   isFinal: boolean;
   /** Characters of text, thinking and tool arguments seen generated. */
   generatedCharacters: number;
+  /**
+   * Whether the answer showed reasoning begin (a thinking block, a
+   * reasoning item, reasoning text), whose tokens may not all be shown.
+   */
+  sawReasoning: boolean;
 };
 
 /** An event longer than this without an end is not read (the answer still passes through). */
@@ -61,6 +66,7 @@ export class UsageMeter {
     cacheWriteTokens: 0,
     isFinal: false,
     generatedCharacters: 0,
+    sawReasoning: false,
   };
 
   constructor(format: ProviderApiFormat, contentType: string | undefined) {
@@ -171,10 +177,24 @@ const anthropicPayloadSchema = z.object({
     .optional()
     .catch(undefined),
   delta: z
-    .object({ text: textSchema, partial_json: textSchema, thinking: textSchema })
+    .object({
+      type: textSchema,
+      text: textSchema,
+      partial_json: textSchema,
+      thinking: textSchema,
+    })
     .optional()
     .catch(undefined),
+  content_block: z.object({ type: textSchema }).optional().catch(undefined),
 });
+
+/** Anthropic's content blocks, and their deltas, that carry reasoning, shown or not. */
+const anthropicReasoningTypes = new Set([
+  "thinking",
+  "redacted_thinking",
+  "thinking_delta",
+  "signature_delta",
+]);
 
 type AnthropicUsage = z.infer<typeof anthropicUsageSchema>;
 
@@ -193,7 +213,11 @@ function readAnthropicPayload(value: unknown, usage: MeteredUsage): void {
       readAnthropicUsage(payload.usage, usage);
       usage.isFinal = usage.inputTokens !== undefined && usage.outputTokens !== undefined;
       return;
+    case "content_block_start":
+      usage.sawReasoning ||= anthropicReasoningTypes.has(payload.content_block?.type ?? "");
+      return;
     case "content_block_delta":
+      usage.sawReasoning ||= anthropicReasoningTypes.has(payload.delta?.type ?? "");
       usage.generatedCharacters += lengthOf(
         payload.delta?.text,
         payload.delta?.partial_json,
@@ -238,6 +262,7 @@ const responsesPayloadSchema = openAiResponseSchema.extend({
   type: textSchema,
   delta: textSchema,
   response: openAiResponseSchema.optional().catch(undefined),
+  item: z.object({ type: textSchema }).optional().catch(undefined),
 });
 
 const finalResponseEvents = new Set([
@@ -252,6 +277,11 @@ function readResponsesPayload(value: unknown, usage: MeteredUsage): void {
     return;
   }
   const payload = parsed.data;
+  // A reasoning item is added when reasoning begins, whether or not its
+  // summary is asked for; its text, if any, comes in `response.reasoning_*`.
+  usage.sawReasoning ||=
+    (payload.type === "response.output_item.added" && payload.item?.type === "reasoning") ||
+    (payload.type?.startsWith("response.reasoning") ?? false);
   if (payload.type?.endsWith(".delta")) {
     usage.generatedCharacters += lengthOf(payload.delta);
     return;
@@ -280,6 +310,7 @@ const chatDeltaSchema = z
     content: textSchema,
     reasoning_content: textSchema,
     reasoning: textSchema,
+    reasoning_details: z.array(z.unknown()).optional().catch(undefined),
     tool_calls: z
       .array(
         z.object({ function: z.object({ arguments: textSchema }).optional().catch(undefined) }),
@@ -315,6 +346,9 @@ function readChatCompletionsPayload(value: unknown, usage: MeteredUsage): void {
   usage.modelId = payload.model ?? usage.modelId;
   for (const choice of payload.choices ?? []) {
     const delta = choice.delta ?? choice.message;
+    usage.sawReasoning ||=
+      lengthOf(delta?.reasoning_content, delta?.reasoning) > 0 ||
+      (delta?.reasoning_details?.length ?? 0) > 0;
     usage.generatedCharacters += lengthOf(
       delta?.content,
       delta?.reasoning_content,

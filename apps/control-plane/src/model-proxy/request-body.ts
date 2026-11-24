@@ -1,13 +1,39 @@
-import type { IncomingMessage } from "node:http";
 import type { ProviderApiFormat } from "@barrack/model-catalogue";
 import { maximumModelIdLength } from "@barrack/protocol";
+import { estimateInputTokens } from "./answer-usage.js";
+import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
+import {
+  findModelChangingRouting,
+  type OpenRouterRoutingFields,
+  openRouterRoutingFields,
+} from "./openrouter-routing.js";
 import { type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
+import {
+  type ReasoningFields,
+  type ReasoningRequest,
+  readReasoningRequest,
+  reasoningFields,
+} from "./reasoning-request.js";
+import { readTopLevelMembers } from "./request-body-members.js";
+
+/**
+ * How a request's JSON may be shaped. The pinned agent's own requests, for
+ * a conversation of a thousand turns with its tools and screenshots in each
+ * relayed format, nest at most eleven deep and have eight top-level
+ * members; these leave ample room for anything it sends and stop a body
+ * built to exhaust the scanner's memory.
+ */
+export const requestBodyShapeLimits: JsonBodyScannerLimits = {
+  maximumDepth: 128,
+  maximumTopLevelMembers: 256,
+  maximumTopLevelKeyBytes: 256,
+};
 
 /**
  * What the proxy reads from a relayed request's body before relaying it,
- * and the bytes it relays: the body as it parsed it, written out again, so
- * the provider is sent exactly what was checked (a body with a key twice,
- * say, cannot mean one thing here and another to the provider).
+ * and the bytes it relays: the body as received, but for the members it
+ * read, which are written out again as it parsed them (see
+ * `request-body-members.ts`).
  *
  * Request bodies otherwise pass through unchanged: nothing here is an
  * allow-list of what a request may contain, and a request may refer to
@@ -24,56 +50,102 @@ export type RelayedRequestBody = {
   isStreamed: boolean;
   /** The most output the request allows, when it says. */
   maximumOutputTokens: number | undefined;
+  /** The input the relayed body suggests, in tokens, for an answer cut short before the provider says. */
+  estimatedInputTokens: number;
+  /** Whether it asks the model to reason first, tells it not to, or says neither. */
+  reasoningRequest: ReasoningRequest;
 };
 
 export type BodyInspection =
   | { kind: "relayable"; body: RelayedRequestBody }
   | { kind: "refused"; refusal: ProxyRefusal; reason: string };
 
+/** The top-level members the proxy reads, in every format. */
+const readKeys = new Set([
+  "model",
+  "stream",
+  "stream_options",
+  "background",
+  "background_options",
+  "deferred",
+  "fallbacks",
+  "max_tokens",
+  "max_output_tokens",
+  "max_completion_tokens",
+  ...reasoningFields,
+]);
+
+/** OpenRouter's requests are also read for the fields that route them. */
+const openRouterReadKeys = new Set([...readKeys, ...openRouterRoutingFields]);
+
 /**
- * Checks a request's body, and makes the changes the proxy makes to it.
- * Refused: anything but a JSON object naming a model, and any request that
- * would detach the provider's generation from this one answer, since what
- * it then generated could never be counted.
+ * Checks a request's body, scanned as it arrived (`json-body-scanner.ts`),
+ * and makes the changes the proxy makes to it. Refused: anything but a
+ * JSON object naming a model, and any request that would detach the
+ * provider's generation from this one answer, since what it then generated
+ * could never be counted.
  */
-export function inspectRequestBody(format: ProviderApiFormat, received: Buffer): BodyInspection {
-  const parsed = parseJsonObject(received);
-  if (parsed === undefined) {
-    return refused(proxyRefusals.invalidRequestBody, "the body is not a JSON object");
+export function inspectRequestBody(
+  format: ProviderApiFormat,
+  providerId: string,
+  received: Buffer,
+  scanned: ScannedJsonBody,
+  maximumBytes: number,
+): BodyInspection {
+  const members = readTopLevelMembers(
+    received,
+    scanned,
+    providerId === "openrouter" ? openRouterReadKeys : readKeys,
+  );
+  if ("problem" in members) {
+    return refused(proxyRefusals.invalidRequestBody, members.problem);
   }
-  const model = parsed.model;
+  const fields = Object.fromEntries(members.values) as RequestFields;
+  const model = fields.model;
   if (typeof model !== "string" || model === "" || model.length > maximumModelIdLength) {
     return refused(proxyRefusals.invalidRequestBody, "the body names no model");
   }
-  const detachment = findDetachedGeneration(format, parsed);
+  const routing = providerId === "openrouter" ? findModelChangingRouting(fields) : undefined;
+  if (routing !== undefined) {
+    return refused(proxyRefusals.modelRoutingRefused, routing);
+  }
+  const detachment = findDetachedGeneration(format, fields);
   if (detachment !== undefined) {
     return refused(proxyRefusals.detachedGenerationRefused, detachment);
   }
-  const fallbackModels = readFallbackModels(format, parsed);
+  const fallbackModels = readFallbackModels(format, fields);
   if (fallbackModels === undefined) {
     return refused(
       proxyRefusals.invalidRequestBody,
       "its fallback models are not a list of models",
     );
   }
-  const isStreamed = parsed.stream === true;
-  if (format === "openai_chat_completions" && isStreamed) {
-    askForStreamedUsage(parsed);
+  const isStreamed = fields.stream === true;
+  const bytes = members.rebuild(
+    format === "openai_chat_completions" && isStreamed
+      ? new Map([["stream_options", askForStreamedUsage(fields.stream_options)]])
+      : new Map(),
+  );
+  if (bytes.length > maximumBytes) {
+    return refused(proxyRefusals.requestTooLarge, "the body written out again is too large");
   }
   return {
     kind: "relayable",
     body: {
-      bytes: Buffer.from(JSON.stringify(parsed)),
+      bytes,
       model,
       fallbackModels,
       isStreamed,
-      maximumOutputTokens: readMaximumOutputTokens(format, parsed),
+      maximumOutputTokens: readMaximumOutputTokens(format, fields),
+      estimatedInputTokens: estimateInputTokens(bytes.length, scanned),
+      reasoningRequest: readReasoningRequest(fields),
     },
   };
 }
 
 /** The fields the proxy reads, of a body that may hold anything else too. */
-type JsonObject = Record<string, unknown> &
+type RequestFields = ReasoningFields &
+  OpenRouterRoutingFields &
   Partial<
     Record<
       | "model"
@@ -90,17 +162,6 @@ type JsonObject = Record<string, unknown> &
     >
   >;
 
-function parseJsonObject(received: Buffer): JsonObject | undefined {
-  try {
-    const parsed: unknown = JSON.parse(received.toString("utf8"));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as JsonObject)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * A streamed Chat Completions answer reports its usage only when asked
  * (`stream_options.include_usage`); without it the proxy could count only
@@ -110,10 +171,9 @@ function parseJsonObject(received: Buffer): JsonObject | undefined {
  * changes only a request something else in the sandbox wrote.
  * https://platform.openai.com/docs/api-reference/chat/create#chat-create-stream_options
  */
-function askForStreamedUsage(body: JsonObject): void {
-  const options = body.stream_options;
+function askForStreamedUsage(options: unknown): object {
   const isObject = typeof options === "object" && options !== null && !Array.isArray(options);
-  body.stream_options = { ...(isObject ? options : {}), include_usage: true };
+  return { ...(isObject ? options : {}), include_usage: true };
 }
 
 /**
@@ -128,15 +188,18 @@ function askForStreamedUsage(body: JsonObject): void {
  *   https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions
  * Anthropic's Messages API has none; its batches are another path.
  */
-function findDetachedGeneration(format: ProviderApiFormat, body: JsonObject): string | undefined {
+function findDetachedGeneration(
+  format: ProviderApiFormat,
+  fields: RequestFields,
+): string | undefined {
   switch (format) {
     case "openai_responses":
-      if (isSet(body.background) || isSet(body.background_options)) {
+      if (isSet(fields.background) || isSet(fields.background_options)) {
         return "it asks for a background response";
       }
       return undefined;
     case "openai_chat_completions":
-      return isSet(body.deferred) ? "it asks for a deferred completion" : undefined;
+      return isSet(fields.deferred) ? "it asks for a deferred completion" : undefined;
     case "anthropic_messages":
       return undefined;
   }
@@ -148,16 +211,19 @@ function isSet(value: unknown): boolean {
 }
 
 /** Anthropic's `fallbacks`, `[{ model }]`, the models it may answer with if the one asked for cannot. */
-function readFallbackModels(format: ProviderApiFormat, body: JsonObject): string[] | undefined {
-  if (format !== "anthropic_messages" || body.fallbacks === undefined) {
+function readFallbackModels(
+  format: ProviderApiFormat,
+  fields: RequestFields,
+): string[] | undefined {
+  if (format !== "anthropic_messages" || fields.fallbacks === undefined) {
     return [];
   }
-  if (!Array.isArray(body.fallbacks)) {
+  if (!Array.isArray(fields.fallbacks)) {
     return undefined;
   }
   const models: string[] = [];
-  for (const fallback of body.fallbacks) {
-    const model: unknown = (fallback as JsonObject | null)?.model;
+  for (const fallback of fields.fallbacks) {
+    const model: unknown = (fallback as { model?: unknown } | null)?.model;
     if (typeof model !== "string") {
       return undefined;
     }
@@ -166,89 +232,28 @@ function readFallbackModels(format: ProviderApiFormat, body: JsonObject): string
   return models;
 }
 
-/** Each format's own field for the most output to generate; Chat Completions has two. */
-function readMaximumOutputTokens(format: ProviderApiFormat, body: JsonObject): number | undefined {
+/**
+ * Each format's own field for the most output to generate. Chat
+ * Completions has two, `max_completion_tokens` and the older `max_tokens`,
+ * and some of the hosts relayed honour only the older one, so the larger
+ * of those given counts.
+ */
+function readMaximumOutputTokens(
+  format: ProviderApiFormat,
+  fields: RequestFields,
+): number | undefined {
   const stated =
     format === "anthropic_messages"
-      ? body.max_tokens
+      ? [fields.max_tokens]
       : format === "openai_responses"
-        ? body.max_output_tokens
-        : (body.max_completion_tokens ?? body.max_tokens);
-  return Number.isSafeInteger(stated) && (stated as number) >= 0 ? (stated as number) : undefined;
+        ? [fields.max_output_tokens]
+        : [fields.max_completion_tokens, fields.max_tokens];
+  const counts = stated.filter(
+    (value): value is number => Number.isSafeInteger(value) && (value as number) >= 0,
+  );
+  return counts.length === 0 ? undefined : Math.max(...counts);
 }
 
 function refused(refusal: ProxyRefusal, reason: string): BodyInspection {
   return { kind: "refused", refusal, reason };
-}
-
-export type BodyReading =
-  | { kind: "read"; bytes: Buffer; release: () => void }
-  | { kind: "too_large" | "proxy_busy" | "agent_went_away" };
-
-/**
- * Bytes of request bodies held at once by this instance while they are
- * read and relayed, so that many large requests together cannot exhaust its
- * memory. Each request takes its share as its bytes arrive and gives it
- * back once relayed.
- */
-export class RequestBodyBudget {
-  readonly #limit: number;
-  #held = 0;
-
-  constructor(limit: number) {
-    this.#limit = limit;
-  }
-
-  /**
-   * Reads the whole body, refusing one larger than `maximumBytes` or one
-   * that would take the instance over its budget. A reading that ends in
-   * anything but `read` holds nothing.
-   */
-  read(request: IncomingMessage, maximumBytes: number): Promise<BodyReading> {
-    return new Promise((resolve) => {
-      const chunks: Buffer[] = [];
-      let taken = 0;
-      const giveBack = () => {
-        this.#held -= taken;
-        taken = 0;
-      };
-      const stop = (kind: "too_large" | "proxy_busy" | "agent_went_away") => {
-        request.removeAllListeners("data");
-        giveBack();
-        resolve({ kind });
-      };
-      request.on("data", (chunk: Buffer) => {
-        if (taken + chunk.length > maximumBytes) {
-          stop("too_large");
-          return;
-        }
-        if (this.#held + chunk.length > this.#limit) {
-          stop("proxy_busy");
-          return;
-        }
-        this.#held += chunk.length;
-        taken += chunk.length;
-        chunks.push(chunk);
-      });
-      request.once("end", () => {
-        let isReleased = false;
-        resolve({
-          kind: "read",
-          bytes: Buffer.concat(chunks),
-          release: () => {
-            if (!isReleased) {
-              isReleased = true;
-              giveBack();
-            }
-          },
-        });
-      });
-      request.once("error", () => stop("agent_went_away"));
-      request.once("close", () => {
-        if (!request.complete) {
-          stop("agent_went_away");
-        }
-      });
-    });
-  }
 }

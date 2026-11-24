@@ -7,6 +7,8 @@ import {
 import { catalogueFileUrl } from "./catalogue-file.js";
 import { isRelayedProvider } from "./relayed-providers.js";
 
+export { findLargestMaxOutputTokens, findModelLimits } from "./model-limits.js";
+export type { ModelLimits } from "./model-limits-file.js";
 export {
   findRelayedProvider,
   isRelayedProvider,

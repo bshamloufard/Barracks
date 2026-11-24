@@ -85,11 +85,18 @@ export class SandboxReconciler {
    * time read, so a supervisor whose attachment is noted meanwhile, which
    * does not move the version, still wins.
    *
-   * A thread whose supervisor is attached here is never failed for it: the
-   * note that it attached was lost (a failed write), and is made again
-   * instead, every sweep until it holds. Only the control plane the
-   * supervisor is attached to can know, so during a redeploy's overlap the
-   * other one relies on this one making the note before the deadline.
+   * A thread whose supervisor was welcomed here since its sandbox began
+   * awaiting one is never failed for it: the note that it attached was
+   * lost (a failed write), and is made again instead, every sweep until it
+   * holds, and only while the sandbox still awaits it since the time read.
+   * A supervisor welcomed earlier is not counted: a sandbox's supervisor is
+   * not disconnected when the sandbox stops, so it may be the stopped
+   * sandbox's, still attached after a quick stop and resume, and noting it
+   * would let a new sandbox whose own supervisor never comes run unfailed
+   * (and count, for idle shutdown, as its first attachment). Only the
+   * control plane the supervisor is attached to can know, so during a
+   * redeploy's overlap the other one relies on this one making the note
+   * before the deadline.
    */
   async #failIfSupervisorNeverAttached(thread: ThreadRecord): Promise<void> {
     const { sandbox, awaitingSupervisorSince } = thread;
@@ -97,8 +104,9 @@ export class SandboxReconciler {
     if (sandbox.state !== "running" || awaitingSupervisorSince === undefined) {
       return;
     }
-    if (this.#options.threadRuns.isSupervisorAttached(thread.threadId)) {
-      await this.#recordSupervisorAttachedAgain(thread.threadId);
+    const welcomedAt = this.#options.threadRuns.whenSupervisorWelcomed(thread.threadId);
+    if (welcomedAt !== undefined && welcomedAt.getTime() >= awaitingSupervisorSince.getTime()) {
+      await this.#recordSupervisorAttachedAgain(thread.threadId, awaitingSupervisorSince);
       return;
     }
     const deadline = timing.supervisorAttachmentDeadlineInMilliseconds;
@@ -134,14 +142,17 @@ export class SandboxReconciler {
     operations.stopAndFail(outcome.thread, reason);
   }
 
-  async #recordSupervisorAttachedAgain(threadId: string): Promise<void> {
+  async #recordSupervisorAttachedAgain(
+    threadId: string,
+    awaitingSupervisorSince: Date,
+  ): Promise<void> {
     const { threadStore, clock, logger } = this.#options;
     logger.warn(
       { threadId },
       "A thread's supervisor is attached but its sandbox is recorded as awaiting one; recording it attached again",
     );
     try {
-      await threadStore.recordSupervisorAttached(threadId, clock());
+      await threadStore.recordSupervisorAttached(threadId, clock(), awaitingSupervisorSince);
     } catch (error) {
       logger.error(
         { err: error, threadId },

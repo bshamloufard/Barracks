@@ -1,5 +1,13 @@
+import { findLargestMaxOutputTokens } from "@barrack/model-catalogue";
 import { describe, expect, it } from "vitest";
-import { defaultMaximumOutputTokens, describeAnswerUsage } from "./answer-usage.js";
+import { inspectWholeBody } from "../test-support/request-bodies.js";
+import {
+  defaultMaximumOutputTokens,
+  describeAnswerUsage,
+  mayReasonUnseen,
+  resolveMaximumOutputTokens,
+  tokensPerImage,
+} from "./answer-usage.js";
 import { UsageMeter } from "./usage-meter.js";
 
 /**
@@ -26,9 +34,15 @@ function meterOf(
   return meter.finish();
 }
 
-/** A streamed request of `requestBytes`, as the proxy read it. */
-function streamedRequest(requestBytes: number) {
-  return { model: "requested-model", requestBytes, maximumOutputTokens: 4_096, isStreamed: true };
+/** A streamed request whose body suggests `estimatedInputTokens`, as the proxy read it. */
+function streamedRequest(estimatedInputTokens: number) {
+  return {
+    model: "requested-model",
+    estimatedInputTokens,
+    maximumOutputTokens: 4_096,
+    isStreamed: true,
+    mayReasonUnseen: false,
+  };
 }
 
 const anthropicStart = {
@@ -164,7 +178,7 @@ describe("reading usage from an answer", () => {
         responseBytes: 2_000,
         usage,
       },
-      streamedRequest(4_000),
+      streamedRequest(1_000),
     );
 
     expect(usage.isFinal).toBe(false);
@@ -193,7 +207,7 @@ describe("reading usage from an answer", () => {
           responseBytes: 500,
           usage,
         },
-        streamedRequest(4_000),
+        streamedRequest(1_000),
       ),
     ).toMatchObject({
       source: "estimated",
@@ -220,7 +234,7 @@ describe("reading usage from an answer", () => {
           responseBytes: 30,
           usage,
         },
-        streamedRequest(100),
+        streamedRequest(25),
       ),
     ).toBeUndefined();
   });
@@ -237,9 +251,10 @@ describe("reading usage from an answer", () => {
         },
         {
           model: "a-model",
-          requestBytes: 4_000_000,
+          estimatedInputTokens: 1_000_000,
           maximumOutputTokens: 32_000,
           isStreamed: false,
+          mayReasonUnseen: false,
         },
       ),
     ).toEqual({
@@ -252,21 +267,6 @@ describe("reading usage from an answer", () => {
     });
   });
 
-  it("estimates an unanswered request that stated no maximum at a stated default", () => {
-    expect(
-      describeAnswerUsage(
-        {
-          upstreamStatus: undefined,
-          interruption: "timed_out",
-          wasRequestSent: true,
-          responseBytes: 0,
-          usage: undefined,
-        },
-        { model: "a-model", requestBytes: 400, maximumOutputTokens: undefined, isStreamed: true },
-      ),
-    ).toMatchObject({ source: "estimated", outputTokens: defaultMaximumOutputTokens });
-  });
-
   it("counts nothing for a request the provider never received whole", () => {
     expect(
       describeAnswerUsage(
@@ -277,7 +277,13 @@ describe("reading usage from an answer", () => {
           responseBytes: 0,
           usage: undefined,
         },
-        { model: "a-model", requestBytes: 400, maximumOutputTokens: 1_000, isStreamed: true },
+        {
+          model: "a-model",
+          estimatedInputTokens: 100,
+          maximumOutputTokens: 1_000,
+          isStreamed: true,
+          mayReasonUnseen: false,
+        },
       ),
     ).toBeUndefined();
   });
@@ -299,9 +305,42 @@ describe("reading usage from an answer", () => {
           responseBytes: 100,
           usage,
         },
-        { model: "a-model", requestBytes: 400, maximumOutputTokens: 128_000, isStreamed: false },
+        {
+          model: "a-model",
+          estimatedInputTokens: 100,
+          maximumOutputTokens: 128_000,
+          isStreamed: false,
+          mayReasonUnseen: false,
+        },
       ),
     ).toMatchObject({ source: "estimated", inputTokens: 100, outputTokens: 128_000 });
+  });
+
+  it("estimates the input from the body relayed: no whitespace, and each image at a stated figure", () => {
+    const screenshot = "iVBORw0KGgoAAAANSUhEUg".repeat(20_000);
+    const words = "word ".repeat(2_000);
+    const body = `{"model":"a-model","max_tokens":8,"messages":[{"role":"user","content":[
+      {"type":"text","text":"${words}"},
+      {"type":"image","source":{"type":"base64","media_type":"image/png","data":"${screenshot}"}},
+      {"type":"image","source":{"type":"base64","media_type":"image/png","data":"${screenshot}"}}
+    ]}]${" ".repeat(1_000_000)}}`;
+    const inspection = inspectWholeBody("anthropic_messages", body);
+
+    expect(inspection.kind).toBe("relayable");
+    const estimated = inspection.kind === "relayable" ? inspection.body.estimatedInputTokens : 0;
+    expect(estimated).toBeGreaterThanOrEqual(words.length / 4 + 2 * tokensPerImage);
+    expect(estimated).toBeLessThan(words.length / 4 + 2 * tokensPerImage + 200);
+  });
+
+  it("counts a request that states no maximum at its model's own, or its provider's largest", () => {
+    expect(resolveMaximumOutputTokens("openai", "gpt-4", undefined)).toBe(8_192);
+    expect(resolveMaximumOutputTokens("openai", "gpt-4", 100)).toBe(100);
+    expect(resolveMaximumOutputTokens("openai", "a-model-it-does-not-list", undefined)).toBe(
+      findLargestMaxOutputTokens("openai"),
+    );
+    expect(resolveMaximumOutputTokens("unlisted-provider", "a-model", undefined)).toBe(
+      defaultMaximumOutputTokens,
+    );
   });
 
   it("gives up reading, but keeps estimating, an event too long to hold", () => {
@@ -309,5 +348,109 @@ describe("reading usage from an answer", () => {
 
     expect(usage.isFinal).toBe(false);
     expect(usage.generatedCharacters).toBeGreaterThan(500_000);
+  });
+});
+
+describe("an answer cut short after reasoning it did not show", () => {
+  const cutShort = (usage: ReturnType<typeof meterOf>) => ({
+    upstreamStatus: 200,
+    interruption: "agent_went_away" as const,
+    wasRequestSent: true,
+    responseBytes: 1_000,
+    usage,
+  });
+  const streamed = (mayReasonUnseen: boolean) => ({
+    model: "a-model",
+    estimatedInputTokens: 100,
+    maximumOutputTokens: 64_000,
+    isStreamed: true,
+    mayReasonUnseen,
+  });
+
+  it("sees reasoning begin in each format, though its text is not shown", () => {
+    const responses = meterOf(
+      "openai_responses",
+      sse([
+        { type: "response.created", response: { model: "a-model", usage: null } },
+        { type: "response.output_item.added", item: { type: "reasoning", id: "rs" } },
+      ]),
+    );
+    const anthropic = meterOf(
+      "anthropic_messages",
+      sse([
+        anthropicStart,
+        { type: "content_block_start", index: 0, content_block: { type: "redacted_thinking" } },
+      ]),
+    );
+    const chat = meterOf(
+      "openai_chat_completions",
+      sse([{ model: "a-model", choices: [{ delta: { reasoning_content: "Hmm" } }] }]),
+    );
+    const plain = meterOf(
+      "openai_chat_completions",
+      sse([{ model: "a-model", choices: [{ delta: { content: "Hello" } }] }]),
+    );
+
+    expect([responses, anthropic, chat, plain].map((usage) => usage.sawReasoning)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it("counts the most output the request allowed once reasoning was seen or may have been hidden", () => {
+    const afterReasoning = meterOf(
+      "openai_responses",
+      sse([
+        { type: "response.output_item.added", item: { type: "reasoning", id: "rs" } },
+        { type: "response.output_text.delta", delta: "Hi" },
+      ]),
+    );
+    const plainText = meterOf(
+      "openai_responses",
+      sse([{ type: "response.output_text.delta", delta: "x".repeat(400) }]),
+    );
+
+    expect(describeAnswerUsage(cutShort(afterReasoning), streamed(false))?.outputTokens).toBe(
+      64_000,
+    );
+    expect(describeAnswerUsage(cutShort(plainText), streamed(true))?.outputTokens).toBe(64_000);
+    expect(describeAnswerUsage(cutShort(plainText), streamed(false))?.outputTokens).toBe(100);
+  });
+
+  it("reads whether a request asks for reasoning, in each format's own words", () => {
+    const reasoningOf = (format: Parameters<typeof inspectWholeBody>[0], fields: object) => {
+      const inspection = inspectWholeBody(format, { model: "m", ...fields });
+      return inspection.kind === "relayable" ? inspection.body.reasoningRequest : inspection.kind;
+    };
+    const anthropic = "anthropic_messages";
+    const responses = "openai_responses";
+    const chat = "openai_chat_completions";
+
+    expect(reasoningOf(anthropic, { thinking: { type: "enabled", budget_tokens: 9 } })).toBe("on");
+    expect(reasoningOf(anthropic, { thinking: { type: "adaptive" } })).toBe("on");
+    expect(reasoningOf(anthropic, { thinking: { type: "disabled" } })).toBe("off");
+    expect(reasoningOf(anthropic, {})).toBe("unstated");
+    expect(reasoningOf(responses, { reasoning: { effort: "high" } })).toBe("on");
+    expect(reasoningOf(responses, { reasoning: { effort: "none" } })).toBe("off");
+    expect(reasoningOf(chat, { reasoning_effort: "low" })).toBe("on");
+    expect(reasoningOf(chat, { reasoning_effort: "none" })).toBe("off");
+    expect(reasoningOf(chat, { reasoning: { enabled: false } })).toBe("off");
+    expect(reasoningOf(chat, { reasoning: { exclude: true } })).toBe("on");
+    expect(reasoningOf(chat, { thinking: { type: "disabled" } })).toBe("off");
+    expect(reasoningOf(chat, { chat_template_kwargs: { enable_thinking: true } })).toBe("on");
+    expect(reasoningOf(chat, { reasoning_effort: "high", thinking: { type: "disabled" } })).toBe(
+      "on",
+    );
+    expect(reasoningOf(chat, {})).toBe("unstated");
+  });
+
+  it("takes a model to reason unless told not to, but for Anthropic's, which reason only when asked", () => {
+    expect(mayReasonUnseen("anthropic", "claude-haiku-4-5", "unstated")).toBe(false);
+    expect(mayReasonUnseen("anthropic", "claude-haiku-4-5", "on")).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-4", "unstated")).toBe(false);
+    expect(mayReasonUnseen("openai", "a-model-it-does-not-list", "unstated")).toBe(true);
+    expect(mayReasonUnseen("openai", "a-model-it-does-not-list", "off")).toBe(false);
   });
 });

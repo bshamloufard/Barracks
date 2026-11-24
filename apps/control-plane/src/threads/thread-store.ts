@@ -62,9 +62,15 @@ export interface ThreadStore {
    * first attachment after it awaited one also records the thread active
    * then, so idle shutdown gives the sandbox a whole idle period from when
    * it could first be used. It does not change the version: no operation
-   * under way depends on it.
+   * under way depends on it. With `onlyIfAwaitingSupervisorSince`, only
+   * while the sandbox still awaits its supervisor since that time, as when
+   * reconciliation notes again an attachment whose note was lost.
    */
-  recordSupervisorAttached(threadId: string, at: Date): Promise<void>;
+  recordSupervisorAttached(
+    threadId: string,
+    at: Date,
+    onlyIfAwaitingSupervisorSince?: Date,
+  ): Promise<void>;
 
   /**
    * Switches the thread's model, if it exists and belongs to `ownerUserId`;
