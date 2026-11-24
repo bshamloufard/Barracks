@@ -149,6 +149,65 @@ describe("a client connecting to a thread", () => {
     expect(sequencesOf(client)).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
+  it("is sent the supervisor status and streamed text as they are when its replay ends, not as they changed during it", async () => {
+    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const observer = await controlPlane.connectClient(threadId);
+    await recordAgentEvents(supervisor, observer, 1, 2);
+    const readGates = controlPlane.threadEventLog.holdNextRead();
+
+    const connecting = controlPlane.connectClient(threadId);
+    await readGates.beforeReading.reached;
+    for (const appendedText of ["Hel", "lo"]) {
+      supervisor.sendTextFragment({
+        messageId: "assistant-1",
+        contentBlockIndex: 0,
+        contentBlockType: "text",
+        appendedText,
+      });
+    }
+    await supervisor.close();
+    await observer.inbox.waitFor("told the supervisor disconnected", isSupervisorStatus(false));
+    readGates.beforeReading.release();
+    readGates.afterReading.release();
+    const client = await connecting;
+    await client.inbox.waitFor("a fragment", (message) => message.type === "stream_fragment");
+
+    expect(client.inbox.messages.slice(3)).toEqual([
+      { type: "supervisor_connection_status", isSupervisorConnected: false },
+      {
+        type: "stream_fragment",
+        fragment: {
+          type: "assistant_text_fragment",
+          messageId: "assistant-1",
+          contentBlockIndex: 0,
+          contentBlockType: "text",
+          appendedText: "Hello",
+        },
+      },
+    ]);
+  });
+
+  it("is sent nothing more once it detaches in the middle of its replay", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    relay.attachSupervisor(supervisor);
+    sendAgentEvent(relay, supervisor, agentRunStarted);
+    await allPendingWorkSettled();
+    const readGates = threadEventLog.holdNextRead();
+    const client = new FakeClientConnection();
+
+    const replay = relay.attachClient(client, 0);
+    await readGates.beforeReading.reached;
+    relay.detachClient(client);
+    sendAgentEvent(relay, supervisor, toolExecutionStarted("call-1"));
+    await allPendingWorkSettled();
+    readGates.beforeReading.release();
+    readGates.afterReading.release();
+    await replay;
+
+    expect(client.inbox.messages).toEqual([]);
+  });
+
   it("receives live events after its replay without a gap", async () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const observer = await controlPlane.connectClient(threadId);
