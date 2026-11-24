@@ -10,7 +10,7 @@
  * apps/sandbox-supervisor/src/pi/pi-environment.ts); keep the two the same.
  * Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately absent.
  */
-const forwardedModelCredentialNames = [
+export const forwardedModelCredentialNames = [
   "ANTHROPIC_API_KEY",
   "ANT_LING_API_KEY",
   "OPENAI_API_KEY",

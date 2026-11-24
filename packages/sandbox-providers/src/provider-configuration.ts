@@ -84,6 +84,13 @@ const localProcessVariablesSchema = z.object({
   BARRACK_LOCAL_STOP_TIMEOUT_SECONDS: positiveWholeNumber.default(15),
 });
 
+/** The variables each provider reads, besides `BARRACK_SANDBOX_PROVIDER` itself. */
+export const sandboxProviderVariableNames = {
+  docker: Object.keys(dockerVariablesSchema.shape),
+  daytona: Object.keys(daytonaVariablesSchema.shape),
+  "local-process": Object.keys(localProcessVariablesSchema.shape),
+};
+
 const providerKinds = ["fake", "docker", "daytona", "local-process"] as const;
 const providerKindSchema = z.enum(providerKinds);
 

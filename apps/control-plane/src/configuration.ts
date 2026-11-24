@@ -74,6 +74,9 @@ const environmentSchema = z
 
 type Settings = z.infer<typeof environmentSchema>;
 
+/** Every variable the control plane itself reads; each provider reads its own as well. */
+export const controlPlaneVariableNames = Object.keys(environmentSchema.shape);
+
 export type LogLevel = (typeof logLevels)[number];
 
 export type ControlPlaneConfiguration = {

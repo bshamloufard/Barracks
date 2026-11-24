@@ -17,6 +17,7 @@ export {
 export {
   readSandboxProviderConfiguration,
   type SandboxProviderConfiguration,
+  sandboxProviderVariableNames,
   type SandboxProviderConfigurationResult,
 } from "./provider-configuration.js";
 export type {

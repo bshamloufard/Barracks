@@ -11,7 +11,7 @@
  * supervisor sets itself (no version checks, no telemetry, the agent's own
  * directory).
  */
-const forwardedPiSettingNames = [
+export const forwardedPiSettingNames = [
   // No automatic network activity, such as model catalogue refreshes, for
   // sandboxes without general internet access.
   "PI_OFFLINE",
