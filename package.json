@@ -16,7 +16,9 @@
     "format": "biome check --write .",
     "typecheck": "pnpm build:packages && tsc --project tsconfig.json && pnpm --recursive typecheck",
     "test": "pnpm build:packages && vitest run",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "test-database:start": "docker run --detach --rm --name barrack-test-database --publish 127.0.0.1:54329:5432 --env POSTGRES_USER=barrack --env POSTGRES_PASSWORD=barrack --env POSTGRES_DB=barrack_test --tmpfs /var/lib/postgresql/data postgres:17.12-alpine && until docker exec barrack-test-database pg_isready --host 127.0.0.1 --username barrack --quiet; do sleep 0.2; done && echo 'Ready. Run: export BARRACK_TEST_DATABASE_URL=postgres://barrack:barrack@127.0.0.1:54329/barrack_test'",
+    "test-database:stop": "docker stop barrack-test-database"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
