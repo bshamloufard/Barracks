@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeAnswerUsage } from "./answer-usage.js";
+import { defaultMaximumOutputTokens, describeAnswerUsage } from "./answer-usage.js";
 import { UsageMeter } from "./usage-meter.js";
 
 /**
@@ -199,7 +199,7 @@ describe("reading usage from an answer", () => {
       source: "estimated",
       inputTokens: 1_000,
       outputTokens: 20,
-      modelId: "unknown",
+      modelId: "requested-model",
     });
   });
 
@@ -223,6 +223,85 @@ describe("reading usage from an answer", () => {
         streamedRequest(100),
       ),
     ).toBeUndefined();
+  });
+
+  it("estimates a request sent whole but never answered at the most output it allowed", () => {
+    expect(
+      describeAnswerUsage(
+        {
+          upstreamStatus: undefined,
+          interruption: "agent_went_away",
+          wasRequestSent: true,
+          responseBytes: 0,
+          usage: undefined,
+        },
+        {
+          model: "a-model",
+          requestBytes: 4_000_000,
+          maximumOutputTokens: 32_000,
+          isStreamed: false,
+        },
+      ),
+    ).toEqual({
+      modelId: "a-model",
+      source: "estimated",
+      inputTokens: 1_000_000,
+      outputTokens: 32_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("estimates an unanswered request that stated no maximum at a stated default", () => {
+    expect(
+      describeAnswerUsage(
+        {
+          upstreamStatus: undefined,
+          interruption: "timed_out",
+          wasRequestSent: true,
+          responseBytes: 0,
+          usage: undefined,
+        },
+        { model: "a-model", requestBytes: 400, maximumOutputTokens: undefined, isStreamed: true },
+      ),
+    ).toMatchObject({ source: "estimated", outputTokens: defaultMaximumOutputTokens });
+  });
+
+  it("counts nothing for a request the provider never received whole", () => {
+    expect(
+      describeAnswerUsage(
+        {
+          upstreamStatus: undefined,
+          interruption: "upstream_failed",
+          wasRequestSent: false,
+          responseBytes: 0,
+          usage: undefined,
+        },
+        { model: "a-model", requestBytes: 400, maximumOutputTokens: 1_000, isStreamed: true },
+      ),
+    ).toBeUndefined();
+  });
+
+  it("estimates a non-streamed answer without the provider's figures at the most output it allowed", () => {
+    const usage = meterOf(
+      "openai_responses",
+      JSON.stringify({ object: "response", status: "completed", model: "a-model", usage: null }),
+      5,
+      "application/json",
+    );
+
+    expect(
+      describeAnswerUsage(
+        {
+          upstreamStatus: 200,
+          interruption: undefined,
+          wasRequestSent: true,
+          responseBytes: 100,
+          usage,
+        },
+        { model: "a-model", requestBytes: 400, maximumOutputTokens: 128_000, isStreamed: false },
+      ),
+    ).toMatchObject({ source: "estimated", inputTokens: 100, outputTokens: 128_000 });
   });
 
   it("gives up reading, but keeps estimating, an event too long to hold", () => {

@@ -6,7 +6,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { developmentAccessToken } from "../authentication/development-single-user.js";
+import {
+  developmentAccessToken,
+  developmentUserId,
+} from "../authentication/development-single-user.js";
 import {
   callModelProxy,
   type ProxyAccess,
@@ -66,6 +69,11 @@ async function startThreadRelayingTo(
 
 function pause(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** The thread a proxy address is for: `/threads/{threadId}/model-proxy/{providerId}`. */
+function threadIdOf(access: ProxyAccess): string {
+  return access.basePath.split("/")[2] ?? "";
 }
 
 describe("the model proxy as a streaming path", () => {
@@ -185,6 +193,53 @@ describe("the model proxy as a streaming path", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");
+  });
+
+  it("counts a request the agent abandons before the provider answers, at the most output it allowed", async () => {
+    let receivedBytes = 0;
+    const upstreamOrigin = await startUpstream((request, response) => {
+      request.on("data", (chunk: Buffer) => {
+        receivedBytes += chunk.length;
+      });
+      // A non-streamed answer: the headers come only once it is all generated.
+      request.on("end", () => {
+        setTimeout(() => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ type: "message", model: "a-model", usage: {} }));
+        }, 1_500);
+      });
+    });
+    const access = await startThreadRelayingTo(upstreamOrigin);
+    const threadId = threadIdOf(access);
+    const conversation = "x".repeat(600_000);
+    const hangUp = new AbortController();
+    setTimeout(() => hangUp.abort(), 700);
+
+    await callModelProxy(requireControlPlane(), access, relayedFormatExamples.anthropic, "", {
+      body: JSON.stringify({
+        model: "a-model",
+        max_tokens: 32_000,
+        messages: [{ role: "user", content: conversation }],
+      }),
+      signal: hangUp.signal,
+    }).catch(() => undefined);
+
+    await expect
+      .poll(() => requireControlPlane().modelUsage.listForThread(developmentUserId, threadId))
+      .toEqual([
+        expect.objectContaining({
+          modelId: "a-model",
+          source: "estimated",
+          outputTokens: 32_000,
+          inputTokens: expect.any(Number),
+        }),
+      ]);
+    const [estimate] = await requireControlPlane().modelUsage.listForThread(
+      developmentUserId,
+      threadId,
+    );
+    expect(receivedBytes).toBeGreaterThan(600_000);
+    expect(estimate?.inputTokens).toBeGreaterThan(150_000);
   });
 
   it("never returns the owner's key, in a header or the body, whatever the provider echoes", async () => {
