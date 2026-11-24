@@ -2,6 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { clientConfigurationPath, clientConfigurationSchema } from "@barrack/protocol";
+import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { testDockerSettings } from "./docker-environment.js";
 import { repositoryRoot, ServiceProcess, tsxLoaderUrl } from "./service-process.js";
 
@@ -41,6 +43,8 @@ export type RunningControlPlane = {
   webSocketBaseUrl: string;
   /** For example `http://127.0.0.1:41234`. */
   httpBaseUrl: string;
+  /** A signed-in test user's access token, which every request and client connection carries. */
+  accessToken: string;
   process: ServiceProcess;
   /** Stops the control plane, which stops the supervisors it started, and removes what it left. */
   stop(): Promise<void>;
@@ -50,6 +54,11 @@ export type RunningControlPlane = {
  * Starts the real control plane from its sources. Its port is picked before
  * it starts, because sandboxes are told the URL to reach it at when they are
  * created.
+ *
+ * On a loopback address it runs in development mode, as `pnpm dev` does.
+ * Anywhere else (where Docker sandboxes can reach it) development mode is
+ * refused, so it verifies real tokens, from a test identity issuer standing
+ * in for Supabase, and admits only the one test user.
  */
 export async function startControlPlane(
   options: ControlPlaneOptions,
@@ -57,6 +66,7 @@ export async function startControlPlane(
   const host = options.host ?? "127.0.0.1";
   const port = await findFreePort(host);
   const sandboxes = await sandboxVariables(options.sandboxes, port);
+  const authentication = await authenticationFor(host);
   const controlPlane = new ServiceProcess("apps/control-plane/src/main.ts", {
     PATH: searchPath,
     HOME: homeDirectory,
@@ -64,6 +74,7 @@ export async function startControlPlane(
     BARRACK_CONTROL_PLANE_HOST: host,
     BARRACK_CONTROL_PLANE_PORT: String(port),
     BARRACK_ALLOWED_CLIENT_ORIGINS: testClientOrigin,
+    ...authentication.variables,
     ...agentVariables(options.agent ?? { harness: "fake" }),
     ...sandboxes.variables,
   });
@@ -71,15 +82,60 @@ export async function startControlPlane(
     "the control plane to listen",
     ({ msg }) => msg === "Control plane listening",
   );
+  const httpBaseUrl = `http://${host}:${port}`;
   return {
     webSocketBaseUrl: `ws://${host}:${port}`,
-    httpBaseUrl: `http://${host}:${port}`,
+    httpBaseUrl,
+    accessToken: await authentication.signIn(httpBaseUrl),
     process: controlPlane,
     async stop() {
       await controlPlane.stop();
+      await authentication.stop();
       await sandboxes.removeLeftovers();
     },
   };
+}
+
+type TestAuthentication = {
+  variables: NodeJS.ProcessEnv;
+  /** Signs the test user in, once the control plane at `httpBaseUrl` is listening. */
+  signIn: (httpBaseUrl: string) => Promise<string>;
+  stop: () => Promise<void>;
+};
+
+const testUser = { userId: "5e1f0c3a-6b7d-4c2e-9f8a-0d1b2c3d4e5f", email: "tester@example.com" };
+
+async function authenticationFor(host: string): Promise<TestAuthentication> {
+  if (host === "127.0.0.1") {
+    return {
+      variables: { BARRACK_AUTHENTICATION: "development-single-user" },
+      signIn: readDevelopmentAccessToken,
+      stop: async () => undefined,
+    };
+  }
+  const issuer = await TestIdentityIssuer.start();
+  return {
+    variables: {
+      BARRACK_AUTHENTICATION: "supabase",
+      BARRACK_SUPABASE_URL: issuer.supabaseUrl,
+      BARRACK_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_end_to_end_test",
+      BARRACK_ALLOWED_USER_EMAILS: testUser.email,
+    },
+    signIn: () => issuer.mintAccessToken(testUser),
+    stop: () => issuer.close(),
+  };
+}
+
+/** Development mode hands its one user's token to any client that asks, as the web page does. */
+async function readDevelopmentAccessToken(httpBaseUrl: string): Promise<string> {
+  const response = await fetch(`${httpBaseUrl}${clientConfigurationPath}`);
+  const { authentication } = clientConfigurationSchema.parse(await response.json());
+  if (authentication.method !== "development-single-user") {
+    throw new Error(
+      `Expected development mode, but the control plane uses ${authentication.method}.`,
+    );
+  }
+  return authentication.accessToken;
 }
 
 function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {

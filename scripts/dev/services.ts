@@ -23,7 +23,9 @@ export function controlPlaneService(settings: DevSettings): ServiceDefinition {
     ...runTypeScriptEntryPoint(settings, "apps/control-plane/src/main.ts"),
     environment: {
       ...process.env,
-      // Clients are not authenticated yet, so it must never listen beyond this machine.
+      // No sign-in: every client is one fixed local user. The control plane
+      // allows that only on a loopback address, so it listens on no other.
+      BARRACK_AUTHENTICATION: "development-single-user",
       BARRACK_CONTROL_PLANE_HOST: "127.0.0.1",
       BARRACK_CONTROL_PLANE_PORT: String(settings.controlPlanePort),
       ...localProcessSandboxVariables(settings),

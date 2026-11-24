@@ -37,18 +37,14 @@ afterAll(async () => {
 
 /** A new thread, and a client watching it once the thread's supervisor has connected. */
 async function startThread(): Promise<{ threadId: string; client: TestClient }> {
-  const { threadId } = await createThread(controlPlane.httpBaseUrl);
+  const { threadId } = await createThread(controlPlane);
   const client = await connectClient(threadId, 0);
   await client.waitUntilSupervisorIsConnected();
   return { threadId, client };
 }
 
 async function connectClient(threadId: string, lastSeenSequence: number): Promise<TestClient> {
-  const client = await TestClient.connect(
-    controlPlane.webSocketBaseUrl,
-    threadId,
-    lastSeenSequence,
-  );
+  const client = await TestClient.connect(controlPlane, threadId, lastSeenSequence);
   clients.push(client);
   return client;
 }

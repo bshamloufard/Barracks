@@ -2,10 +2,10 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 /**
- * What `pnpm dev` runs: a control plane that creates each thread's sandbox
- * as a directory and a supervisor process on this machine (the
- * local-process provider, which isolates nothing), viewed through the web
- * client's dev server.
+ * What `pnpm dev` runs: a control plane in development mode (no sign-in, one
+ * fixed local user) that creates each thread's sandbox as a directory and a
+ * supervisor process on this machine (the local-process provider, which
+ * isolates nothing), viewed through the web client's dev server.
  */
 export type DevSettings = {
   repositoryRoot: string;

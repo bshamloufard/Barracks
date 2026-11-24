@@ -129,11 +129,11 @@ if (unavailableReason !== undefined) {
       if (controlPlane === undefined || modelServer === undefined) {
         throw new Error("The control plane or the mock model did not start.");
       }
-      const { threadId } = await createThread(controlPlane.httpBaseUrl);
+      const { threadId } = await createThread(controlPlane);
       threadIds.push(threadId);
-      await waitUntilSandboxIsReady(controlPlane.httpBaseUrl, threadId);
+      await waitUntilSandboxIsReady(controlPlane, threadId);
       const sandboxId = findSandboxIdOf(threadId);
-      const client = await TestClient.connect(controlPlane.webSocketBaseUrl, threadId, 0);
+      const client = await TestClient.connect(controlPlane, threadId, 0);
       clients.push(client);
       await client.waitUntil("the sandbox's supervisor has connected", supervisorIs(true));
       writeFileInSandboxAsAgent(
