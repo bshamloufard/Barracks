@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
 } from "@barrack/fake-github";
 import {
   apiErrorResponseSchema,
+  buildPublicationBundleUploadPath,
   buildPublishThreadApiPath,
   type CreatePublicationBundle,
   type ThreadEvent,
@@ -421,7 +422,7 @@ describe("publishing a thread's branch", () => {
     expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
   });
 
-  it("takes an upload only with the thread's supervisor token, and only for a publication under way", async () => {
+  it("takes an upload only with the thread's supervisor token, and only for a publication under way, refusing an unknown thread as a wrong token", async () => {
     const thread = await startPublishingThread();
     const other = await startPublishingThread();
     const request = {
@@ -442,10 +443,21 @@ describe("publishing a thread's branch", () => {
       Buffer.from("x"),
       controlPlane.supervisorTokenGivenFor(thread.threadId),
     );
+    const toAThreadThatDoesNotExist = await upload(
+      {
+        ...request,
+        uploadPath: buildPublicationBundleUploadPath(randomUUID(), request.publicationId),
+      },
+      Buffer.from("x"),
+      controlPlane.supervisorTokenGivenFor(thread.threadId),
+    );
 
-    expect([withoutToken.status, withAnotherThreadsToken.status, notUnderWay.status]).toEqual([
-      401, 401, 404,
-    ]);
+    expect([
+      withoutToken.status,
+      withAnotherThreadsToken.status,
+      notUnderWay.status,
+      toAThreadThatDoesNotExist.status,
+    ]).toEqual([401, 401, 404, 401]);
   });
 
   it("is refused, before the sandbox is asked anything, once GitHub says the user can no longer push", async () => {

@@ -1,9 +1,11 @@
 import {
+  buildPublicationBundleUploadPath,
   buildThreadApiPath,
   type ThreadSummary,
   threadListResponseSchema,
   threadResponseSchema,
   threadsApiPath,
+  workBranchFor,
 } from "@barrack/protocol";
 import {
   FakeSandboxProvider,
@@ -343,6 +345,53 @@ describe("a creation taken over from a control plane that has gone", () => {
     expect(controlPlane.sandboxProvider.sandboxIds()).toHaveLength(1);
     expect(await acceptsSupervisorToken(threadId, firstAttemptsToken)).toBe(true);
     expect(await acceptsSupervisorToken(threadId, "a token nobody was given")).toBe(false);
+  });
+
+  it("still records a thread's repository once, and tells whichever supervisor attaches to clone it", async () => {
+    const threadStore = new InMemoryThreadStore();
+    const clock = new ControllableClock();
+    await start({ threadStore, clock: clock.now });
+    loseRecordsOfRunning(threadStore, 2);
+    const recordNewThread = vi.spyOn(threadStore.repositories, "recordNewThread");
+
+    const response = await controlPlane.postThread(
+      browserHeaders(developmentAccessToken),
+      JSON.stringify({ repository: { url: "https://example.com/octo/app.git", access: "none" } }),
+    );
+    expect(response.status).toBe(201);
+    const { threadId } = threadResponseSchema.parse(await response.json()).thread;
+    await controlPlane.whenOperationsSettle();
+    const firstAttemptsToken = controlPlane.supervisorTokenGivenFor(threadId);
+    await takeOverLapsedOperations(clock);
+    await takeOverLapsedOperations(clock);
+    const supervisor = await controlPlane.connectSupervisor({
+      threadId,
+      supervisorToken: firstAttemptsToken,
+    });
+    const preparation = await supervisor.inbox.waitFor(
+      "the workspace's description",
+      (message) => message.type === "prepare_workspace",
+    );
+    const uploadWith = (token: string) =>
+      fetch(
+        `${controlPlane.httpBaseUrl}${buildPublicationBundleUploadPath(threadId, "none-asked-for")}`,
+        { method: "PUT", headers: { Authorization: `Bearer ${token}` }, body: "bundle" },
+      );
+
+    expect(recordNewThread).toHaveBeenCalledTimes(1);
+    expect((await fetchThread(threadId)).repository).toMatchObject({
+      url: "https://example.com/octo/app.git",
+      access: "none",
+    });
+    expect(preparation).toMatchObject({
+      repository: {
+        url: "https://example.com/octo/app.git",
+        access: "none",
+        workBranch: workBranchFor(threadId),
+      },
+    });
+    expect((await uploadWith(firstAttemptsToken)).status).toBe(404);
+    expect((await uploadWith("a token nobody was given")).status).toBe(401);
   });
 });
 
