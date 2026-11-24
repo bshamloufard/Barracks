@@ -3,16 +3,18 @@ import { ControllableClock } from "../test-support/controllable-clock.js";
 import { InMemoryModelProxyTokenStore } from "./in-memory-model-proxy-token-store.js";
 import { ModelProxyTokens, recentlyAcceptedForInMilliseconds } from "./model-proxy-tokens.js";
 
-const halfTheirTime = recentlyAcceptedForInMilliseconds / 2;
+/** How long after its last lookup a remembered token is let in from memory alone. */
+const lookedUpAgainAfter = 15_000;
 
 /**
- * A token the database accepted moments ago is accepted again from memory,
- * so a flood of wrong tokens, which must each be looked up, cannot keep an
- * agent that is using its own from being let in, however long it works:
- * past half its time, the next request has it looked up again, and
- * remembered afresh or forgotten. It stops being so the moment its
- * thread's tokens are revoked or retired here, including by a lookup that
- * raced the revocation.
+ * A token the database accepted moments ago is remembered, so a flood of
+ * wrong tokens, which must each be looked up within a shared bound, cannot
+ * keep an agent that is using its own from being let in, however long it
+ * works: it stays remembered while it is used (a request beginning or
+ * ending) every 30 seconds, and past 15 seconds since its last lookup the
+ * next request has it looked up again, and remembered afresh or forgotten.
+ * It is forgotten the moment its thread's tokens are revoked or retired
+ * here, including by a lookup that raced the revocation.
  */
 async function tokensWithOneMinted(store = new InMemoryModelProxyTokenStore()) {
   const clock = new ControllableClock();
@@ -76,15 +78,47 @@ describe("tokens accepted moments ago", () => {
     expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("not_remembered");
   });
 
-  it("are due to be looked up again after half their time, and renewed by a lookup that accepts them", async () => {
+  it("are due to be looked up again 15 seconds after their last lookup, and renewed by a lookup that accepts them", async () => {
     const { clock, tokens, token } = await tokensWithOneMinted();
     await tokens.isAccepted("thread-a", "anthropic", token);
 
-    clock.advanceBy(halfTheirTime + 1);
+    clock.advanceBy(lookedUpAgainAfter + 1);
     expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("due_for_renewal");
     expect(await tokens.isAccepted("thread-a", "anthropic", token)).toBe(true);
-    clock.advanceBy(halfTheirTime);
+    clock.advanceBy(lookedUpAgainAfter);
     expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("fresh");
+  });
+
+  it("stay remembered while each use, a request beginning or ending, follows the last within 30 seconds", async () => {
+    const { clock, tokens, token } = await tokensWithOneMinted();
+    await tokens.isAccepted("thread-a", "anthropic", token);
+
+    clock.advanceBy(10_000);
+    expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("fresh");
+    // That request lasts 40 seconds, then ends.
+    clock.advanceBy(40_000);
+    tokens.noteUsed("thread-a", "anthropic", token);
+    clock.advanceBy(recentlyAcceptedForInMilliseconds - 1);
+    expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("due_for_renewal");
+    clock.advanceBy(recentlyAcceptedForInMilliseconds + 1);
+    expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("not_remembered");
+  });
+
+  it("stay forgotten once revoked or refused, whatever request ends", async () => {
+    const { tokens, token, store } = await tokensWithOneMinted();
+    await tokens.isAccepted("thread-a", "anthropic", token);
+    await tokens.revokeThread("thread-a");
+    tokens.noteUsed("thread-a", "anthropic", token);
+    const afterRevoking = tokens.recallAcceptance("thread-a", "anthropic", token);
+
+    const another = await tokens.mint("thread-a", "anthropic");
+    await tokens.isAccepted("thread-a", "anthropic", another);
+    await store.revokeThread("thread-a");
+    await tokens.isAccepted("thread-a", "anthropic", another);
+    tokens.noteUsed("thread-a", "anthropic", another);
+
+    expect(afterRevoking).toBe("not_remembered");
+    expect(tokens.recallAcceptance("thread-a", "anthropic", another)).toBe("not_remembered");
   });
 
   it("are forgotten once a lookup no longer accepts them, as when another instance revoked them", async () => {

@@ -83,6 +83,11 @@ export class ModelProxyAuthorization {
     return this.#options.tokens.isAccepted(request.threadId, request.providerId, presentedToken);
   }
 
+  /** Notes that a request let in with the token has ended (see `ModelProxyTokens.noteUsed`). */
+  noteAuthenticationUsed(request: ProxyAuthorizationRequest, presentedToken: string): void {
+    this.#options.tokens.noteUsed(request.threadId, request.providerId, presentedToken);
+  }
+
   /**
    * What this instance remembers of the token, from memory alone (see
    * `ModelProxyTokens.recallAcceptance`): unless `fresh`, it must be looked

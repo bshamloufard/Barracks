@@ -254,7 +254,13 @@ export class ModelProxy {
    */
   async #serve(exchange: ProxyExchange): Promise<void> {
     const presentedToken = await this.#authenticate(exchange);
-    if (presentedToken === undefined || this.#refuseIfEnded(exchange) || !this.#admit(exchange)) {
+    if (presentedToken === undefined) {
+      return;
+    }
+    exchange.hold(() =>
+      this.#options.authorization.noteAuthenticationUsed(exchange.target, presentedToken),
+    );
+    if (this.#refuseIfEnded(exchange) || !this.#admit(exchange)) {
       return;
     }
     const owner = await this.#authorizeOwner(exchange);
@@ -281,12 +287,13 @@ export class ModelProxy {
    * be one is refused without a lookup, and lookups for callers not yet
    * authenticated are bounded for the whole instance, so nobody who lacks
    * the token can use up a thread's allowance or make the database work
-   * without limit. A token a lookup accepted in the last 30 seconds is
-   * accepted again without one, outside that bound, and one accepted more
-   * than 15 seconds ago is looked up again outside it too (only a caller
-   * holding a remembered token gets that far), so strangers using the
-   * bound up cannot keep a working agent out however long it works. The
-   * refusal is the same whether the thread exists or not.
+   * without limit. A token this instance remembers (accepted by a lookup,
+   * and used here in the last 30 seconds) is let in without the bound:
+   * from memory if its last lookup was in the last 15 seconds, otherwise
+   * after a lookup made outside it (only a caller holding a remembered
+   * token gets that far). So strangers using the bound up cannot keep out
+   * an agent at work, however long it works. The refusal is the same
+   * whether the thread exists or not.
    */
   async #authenticate(exchange: ProxyExchange): Promise<string | undefined> {
     const { request, response, route, target, logger } = exchange;

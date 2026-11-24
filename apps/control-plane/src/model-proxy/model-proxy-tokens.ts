@@ -23,29 +23,29 @@ const wellFormedToken = /^[A-Za-z0-9_-]{43}$/;
 const noAcceptedDigest = Buffer.alloc(32);
 
 /**
- * How long a token a lookup accepted is accepted again from memory, by
- * this instance, without another lookup. Long enough that an agent at
- * work, whose requests come seconds apart, is looked up about four times
- * a minute; short enough that a token revoked by the other instance during
- * a redeploy's overlap is not accepted here for long, and every request
- * is checked against the records anyway.
+ * How long a token a lookup accepted stays remembered by this instance
+ * after it was last used here: looked up, let in, or at the end of a
+ * request it was let in for. An agent at work, whose next request follows
+ * within seconds of the last one ending, so stays remembered however long
+ * it works.
  */
 export const recentlyAcceptedForInMilliseconds = 30_000;
 
 /**
- * Once a remembered acceptance is this old, the next request presenting
- * the token has it looked up again (outside the instance's bound on
- * lookups, since only a caller holding a remembered token gets there), and
- * remembered afresh or forgotten by the answer. So an agent at work stays
- * remembered however long it works, and a token revoked elsewhere is
- * refused within half the time, once it is presented again.
+ * How long after its last lookup a remembered token is let in from memory
+ * alone. Past that, the next request presenting it has it looked up again
+ * (outside the instance's bound on lookups, since only a caller holding a
+ * remembered token gets there), and remembered afresh or forgotten by the
+ * answer: so a token revoked by the other instance during a redeploy's
+ * overlap is let in here at most this long after its last lookup, and every
+ * request is checked against the records anyway.
  */
-const renewedAfterInMilliseconds = recentlyAcceptedForInMilliseconds / 2;
+const renewedAfterInMilliseconds = 15_000;
 
 /**
- * What this instance remembers of a token: accepted by a lookup lately
- * (`fresh`), accepted long enough ago that it is to be looked up again
- * (`due_for_renewal`), or nothing (`not_remembered`), when it must be
+ * What this instance remembers of a token: looked up lately (`fresh`),
+ * remembered but last looked up long enough ago that it is to be looked up
+ * again (`due_for_renewal`), or nothing (`not_remembered`), when it must be
  * looked up within the bound strangers share.
  */
 export type RememberedAcceptance = "fresh" | "due_for_renewal" | "not_remembered";
@@ -53,7 +53,7 @@ export type RememberedAcceptance = "fresh" | "due_for_renewal" | "not_remembered
 /** Beyond this many threads and providers remembered, the longest unused is forgotten. */
 const maximumRemembered = 10_000;
 
-type RememberedDigest = { digest: Buffer; acceptedAt: number };
+type RememberedDigest = { digest: Buffer; lookedUpAt: number; usedAt: number };
 
 export class ModelProxyTokens {
   readonly #store: ModelProxyTokenStore;
@@ -109,9 +109,10 @@ export class ModelProxyTokens {
 
   /**
    * What this instance remembers of `presentedToken` for this thread and
-   * provider, from memory alone. The same work is done whatever is
-   * remembered, and a token not remembered is simply looked up, so this
-   * tells a caller nothing about anyone else's token.
+   * provider, from memory alone; a `fresh` one is noted as used now. The
+   * same work is done whatever is remembered, and a token not remembered
+   * is simply looked up, so this tells a caller nothing about anyone
+   * else's token.
    */
   recallAcceptance(
     threadId: string,
@@ -119,21 +120,40 @@ export class ModelProxyTokens {
     presentedToken: string,
   ): RememberedAcceptance {
     const now = this.#clock().getTime();
-    const remembered = (this.#recentlyAccepted.get(rememberedKey(threadId, providerId)) ?? [])
-      .filter((entry) => entry.acceptedAt >= now - recentlyAcceptedForInMilliseconds)
-      .slice(-keptPerProvider);
+    const remembered = this.#findRemembered(threadId, providerId, now);
     const presentedDigest = digestToken(presentedToken);
-    let acceptedAt: number | undefined;
+    let matched: RememberedDigest | undefined;
     for (let slot = 0; slot < keptPerProvider; slot += 1) {
       const entry = remembered[slot];
       if (isAmong(presentedDigest, [entry?.digest ?? noAcceptedDigest])) {
-        acceptedAt = entry?.acceptedAt;
+        matched = entry;
       }
     }
-    if (acceptedAt === undefined) {
+    if (matched === undefined) {
       return "not_remembered";
     }
-    return now - acceptedAt > renewedAfterInMilliseconds ? "due_for_renewal" : "fresh";
+    if (now - matched.lookedUpAt > renewedAfterInMilliseconds) {
+      return "due_for_renewal";
+    }
+    matched.usedAt = now;
+    return "fresh";
+  }
+
+  /**
+   * Notes that a request let in with `presentedToken` has just ended, so an
+   * agent whose next request follows soon after is still remembered,
+   * however long the request lasted. A token forgotten meanwhile, revoked
+   * or refused by a lookup, stays forgotten; and one remembered still is
+   * looked up again on its next request if its last lookup was long ago.
+   */
+  noteUsed(threadId: string, providerId: string, presentedToken: string): void {
+    const presentedDigest = digestToken(presentedToken);
+    const matched = this.#recentlyAccepted
+      .get(rememberedKey(threadId, providerId))
+      ?.find((entry) => entry.digest.equals(presentedDigest));
+    if (matched !== undefined) {
+      matched.usedAt = this.#clock().getTime();
+    }
   }
 
   /**
@@ -166,7 +186,8 @@ export class ModelProxyTokens {
     const entries = (this.#recentlyAccepted.get(key) ?? []).filter(
       (entry) => !entry.digest.equals(digest),
     );
-    entries.push({ digest, acceptedAt: this.#clock().getTime() });
+    const now = this.#clock().getTime();
+    entries.push({ digest, lookedUpAt: now, usedAt: now });
     // Re-inserted, so the map's order is from longest unused to latest.
     this.#recentlyAccepted.delete(key);
     this.#recentlyAccepted.set(key, entries.slice(-keptPerProvider));
@@ -176,6 +197,13 @@ export class ModelProxyTokens {
       }
       this.#recentlyAccepted.delete(oldest);
     }
+  }
+
+  /** The thread's and provider's digests used here lately enough to be remembered still. */
+  #findRemembered(threadId: string, providerId: string, now: number): RememberedDigest[] {
+    return (this.#recentlyAccepted.get(rememberedKey(threadId, providerId)) ?? [])
+      .filter((entry) => entry.usedAt >= now - recentlyAcceptedForInMilliseconds)
+      .slice(-keptPerProvider);
   }
 
   #forgetDigest(threadId: string, providerId: string, digest: Buffer): void {

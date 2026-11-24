@@ -610,6 +610,38 @@ describe("the model proxy", () => {
     expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
   });
 
+  it("keeps letting in an agent while strangers spend the lookups, after a request longer than a token is remembered", {
+    timeout: 20_000,
+  }, async () => {
+    const clock = new ControllableClock();
+    await start({
+      clock: clock.now,
+      modelProxyLimits: { authenticationBurst: 1, authenticationsPerSecond: 0.001 },
+    });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const first = await callModelProxy(controlPlane, access, anthropic, "Hi");
+    await readWholeAnswer(first);
+    clock.advanceBy(10_000);
+
+    const long = await callModelProxy(controlPlane, access, anthropic, mockModelTriggers.slowReply);
+    clock.advanceBy(40_000);
+    await readWholeAnswer(long);
+    const stranger = await callModelProxy(
+      controlPlane,
+      { ...access, token: "A".repeat(43) },
+      anthropic,
+      "Hi",
+    );
+    await stranger.arrayBuffer();
+    clock.advanceBy(1_000);
+    const next = await callModelProxy(controlPlane, access, anthropic, "And then");
+    await readWholeAnswer(next);
+
+    expect([first.status, long.status, stranger.status, next.status]).toEqual([200, 200, 503, 200]);
+  });
+
   it("refuses a token remembered here once a lookup no longer finds it, as when the other instance revoked it", async () => {
     const clock = new ControllableClock();
     const tokenStore = new InMemoryModelProxyTokenStore();
