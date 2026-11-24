@@ -1,9 +1,15 @@
-import { type ChildProcessByStdio, spawn } from "node:child_process";
-import type { Readable, Writable } from "node:stream";
+import type { Readable } from "node:stream";
+import type {
+  AgentProcessLauncher,
+  AgentProcessStdio,
+  LaunchedAgentProcess,
+} from "../agent-process/agent-process-launcher.js";
+import { finishesWithin } from "../finishes-within.js";
 import type { Logger } from "../logger.js";
 import { LineSplitter } from "./line-splitter.js";
 import type { PiEvent, PiExtensionUiRequest } from "./pi-records.js";
 import { PiRpcClient } from "./pi-rpc-client.js";
+import type { PiStopTiming } from "./pi-stop-timing.js";
 
 export type PiLaunchSettings = {
   /** Pi's RPC-mode entry point, run with the supervisor's own Node. */
@@ -16,6 +22,9 @@ export type PiLaunchSettings = {
   sessionFileToResume: string | undefined;
   model: string;
   environment: NodeJS.ProcessEnv;
+  /** Decides which operating-system user Pi runs as. */
+  launcher: AgentProcessLauncher;
+  stopTiming: PiStopTiming;
 };
 
 export type PiExit = {
@@ -32,14 +41,6 @@ export type PiProcessHandlers = {
   onExit: (exit: PiExit) => void;
 };
 
-/**
- * How long Pi gets to shut down after its stdin closes. Pi treats end of
- * input as an orderly shutdown that still writes its last events; a signal
- * cuts the event stream off, so it is only the fallback.
- * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md
- */
-const gracefulExitTimeoutInMilliseconds = 5_000;
-const terminatedExitTimeoutInMilliseconds = 3_000;
 const recentDiagnosticsMaximumLength = 2_000;
 
 /**
@@ -59,7 +60,6 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
       ? ["--session-dir", settings.sessionDirectory, "--session-id", settings.sessionId]
       : ["--session", settings.sessionFileToResume];
   return [
-    settings.entryPointPath,
     ...sessionArguments,
     "--model",
     settings.model,
@@ -71,20 +71,26 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
 
 export class PiProcess {
   readonly client: PiRpcClient;
-  readonly #child: ChildProcessByStdio<Writable, Readable, Readable>;
+  readonly #agentProcess: LaunchedAgentProcess;
+  readonly #child: AgentProcessStdio;
+  readonly #stopTiming: PiStopTiming;
   readonly #logger: Logger;
   readonly #exited: Promise<void>;
   #recentDiagnostics = "";
   #isStopRequested = false;
   #hasExited = false;
+  #stopped: Promise<void> | undefined;
 
   constructor(settings: PiLaunchSettings, handlers: PiProcessHandlers, logger: Logger) {
     this.#logger = logger;
-    this.#child = spawn(process.execPath, buildPiArguments(settings), {
-      cwd: settings.workspaceDirectory,
-      env: settings.environment,
-      stdio: ["pipe", "pipe", "pipe"],
+    this.#stopTiming = settings.stopTiming;
+    this.#agentProcess = settings.launcher.launch({
+      scriptPath: settings.entryPointPath,
+      scriptArguments: buildPiArguments(settings),
+      workingDirectory: settings.workspaceDirectory,
+      environment: settings.environment,
     });
+    this.#child = this.#agentProcess.child;
     this.client = new PiRpcClient({
       commandStream: this.#child.stdin,
       recordStream: this.#child.stdout,
@@ -105,34 +111,49 @@ export class PiProcess {
     return this.#recentDiagnostics;
   }
 
-  /** Closes Pi's input and waits for it to exit, escalating to signals if it does not. */
-  async stop(): Promise<void> {
+  /**
+   * Closes Pi's input and waits for it to exit, escalating to signals sent to
+   * every process of the agent if it does not. Every wait is bounded, so a
+   * stop always finishes. Stopping again while a stop is under way waits for
+   * that same stop.
+   */
+  stop(): Promise<void> {
+    this.#stopped ??= this.#stopInStages();
+    return this.#stopped;
+  }
+
+  async #stopInStages(): Promise<void> {
     if (this.#hasExited) {
       return;
     }
+    const timing = this.#stopTiming;
     this.#isStopRequested = true;
     this.#child.stdin.end();
-    if (await this.#waitForExit(gracefulExitTimeoutInMilliseconds)) {
+    if (await finishesWithin(this.#exited, timing.gracefulExitTimeoutInMilliseconds)) {
       return;
     }
-    this.#logger.warn("Pi did not exit after its input closed; sending SIGTERM");
-    this.#child.kill("SIGTERM");
-    if (await this.#waitForExit(terminatedExitTimeoutInMilliseconds)) {
+    this.#logger.warn("Pi did not exit after its input closed; sending SIGTERM to the agent");
+    await this.#signalAgentProcesses("SIGTERM");
+    if (await finishesWithin(this.#exited, timing.terminatedExitTimeoutInMilliseconds)) {
       return;
     }
-    this.#logger.warn("Pi did not exit after SIGTERM; sending SIGKILL");
-    this.#child.kill("SIGKILL");
-    await this.#exited;
+    this.#logger.warn("Pi did not exit after SIGTERM; sending SIGKILL to the agent");
+    await this.#signalAgentProcesses("SIGKILL");
+    if (await finishesWithin(this.#exited, timing.killedExitTimeoutInMilliseconds)) {
+      return;
+    }
+    this.#logger.error(
+      { processId: this.#child.pid },
+      "Pi's process has still not ended after SIGKILL; no longer waiting for it",
+    );
   }
 
-  #waitForExit(timeoutInMilliseconds: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutInMilliseconds);
-      void this.#exited.then(() => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
+  async #signalAgentProcesses(signal: NodeJS.Signals): Promise<void> {
+    try {
+      await this.#agentProcess.signalAgentProcesses(signal);
+    } catch (error) {
+      this.#logger.error({ err: error, signal }, "Signalling the agent's processes failed");
+    }
   }
 
   /**

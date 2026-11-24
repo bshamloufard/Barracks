@@ -1,5 +1,6 @@
 import { type ControlPlaneToSupervisorMessage, closeCodes } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.js";
 import { Supervisor } from "./supervisor.js";
 import { createSilentLogger } from "./test-support/silent-logger.js";
 import { startTestControlPlane, type TestControlPlane } from "./test-support/test-control-plane.js";
@@ -21,6 +22,7 @@ beforeEach(async () => {
       agentHarness: { kind: "fake" },
     },
     sourceEnvironment: {},
+    agentProcessLauncher: new SameUserAgentLauncher(),
     logger: createSilentLogger(),
     onFatalError: (error) => fatalErrors.push(error),
   });

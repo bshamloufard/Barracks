@@ -35,6 +35,63 @@ export function findDockerBridgeGateway(): string {
   ).trim();
 }
 
+/**
+ * Writes a file into a sandbox as the agent's user, who owns the agent's
+ * directories; `docker exec` would otherwise run as the supervisor's.
+ *
+ * Like every process `docker exec` starts, this one has the container's
+ * environment, supervisor token included, which the agent could read while
+ * it runs. That is acceptable for a test's set-up, which ends before the
+ * agent runs anything; see sandbox-image/README.md.
+ */
+export function writeFileInSandboxAsAgent(
+  sandboxId: string,
+  filePath: string,
+  contents: string,
+): void {
+  execFileSync(
+    "docker",
+    [
+      "exec",
+      "--interactive",
+      "--user",
+      "barrack-agent",
+      sandboxId,
+      ...["sh", "-c", 'cat > "$1"', "sh", filePath],
+    ],
+    { input: contents, stdio: ["pipe", "ignore", "pipe"], timeout: 30_000 },
+  );
+}
+
+/** How a stopped sandbox's main process, the supervisor, ended, and what it logged. */
+export function readSandboxExit(sandboxId: string): {
+  exitCode: number;
+  supervisorLogMessages: string[];
+} {
+  const exitCode = execFileSync(
+    "docker",
+    ["container", "inspect", "--format", "{{.State.ExitCode}}", sandboxId],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  const logs = execFileSync("docker", ["container", "logs", sandboxId], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  return { exitCode: Number(exitCode), supervisorLogMessages: readLogMessages(logs) };
+}
+
+/** The `msg` of each JSON log line; anything else in the output is skipped. */
+function readLogMessages(logs: string): string[] {
+  return logs.split("\n").flatMap((line) => {
+    try {
+      const message: unknown = JSON.parse(line)?.msg;
+      return typeof message === "string" ? [message] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 function dockerSucceeds(dockerArguments: string[]): boolean {
   try {
     execFileSync("docker", dockerArguments, { stdio: "ignore", timeout: 30_000 });

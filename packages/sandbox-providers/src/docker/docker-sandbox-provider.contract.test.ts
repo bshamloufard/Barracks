@@ -19,6 +19,7 @@ import { DockerSandboxProvider } from "./docker-sandbox-provider.js";
 const supervisorConnectionTimeoutInMilliseconds = 30_000;
 const docker = createDockerCommandRunner("docker");
 const dockerCommandOptions = { timeoutInMilliseconds: 30_000 };
+const asAgent = ["--user", "barrack-agent"];
 
 describeSandboxProviderContract({
   providerName: "Docker",
@@ -49,13 +50,16 @@ describeSandboxProviderContract({
           launchCount,
           supervisorConnectionTimeoutInMilliseconds,
         ),
+      // The workspace belongs to the agent's user, and `docker exec` would
+      // otherwise run as the image's default user, the supervisor's.
       async writeFile(sandboxId, path, content) {
-        await docker(["exec", "--interactive", sandboxId, "sh", "-c", 'cat > "$1"', "sh", path], {
-          ...dockerCommandOptions,
-          standardInput: content,
-        });
+        await docker(
+          ["exec", ...asAgent, "--interactive", sandboxId, "sh", "-c", 'cat > "$1"', "sh", path],
+          { ...dockerCommandOptions, standardInput: content },
+        );
       },
-      readFile: (sandboxId, path) => docker(["exec", sandboxId, "cat", path], dockerCommandOptions),
+      readFile: (sandboxId, path) =>
+        docker(["exec", ...asAgent, sandboxId, "cat", path], dockerCommandOptions),
       dispose: () => recorder.close(),
     };
   },

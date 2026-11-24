@@ -1,0 +1,14 @@
+{
+  "name": "@barrack/mock-model-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A stand-in for an OpenAI-compatible model, so tests can run the real Pi agent with no network and no API key.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/mock-model-server.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  }
+}

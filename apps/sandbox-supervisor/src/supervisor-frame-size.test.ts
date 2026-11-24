@@ -2,6 +2,7 @@ import { maximumFrameLength, parseSupervisorToControlPlaneMessage } from "@barra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgentHarness, AgentHarnessObserver } from "./agent-harness.js";
+import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.js";
 import { Supervisor } from "./supervisor.js";
 import { createSilentLogger } from "./test-support/silent-logger.js";
 import { startTestControlPlane, type TestControlPlane } from "./test-support/test-control-plane.js";
@@ -39,6 +40,7 @@ beforeEach(async () => {
       agentHarness: { kind: "fake" },
     },
     sourceEnvironment: {},
+    agentProcessLauncher: new SameUserAgentLauncher(),
     logger: createSilentLogger(),
     onFatalError: (error) => {
       throw error;

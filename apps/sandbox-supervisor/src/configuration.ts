@@ -29,6 +29,10 @@ const piVariablesSchema = sharedVariablesSchema.extend({
     .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/example-model"'),
   BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_STATE_DIRECTORY: absoluteDirectorySchema,
+  BARRACK_AGENT_USER: z
+    .string()
+    .regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "must be the name of an operating-system user")
+    .optional(),
 });
 
 const fakeVariablesSchema = sharedVariablesSchema.extend({
@@ -53,6 +57,11 @@ export type PiHarnessConfiguration = {
   model: string;
   workspaceDirectory: string;
   stateDirectory: string;
+  /**
+   * The operating-system user Pi runs as. Unset, or naming the supervisor's
+   * own user, Pi runs as the supervisor's user.
+   */
+  agentUserName: string | undefined;
 };
 
 export type AgentHarnessConfiguration = PiHarnessConfiguration | { kind: "fake" };
@@ -91,6 +100,7 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
             model: variables.BARRACK_MODEL,
             workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
             stateDirectory: variables.BARRACK_STATE_DIRECTORY,
+            agentUserName: variables.BARRACK_AGENT_USER,
           },
   };
 }

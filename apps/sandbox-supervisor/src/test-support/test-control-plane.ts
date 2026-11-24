@@ -31,6 +31,10 @@ export async function startTestControlPlane(
   httpServer.on("upgrade", (request, socket, head) => {
     upgradeRequests.push({ path: request.url ?? "", authorization: request.headers.authorization });
     if (refusalStatusCode !== undefined) {
+      // Node leaves an upgraded socket without an error listener. The
+      // supervisor may reset the connection as soon as it has read the
+      // refusal, which is expected here and must not crash the test run.
+      socket.on("error", () => {});
       socket.end(
         `HTTP/1.1 ${refusalStatusCode} Refused\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
       );
