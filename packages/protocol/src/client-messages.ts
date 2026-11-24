@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { authenticateMessageSchema } from "./authenticate-message.js";
+import { desktopControlStatusSchema } from "./desktop-messages.js";
 import { interruptAgentMessageSchema } from "./interrupt-agent-message.js";
-import { maximumAccessTokenLength, maximumErrorMessageLength } from "./limits.js";
+import { maximumErrorMessageLength } from "./limits.js";
 import { parseFrame } from "./parse-frame.js";
 import type { ParseResult } from "./parse-result.js";
 import { sequenceSchema } from "./sequence.js";
@@ -34,6 +36,7 @@ import { userMessageDeliveryStatusSchema } from "./user-message-delivery-status.
  * 4. the current `supervisor_connection_status`;
  * 5. the current `user_message_delivery_status`;
  * 6. the text streamed so far of an assistant message still in progress;
+ * 7. the current `desktop_control_status` (see `desktop-messages.ts`);
  * and from then on live traffic, as it happens. A client can therefore tell
  * catching up from watching live, and the two statuses describe the thread
  * as of the end of its replay.
@@ -117,6 +120,7 @@ export const controlPlaneToClientMessageSchema = z.discriminatedUnion("type", [
   supervisorConnectionStatusSchema,
   userMessageDeliveryStatusSchema,
   clientMessageRejectedSchema,
+  desktopControlStatusSchema,
 ]);
 
 /**
@@ -138,23 +142,6 @@ export const sendUserMessageSchema = z.strictObject({
   text: userMessageTextSchema,
 });
 
-/**
- * Proves who the user is, with an access token from the sign-in service (a
- * Supabase Auth access token, or the token a control plane in development
- * mode hands out). It is the first message on every connection, and is sent
- * again with each newer token the client receives while the connection is
- * open, which must be for the same user. When the newest token sent expires
- * without a newer one, the control plane closes the connection with
- * `closeCodes.accessTokenExpired`.
- *
- * A token never goes in the connection's URL, where it would end up in logs;
- * browsers cannot set headers on a WebSocket.
- */
-export const authenticateMessageSchema = z.strictObject({
-  type: z.literal("authenticate"),
-  accessToken: z.string().min(1).max(maximumAccessTokenLength),
-});
-
 /** What an authenticated client asks of the thread it is viewing. */
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendUserMessageSchema,
@@ -173,7 +160,6 @@ export type SupervisorConnectionStatus = z.infer<typeof supervisorConnectionStat
 export type ClientMessageRejected = z.infer<typeof clientMessageRejectedSchema>;
 export type ControlPlaneToClientMessage = z.infer<typeof controlPlaneToClientMessageSchema>;
 export type SendUserMessage = z.infer<typeof sendUserMessageSchema>;
-export type AuthenticateMessage = z.infer<typeof authenticateMessageSchema>;
 export type ClientCommand = z.infer<typeof clientCommandSchema>;
 export type ClientToControlPlaneMessage = z.infer<typeof clientToControlPlaneMessageSchema>;
 

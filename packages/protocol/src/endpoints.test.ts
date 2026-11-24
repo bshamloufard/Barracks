@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildClientEndpointPath,
+  buildDesktopStreamEndpointPath,
+  buildDesktopViewerEndpointPath,
   buildSupervisorEndpointPath,
   parseClientEndpointPath,
+  parseDesktopStreamEndpointPath,
+  parseDesktopViewerEndpointPath,
   parseSupervisorEndpointPath,
 } from "./endpoints.js";
 import { protocolVersion } from "./protocol-version.js";
@@ -32,12 +36,12 @@ describe("supervisor endpoint", () => {
     });
   });
 
-  it("rejects a supervisor still speaking version 3, saying which version is expected", () => {
-    const result = parseSupervisorEndpointPath("/threads/thread-1/supervisor?protocolVersion=3");
+  it("rejects a supervisor still speaking version 4, saying which version is expected", () => {
+    const result = parseSupervisorEndpointPath("/threads/thread-1/supervisor?protocolVersion=4");
 
     expect(result).toEqual({
       ok: false,
-      errorMessage: 'Protocol version "3" is not supported; expected 4.',
+      errorMessage: 'Protocol version "4" is not supported; expected 5.',
     });
   });
 
@@ -111,5 +115,59 @@ describe("client endpoint", () => {
     const supervisorPath = buildSupervisorEndpointPath({ threadId: "thread-1" });
 
     expect(parseClientEndpointPath(supervisorPath).ok).toBe(false);
+  });
+});
+
+describe("desktop viewer endpoint", () => {
+  it("names the thread and the protocol version", () => {
+    const path = buildDesktopViewerEndpointPath({ threadId: "thread-1" });
+
+    expect(path).toBe(`/threads/thread-1/desktop?protocolVersion=${protocolVersion}`);
+    expect(parseDesktopViewerEndpointPath(path)).toEqual({
+      ok: true,
+      value: { threadId: "thread-1" },
+    });
+  });
+
+  it("rejects the client and supervisor endpoints, and another protocol version", () => {
+    expect(parseDesktopViewerEndpointPath(buildSupervisorEndpointPath({ threadId: "t" })).ok).toBe(
+      false,
+    );
+    expect(parseDesktopViewerEndpointPath("/threads/t/desktop?protocolVersion=4").ok).toBe(false);
+  });
+});
+
+describe("desktop stream endpoint", () => {
+  const streamId = "0123456789abcdef0123456789abcdef";
+
+  it("parses back the thread and the stream it was built with", () => {
+    const path = buildDesktopStreamEndpointPath({ threadId: "thread-1", streamId });
+
+    expect(path).toBe(
+      `/threads/thread-1/desktop-streams/${streamId}?protocolVersion=${protocolVersion}`,
+    );
+    expect(parseDesktopStreamEndpointPath(path)).toEqual({
+      ok: true,
+      value: { threadId: "thread-1", streamId },
+    });
+  });
+
+  it.each(["0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef", `${"0".repeat(32)}0`, "..", ""])(
+    "rejects %j, which is not an identifier the control plane mints",
+    (badStreamId) => {
+      const requestTarget = `/threads/thread-1/desktop-streams/${badStreamId}?protocolVersion=${protocolVersion}`;
+
+      expect(parseDesktopStreamEndpointPath(requestTarget).ok).toBe(false);
+    },
+  );
+
+  it("rejects a stream path with extra segments, another endpoint, or another version", () => {
+    const extra = `/threads/thread-1/x/desktop-streams/${streamId}?protocolVersion=${protocolVersion}`;
+    const viewer = `/threads/thread-1/desktop/${streamId}?protocolVersion=${protocolVersion}`;
+    const oldVersion = `/threads/thread-1/desktop-streams/${streamId}?protocolVersion=4`;
+
+    for (const requestTarget of [extra, viewer, oldVersion]) {
+      expect(parseDesktopStreamEndpointPath(requestTarget).ok).toBe(false);
+    }
   });
 });
