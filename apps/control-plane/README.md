@@ -17,7 +17,7 @@ This is the Milestone 1 build: history is kept in memory and lost when the proce
 | `src/thread-event-log/`       | The `ThreadEventLog` interface, which assigns sequences, and its in-memory implementation.                             |
 | `src/thread-relay/`           | `ThreadRelay`: per-thread ordering of recording, broadcasting, replay and in-progress text. No sockets in here.        |
 | `src/websocket/`              | Upgrade routing, supervisor authorisation, origin check, frame validation, heartbeats and slow-client handling (`ws`). |
-| `src/test-support/`           | A fake supervisor, a test client, a pausable event log and the event log contract suite. Not part of the build.        |
+| `src/test-support/`           | Fake peers and fake connections, a pausable event log, the log contract suite. Not part of the build.                  |
 
 The endpoints and messages are defined in [`@barrack/protocol`](../../packages/protocol); see [docs/architecture.md](../../docs/architecture.md) for how they fit together.
 

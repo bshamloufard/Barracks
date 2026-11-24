@@ -38,7 +38,7 @@ export type ThreadRelayOptions = {
   logger: Logger;
   /**
    * Called whenever the relay is left with no supervisor, no clients and no
-   * queued work, so it holds nothing that outlives it and can be dropped.
+   * queued work, which is when it can be dropped.
    */
   whenUnused: () => void;
 };
