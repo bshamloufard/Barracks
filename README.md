@@ -88,6 +88,7 @@ The applications, the sandbox providers and the sandbox image each have a README
 
 - [docs/architecture.md](docs/architecture.md): how the parts fit together, and the path of one prompt through them.
 - [docs/decisions.md](docs/decisions.md): the decision log, recording each choice and why it was made.
+- [docs/deployment.md](docs/deployment.md): deploying, hosted on Railway, Supabase and Daytona, or on one machine with Docker Compose.
 
 ## Licence
 
