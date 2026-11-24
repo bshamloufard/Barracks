@@ -1,6 +1,12 @@
-import type { RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
-import type { ThreadEventLog, ThreadEventPage } from "../thread-event-log/thread-event-log.js";
+import type {
+  SupervisorEventAppendOutcome,
+  SupervisorEventOrigin,
+  SupervisorResumePoint,
+  ThreadEventLog,
+  ThreadEventPage,
+} from "../thread-event-log/thread-event-log.js";
 
 /** A pause that the test ends by calling `release`. */
 export class Gate {
@@ -38,17 +44,19 @@ export type AppendGates = {
 };
 
 /**
- * An in-memory log whose next append, or next read of a thread's newest
- * sequence, can be paused, so a test can make events arrive at exactly the
- * moment a race would happen in production, when the log is a database
- * round trip away. Its next append or read can also be made to fail, as a
- * database query can.
+ * An in-memory log whose next append (of either kind), or next read of a
+ * thread's newest sequence, can be paused, so a test can make events arrive
+ * at exactly the moment a race would happen in production, when the log is
+ * a database round trip away. Its next append or read can also be made to
+ * fail, as a database query can, either before recording anything or after
+ * recording, as when a database's answer is lost on the way back.
  */
 export class ControllableThreadEventLog implements ThreadEventLog {
   readonly #log = new InMemoryThreadEventLog();
   #nextNewestSequenceReadGates: ReadGates | undefined;
   #nextAppendGates: AppendGates | undefined;
   #nextAppendFailure: Error | undefined;
+  #nextAppendFailureAfterRecording: Error | undefined;
   #nextReadFailure: Error | undefined;
 
   /** A replay reads the newest sequence first, to fix the range it announces. */
@@ -69,23 +77,26 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     this.#nextAppendFailure = failure;
   }
 
-  /** Makes the next read of either kind reject with `failure`. */
+  /** Makes the next append record its event and then reject with `failure`. */
+  failNextAppendAfterRecording(failure: Error): void {
+    this.#nextAppendFailureAfterRecording = failure;
+  }
+
+  /** Makes the next read of any kind reject with `failure`. */
   failNextRead(failure: Error): void {
     this.#nextReadFailure = failure;
   }
 
-  async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    const gates = this.#nextAppendGates;
-    this.#nextAppendGates = undefined;
-    await gates?.beforeRecording.pass();
-    const failure = this.#nextAppendFailure;
-    this.#nextAppendFailure = undefined;
-    if (failure !== undefined) {
-      throw failure;
-    }
-    const recordedEvent = await this.#log.append(threadId, event);
-    await gates?.afterRecording.pass();
-    return recordedEvent;
+  append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
+    return this.#controlAppend(() => this.#log.append(threadId, event));
+  }
+
+  appendSupervisorEvent(
+    threadId: string,
+    event: AgentEvent,
+    origin: SupervisorEventOrigin,
+  ): Promise<SupervisorEventAppendOutcome> {
+    return this.#controlAppend(() => this.#log.appendSupervisorEvent(threadId, event, origin));
   }
 
   async readNewestSequence(threadId: string): Promise<number> {
@@ -101,6 +112,42 @@ export class ControllableThreadEventLog implements ThreadEventLog {
   async readEvents(threadId: string, page: ThreadEventPage): Promise<RecordedThreadEvent[]> {
     this.#throwNextReadFailure();
     return this.#log.readEvents(threadId, page);
+  }
+
+  async readSupervisorResumePoint(
+    threadId: string,
+    supervisorInstanceId: string,
+  ): Promise<SupervisorResumePoint> {
+    this.#throwNextReadFailure();
+    return this.#log.readSupervisorResumePoint(threadId, supervisorInstanceId);
+  }
+
+  async readUserMessagesDeliveredThrough(threadId: string): Promise<number> {
+    this.#throwNextReadFailure();
+    return this.#log.readUserMessagesDeliveredThrough(threadId);
+  }
+
+  recordUserMessagesDelivered(threadId: string, throughSequence: number): Promise<void> {
+    return this.#log.recordUserMessagesDelivered(threadId, throughSequence);
+  }
+
+  async #controlAppend<Outcome>(appendToLog: () => Promise<Outcome>): Promise<Outcome> {
+    const gates = this.#nextAppendGates;
+    this.#nextAppendGates = undefined;
+    await gates?.beforeRecording.pass();
+    const failure = this.#nextAppendFailure;
+    this.#nextAppendFailure = undefined;
+    if (failure !== undefined) {
+      throw failure;
+    }
+    const outcome = await appendToLog();
+    await gates?.afterRecording.pass();
+    const failureAfterRecording = this.#nextAppendFailureAfterRecording;
+    this.#nextAppendFailureAfterRecording = undefined;
+    if (failureAfterRecording !== undefined) {
+      throw failureAfterRecording;
+    }
+    return outcome;
   }
 
   #throwNextReadFailure(): void {

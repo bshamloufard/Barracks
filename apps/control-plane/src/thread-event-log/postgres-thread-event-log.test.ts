@@ -3,6 +3,7 @@ import { escapeIdentifier, type Pool } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { agentRunStarted, toolExecutionStarted } from "../test-support/example-agent-events.js";
 import {
+  attachGreetedSupervisor,
   FakeClientConnection,
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
@@ -76,6 +77,45 @@ describeWithTestDatabase("the Postgres thread event log", () => {
       expect(new Set(storedMessageIds)).toEqual(new Set(messageIds));
       const recordedTimes = stored.map((event) => Date.parse(event.recordedAt));
       expect(recordedTimes).toEqual(recordedTimes.toSorted((a, b) => a - b));
+    } finally {
+      await otherControlPlanePool.end();
+    }
+  });
+
+  it("records each supervisor event once when two control planes race to append the same events", async () => {
+    const schema = await schemas.createMigrated();
+    const otherControlPlanePool = createTestPool();
+    try {
+      const firstLog = new PostgresThreadEventLog(pool, schema);
+      const secondLog = new PostgresThreadEventLog(otherControlPlanePool, schema);
+      const eventNumbers = oneToN(100);
+
+      // Every event is appended by both control planes at once, as when a
+      // supervisor resends to a new instance what an old one is still
+      // recording; a user message is mixed in to show the sequence stays whole.
+      const outcomes = await Promise.all(
+        eventNumbers.flatMap((eventNumber) =>
+          [firstLog, secondLog].map((log) =>
+            log.appendSupervisorEvent(threadId, toolExecutionStarted(`call-${eventNumber}`), {
+              supervisorInstanceId: "instance-1",
+              eventNumber,
+            }),
+          ),
+        ),
+      );
+      const followingMessage = await firstLog.append(threadId, userMessage("after-the-race"));
+      const stored = await readWholeThread(firstLog, threadId);
+
+      const recordedCount = outcomes.filter((outcome) => !outcome.isAlreadyRecorded).length;
+      expect(recordedCount).toBe(eventNumbers.length);
+      expect(stored.map((event) => event.sequence)).toEqual(oneToN(eventNumbers.length + 1));
+      const storedToolCalls = stored.flatMap((event) =>
+        event.event.type === "tool_execution_started" ? [event.event.toolCallId] : [],
+      );
+      expect(storedToolCalls.toSorted()).toEqual(
+        eventNumbers.map((eventNumber) => `call-${eventNumber}`).toSorted(),
+      );
+      expect(followingMessage.sequence).toBe(eventNumbers.length + 1);
     } finally {
       await otherControlPlanePool.end();
     }
@@ -175,13 +215,13 @@ describeWithTestDatabase("the Postgres thread event log", () => {
       whenUnused: () => undefined,
     });
     const supervisor = new FakeSupervisorConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     const eventCount = 1_500;
     for (let index = 1; index <= eventCount; index += 1) {
-      relay.receiveFromSupervisor(supervisor, {
-        type: "agent_event",
-        event: index === 1 ? agentRunStarted : toolExecutionStarted(`call-${index}`),
-      });
+      relay.receiveFromSupervisor(
+        supervisor,
+        supervisor.numbered(index === 1 ? agentRunStarted : toolExecutionStarted(`call-${index}`)),
+      );
     }
     await vi.waitFor(
       async () => expect(await log.readNewestSequence(threadId)).toBeGreaterThan(50),

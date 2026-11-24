@@ -1,4 +1,4 @@
-import type { ThreadEvent } from "@barrack/protocol";
+import type { AgentEvent, ThreadEvent } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { readWholeThread } from "./read-whole-thread.js";
@@ -157,6 +157,132 @@ export function describeThreadEventLogContract(
       expect(await log.readNewestSequence("thread-c")).toBe(0);
     });
   });
+
+  describe(`${implementationName} as a record of supervisor events`, () => {
+    it("records a supervisor event once however many times it is appended", async () => {
+      const log = await createEmptyLog();
+      const origin = { supervisorInstanceId: "instance-1", eventNumber: 1 };
+
+      const first = await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
+      const second = await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
+      const third = await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
+
+      expect(first).toMatchObject({ isAlreadyRecorded: false, recordedEvent: { sequence: 1 } });
+      expect(second).toEqual({ isAlreadyRecorded: true });
+      expect(third).toEqual({ isAlreadyRecorded: true });
+      expect(await readWholeThread(log, "thread-a")).toHaveLength(1);
+    });
+
+    it("leaves no gap in the sequence when it refuses a duplicate", async () => {
+      const log = await createEmptyLog();
+      const origin = { supervisorInstanceId: "instance-1", eventNumber: 1 };
+      await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
+      await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
+
+      const next = await log.append("thread-a", userMessageNumbered(2));
+
+      expect(next.sequence).toBe(2);
+    });
+
+    it("tells apart the same event number from two supervisor instances, and from two threads", async () => {
+      const log = await createEmptyLog();
+
+      const outcomes = [
+        await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), {
+          supervisorInstanceId: "instance-1",
+          eventNumber: 1,
+        }),
+        await log.appendSupervisorEvent("thread-a", toolStarted("call-2"), {
+          supervisorInstanceId: "instance-2",
+          eventNumber: 1,
+        }),
+        await log.appendSupervisorEvent("thread-b", toolStarted("call-3"), {
+          supervisorInstanceId: "instance-1",
+          eventNumber: 1,
+        }),
+      ];
+
+      expect(outcomes.map((outcome) => outcome.isAlreadyRecorded)).toEqual([false, false, false]);
+    });
+
+    it("reports the last event number recorded from an instance, and 0 for an instance it never heard from", async () => {
+      const log = await createEmptyLog();
+      for (const eventNumber of [1, 2, 3]) {
+        await log.appendSupervisorEvent("thread-a", toolStarted(`call-${eventNumber}`), {
+          supervisorInstanceId: "instance-1",
+          eventNumber,
+        });
+      }
+
+      const known = await log.readSupervisorResumePoint("thread-a", "instance-1");
+      const unknown = await log.readSupervisorResumePoint("thread-a", "instance-2");
+
+      expect(known).toMatchObject({ newestSequence: 3, lastRecordedEventNumber: 3 });
+      expect(unknown).toMatchObject({ newestSequence: 3, lastRecordedEventNumber: 0 });
+    });
+
+    it("reports a thread with no history as having nothing recorded, delivered or open", async () => {
+      const log = await createEmptyLog();
+
+      expect(await log.readSupervisorResumePoint("thread-a", "instance-1")).toEqual({
+        newestSequence: 0,
+        lastRecordedEventNumber: 0,
+        userMessagesDeliveredThrough: 0,
+        openRunSupervisorInstanceId: undefined,
+      });
+    });
+
+    it("knows which instance started the open run, until a settled or failed run closes it", async () => {
+      const log = await createEmptyLog();
+      const openRun = async () =>
+        (await log.readSupervisorResumePoint("thread-a", "instance-2")).openRunSupervisorInstanceId;
+      const appendFromInstance = (event: AgentEvent, eventNumber: number) =>
+        log.appendSupervisorEvent("thread-a", event, {
+          supervisorInstanceId: "instance-1",
+          eventNumber,
+        });
+
+      await appendFromInstance({ type: "agent_run_started" }, 1);
+      const afterStart = await openRun();
+      await appendFromInstance(toolStarted("call-1"), 2);
+      await log.append("thread-a", userMessageNumbered(3));
+      const afterOtherEvents = await openRun();
+      await appendFromInstance({ type: "agent_run_settled", wasInterrupted: false }, 3);
+      const afterSettling = await openRun();
+      await appendFromInstance({ type: "agent_run_started" }, 4);
+      await log.append("thread-a", { type: "agent_failed", errorMessage: "Gone" });
+      const afterFailing = await openRun();
+
+      expect([afterStart, afterOtherEvents, afterSettling, afterFailing]).toEqual([
+        "instance-1",
+        "instance-1",
+        undefined,
+        undefined,
+      ]);
+    });
+
+    it("keeps the furthest delivery of user messages it is told of, never moving back", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 5);
+
+      await log.recordUserMessagesDelivered("thread-a", 3);
+      await log.recordUserMessagesDelivered("thread-a", 2);
+      const afterGoingBack = await log.readUserMessagesDeliveredThrough("thread-a");
+      await log.recordUserMessagesDelivered("thread-a", 5);
+
+      expect(afterGoingBack).toBe(3);
+      expect(await log.readUserMessagesDeliveredThrough("thread-a")).toBe(5);
+      expect(await log.readUserMessagesDeliveredThrough("thread-b")).toBe(0);
+      expect(
+        (await log.readSupervisorResumePoint("thread-a", "instance-1"))
+          .userMessagesDeliveredThrough,
+      ).toBe(5);
+    });
+  });
+}
+
+function toolStarted(toolCallId: string): AgentEvent {
+  return { type: "tool_execution_started", toolCallId, toolName: "bash", arguments: {} };
 }
 
 async function appendUserMessages(

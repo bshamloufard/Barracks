@@ -1,9 +1,22 @@
-import type { RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
-import { escapeIdentifier, type Pool } from "pg";
-import type { ThreadEventLog, ThreadEventPage } from "./thread-event-log.js";
+import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import { DatabaseError, escapeIdentifier, type Pool } from "pg";
+import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
+import type {
+  SupervisorEventAppendOutcome,
+  SupervisorEventOrigin,
+  SupervisorResumePoint,
+  ThreadEventLog,
+  ThreadEventPage,
+} from "./thread-event-log.js";
 
 /** The schema the control plane's tables live in; see the first migration for why it is not `public`. */
 export const databaseSchema = "barrack";
+
+/** The index that stops a supervisor's event being recorded twice; see migration 0010. */
+const oneRowPerSupervisorEventIndex = "thread_events_one_per_supervisor_event";
+
+/** https://www.postgresql.org/docs/current/errcodes-appendix.html */
+const uniqueViolationCode = "23505";
 
 /**
  * Postgres returns `bigint` columns as strings, because they can exceed what
@@ -13,17 +26,29 @@ type StoredEventRow = { sequence: string; recorded_at: Date; event: ThreadEvent 
 
 type AppendedEventRow = Omit<StoredEventRow, "event">;
 
+type ResumePointRow = {
+  last_sequence: string | null;
+  user_messages_delivered_through: string | null;
+  open_run_supervisor_instance_id: string | null;
+  last_recorded_event_number: string;
+};
+
 /**
- * Keeps every thread's history in Postgres, in the tables created by
- * `migrations/0001_create_thread_event_log.sql`. Safe to share one database
+ * Keeps every thread's history in Postgres, in the tables created by the
+ * migrations `0001_create_thread_event_log.sql` and
+ * `0010_acknowledge_supervisor_delivery.sql`. Safe to share one database
  * between several control plane instances: appends from all of them to one
- * thread still get gapless sequences that commit in order.
+ * thread still get gapless sequences that commit in order, and each
+ * supervisor event is recorded once however many of them append it.
  */
 export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #pool: Pool;
   readonly #appendStatement: string;
   readonly #readNewestSequenceStatement: string;
   readonly #readEventsStatement: string;
+  readonly #readResumePointStatement: string;
+  readonly #readUserMessagesDeliveredStatement: string;
+  readonly #recordUserMessagesDeliveredStatement: string;
 
   constructor(pool: Pool, schema: string = databaseSchema) {
     this.#pool = pool;
@@ -34,22 +59,38 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       where thread_id = $1 and sequence > $2 and sequence <= $3
       order by sequence
       limit $4`;
+    this.#readResumePointStatement = resumePointStatementFor(qualifiedSchema);
+    this.#readUserMessagesDeliveredStatement = `select user_messages_delivered_through from ${qualifiedSchema}.thread_sequence_counters where thread_id = $1`;
+    // Only a thread with history has a counter row, and only a thread with
+    // a user message has anything to deliver, so there is no row to create.
+    this.#recordUserMessagesDeliveredStatement = `update ${qualifiedSchema}.thread_sequence_counters
+      set user_messages_delivered_through = greatest(user_messages_delivered_through, $2)
+      where thread_id = $1`;
+  }
+
+  async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
+    return this.#insert(threadId, event, undefined);
   }
 
   /**
-   * The event is sent as JSON text and not read back, so a large tool
-   * output crosses the network once.
+   * Tries the insert and lets the unique index decide, rather than looking
+   * first: a look and an insert are two steps another control plane can come
+   * between, while the index is checked as part of the insert itself.
    */
-  async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    const result = await this.#pool.query<AppendedEventRow>(this.#appendStatement, [
-      threadId,
-      JSON.stringify(event),
-    ]);
-    const row = result.rows[0];
-    if (row === undefined) {
-      throw new Error("Appending a thread event returned no row");
+  async appendSupervisorEvent(
+    threadId: string,
+    event: AgentEvent,
+    origin: SupervisorEventOrigin,
+  ): Promise<SupervisorEventAppendOutcome> {
+    try {
+      const recordedEvent = await this.#insert(threadId, event, origin);
+      return { isAlreadyRecorded: false, recordedEvent };
+    } catch (error) {
+      if (isDuplicateSupervisorEvent(error)) {
+        return { isAlreadyRecorded: true };
+      }
+      throw error;
     }
-    return { sequence: Number(row.sequence), recordedAt: row.recorded_at.toISOString(), event };
   }
 
   async readNewestSequence(threadId: string): Promise<number> {
@@ -61,8 +102,8 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   }
 
   /**
-   * Events are not validated against the protocol on the way out: only
-   * `append` writes them, and the relay validated each one on the way in.
+   * Events are not validated against the protocol on the way out: only the
+   * append methods write them, and the relay validated each one on the way in.
    */
   async readEvents(threadId: string, page: ThreadEventPage): Promise<RecordedThreadEvent[]> {
     const result = await this.#pool.query<StoredEventRow>(this.#readEventsStatement, [
@@ -77,6 +118,67 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       event: row.event,
     }));
   }
+
+  async readSupervisorResumePoint(
+    threadId: string,
+    supervisorInstanceId: string,
+  ): Promise<SupervisorResumePoint> {
+    const result = await this.#pool.query<ResumePointRow>(this.#readResumePointStatement, [
+      threadId,
+      supervisorInstanceId,
+    ]);
+    const row = result.rows[0];
+    return {
+      newestSequence: Number(row?.last_sequence ?? 0),
+      lastRecordedEventNumber: Number(row?.last_recorded_event_number ?? 0),
+      userMessagesDeliveredThrough: Number(row?.user_messages_delivered_through ?? 0),
+      openRunSupervisorInstanceId: row?.open_run_supervisor_instance_id ?? undefined,
+    };
+  }
+
+  async readUserMessagesDeliveredThrough(threadId: string): Promise<number> {
+    const result = await this.#pool.query<{ user_messages_delivered_through: string }>(
+      this.#readUserMessagesDeliveredStatement,
+      [threadId],
+    );
+    return Number(result.rows[0]?.user_messages_delivered_through ?? 0);
+  }
+
+  async recordUserMessagesDelivered(threadId: string, throughSequence: number): Promise<void> {
+    await this.#pool.query(this.#recordUserMessagesDeliveredStatement, [threadId, throughSequence]);
+  }
+
+  /**
+   * The event is sent as JSON text and not read back, so a large tool
+   * output crosses the network once.
+   */
+  async #insert(
+    threadId: string,
+    event: ThreadEvent,
+    origin: SupervisorEventOrigin | undefined,
+  ): Promise<RecordedThreadEvent> {
+    const boundary: RunBoundary = runBoundaryOf(event);
+    const result = await this.#pool.query<AppendedEventRow>(this.#appendStatement, [
+      threadId,
+      JSON.stringify(event),
+      origin?.supervisorInstanceId ?? null,
+      origin?.eventNumber ?? null,
+      boundary,
+    ]);
+    const row = result.rows[0];
+    if (row === undefined) {
+      throw new Error("Appending a thread event returned no row");
+    }
+    return { sequence: Number(row.sequence), recordedAt: row.recorded_at.toISOString(), event };
+  }
+}
+
+function isDuplicateSupervisorEvent(error: unknown): boolean {
+  return (
+    error instanceof DatabaseError &&
+    error.code === uniqueViolationCode &&
+    error.constraint === oneRowPerSupervisorEventIndex
+  );
 }
 
 /**
@@ -84,20 +186,51 @@ export class PostgresThreadEventLog implements ThreadEventLog {
  * creates the thread's counter row or adds one to it, which locks the row
  * until the statement commits; a concurrent append to the same thread waits
  * on that lock, then sees the committed counter. So sequences are gapless
- * (a failed insert rolls the counter back with it), start at 1, and commit
- * in sequence order. `clock_timestamp()` is read after the lock is taken,
- * unlike `now()`, which is fixed when the statement starts, so recorded
- * times never go backwards as sequences go forwards.
+ * (a failed insert, a duplicate supervisor event included, rolls the counter
+ * back with it), start at 1, and commit in sequence order. `clock_timestamp()`
+ * is read after the lock is taken, unlike `now()`, which is fixed when the
+ * statement starts, so recorded times never go backwards as sequences go
+ * forwards.
+ *
+ * The same update keeps the counter row's open run in step with the event
+ * ($5 is its run boundary): a run start records the supervisor that sent
+ * it, and a run end clears it.
  */
 function appendStatementFor(qualifiedSchema: string): string {
   return `with assigned as (
-      insert into ${qualifiedSchema}.thread_sequence_counters as counter (thread_id, last_sequence)
-      values ($1::text, 1)
-      on conflict (thread_id) do update set last_sequence = counter.last_sequence + 1
+      insert into ${qualifiedSchema}.thread_sequence_counters as counter
+        (thread_id, last_sequence, open_run_supervisor_instance_id)
+      values ($1::text, 1, case when $5::text = 'opens_run' then $3::text end)
+      on conflict (thread_id) do update set
+        last_sequence = counter.last_sequence + 1,
+        open_run_supervisor_instance_id = case $5::text
+          when 'opens_run' then $3::text
+          when 'closes_run' then null
+          else counter.open_run_supervisor_instance_id
+        end
       returning counter.last_sequence as sequence
     )
-    insert into ${qualifiedSchema}.thread_events (thread_id, sequence, recorded_at, event)
-    select $1::text, assigned.sequence, clock_timestamp(), $2::json
+    insert into ${qualifiedSchema}.thread_events
+      (thread_id, sequence, recorded_at, event, supervisor_instance_id, supervisor_event_number)
+    select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint
     from assigned
     returning sequence, recorded_at`;
+}
+
+/**
+ * Everything a connecting supervisor is checked against, in one round trip.
+ * The largest event number comes from the unique index on supervisor
+ * events, so it is found without reading any event.
+ */
+function resumePointStatementFor(qualifiedSchema: string): string {
+  return `select
+      counter.last_sequence,
+      counter.user_messages_delivered_through,
+      counter.open_run_supervisor_instance_id,
+      coalesce((
+        select max(supervisor_event_number) from ${qualifiedSchema}.thread_events
+        where thread_id = $1 and supervisor_instance_id = $2
+      ), 0) as last_recorded_event_number
+    from (select 1) as always_one_row
+    left join ${qualifiedSchema}.thread_sequence_counters as counter on counter.thread_id = $1`;
 }
