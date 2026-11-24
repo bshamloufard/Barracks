@@ -16,7 +16,7 @@ import { standardCloseCodes } from "../standard-close-codes.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import { InProgressAssistantText } from "./in-progress-assistant-text.js";
-import { type MissedEvents, readMissedEvents } from "./read-missed-events.js";
+import { findMissedRange, type MissedRange, readMissedEvents } from "./read-missed-events.js";
 import { SerialTaskQueue } from "./serial-task-queue.js";
 
 /** The messages that must still reach a client once its replay is over. */
@@ -29,8 +29,19 @@ type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
  * status are dropped instead: the client is sent the current status and the
  * text streamed so far when its replay ends, which supersede them, so
  * holding them would only cost memory for as long as a slow replay lasts.
+ *
+ * A live client is sent each thread event only if it is the one after the
+ * last it was sent. An event at or below that was already replayed to it: an
+ * append can be committed, and so replayed, before the log's answer reaches
+ * the relay and the relay broadcasts it. An event further on means the
+ * client missed one this relay never broadcast, because another control
+ * plane instance recorded it or because an append reported as failed was
+ * committed after all; that client is disconnected, so it reconnects and
+ * replays what it missed from the log, rather than being shown a gap.
  */
-type ClientPhase = { name: "replaying"; heldBackMessages: HeldBackMessage[] } | { name: "live" };
+type ClientPhase =
+  | { name: "replaying"; heldBackMessages: HeldBackMessage[] }
+  | { name: "live"; lastSentSequence: number };
 
 export type ThreadRelayOptions = {
   threadId: string;
@@ -158,33 +169,38 @@ export class ThreadRelay {
   /**
    * The client was registered before the log is read, so any event recorded
    * while the replay is under way is held back for it rather than missed;
-   * held-back events the replay already covered are then skipped, so none is
-   * sent twice. A client that detaches part way is sent nothing more.
+   * events the replay already covered are then skipped, so none is sent
+   * twice. A client that detaches part way is sent nothing more.
    */
   async #replayThenGoLive(
     connection: ClientConnection,
     lastSeenSequence: number,
     heldBackMessages: HeldBackMessage[],
   ): Promise<void> {
-    const missed = await readMissedEvents(
+    const range = await findMissedRange(
       this.#threadEventLog,
       this.threadId,
       lastSeenSequence,
       this.#logger,
     );
-    const wasReplayCompleted = await this.#replayMissedEvents(connection, missed);
+    const wasReplayCompleted = await this.#replayMissedEvents(connection, range);
     if (!wasReplayCompleted) {
       return;
     }
     // From here to the end nothing is awaited, so no event can slip in
     // between the held-back messages and the switch to live.
-    this.#sendHeldBackMessages(connection, heldBackMessages, lastSequenceOf(missed));
+    this.#clientPhases.set(connection, { name: "live", lastSentSequence: range.lastSequence });
+    for (const message of heldBackMessages) {
+      this.#sendToClient(connection, message);
+    }
     connection.send(this.#supervisorConnectionStatus());
     for (const fragment of this.#inProgressText.toCoalescedFragments()) {
       connection.send({ type: "stream_fragment", fragment });
     }
-    this.#clientPhases.set(connection, { name: "live" });
-    this.#logger.info({ replayedEventCount: missed.events.length }, "Client caught up and is live");
+    this.#logger.info(
+      { replayedEventCount: range.lastSequence - range.afterSequence },
+      "Client caught up and is live",
+    );
   }
 
   async #recordAgentEvent(supervisor: SupervisorConnection, event: ThreadEvent): Promise<void> {
@@ -326,50 +342,63 @@ export class ThreadRelay {
 
   #sendToClient(client: ClientConnection, message: ControlPlaneToClientMessage): void {
     const phase = this.#clientPhases.get(client);
-    if (phase?.name !== "replaying") {
-      client.send(message);
+    if (phase?.name === "replaying") {
+      if (message.type === "thread_event" || message.type === "client_message_rejected") {
+        phase.heldBackMessages.push(message);
+      }
       return;
     }
-    if (message.type === "thread_event" || message.type === "client_message_rejected") {
-      phase.heldBackMessages.push(message);
+    if (phase !== undefined && message.type === "thread_event") {
+      if (message.sequence <= phase.lastSentSequence) {
+        return;
+      }
+      if (message.sequence > phase.lastSentSequence + 1) {
+        this.#disconnectClientThatMissedEvents(client, phase.lastSentSequence, message.sequence);
+        return;
+      }
+      phase.lastSentSequence = message.sequence;
     }
+    client.send(message);
   }
 
-  /** Returns false if the client detached before the replay was over. */
-  async #replayMissedEvents(client: ClientConnection, missed: MissedEvents): Promise<boolean> {
-    const messages: ControlPlaneToClientMessage[] = [
-      {
-        type: "replay_announcement",
-        firstSequence: missed.afterSequence + 1,
-        lastSequence: lastSequenceOf(missed),
-      },
-      ...missed.events.map((recordedEvent) => ({
-        type: "thread_event" as const,
-        ...recordedEvent,
-      })),
-    ];
-    for (const message of messages) {
+  #disconnectClientThatMissedEvents(
+    client: ClientConnection,
+    lastSentSequence: number,
+    nextSequence: number,
+  ): void {
+    this.#logger.warn(
+      { lastSentSequence, nextSequence },
+      "A live client would have missed thread events; disconnecting it so it replays them",
+    );
+    this.detachClient(client);
+    client.close(
+      standardCloseCodes.internalError,
+      "Thread events were recorded that this connection was not sent; reconnect to replay them",
+    );
+  }
+
+  /**
+   * Sends the announcement, then the announced events as they are read from
+   * the log a page at a time. Returns false if the client detached before
+   * the replay was over.
+   */
+  async #replayMissedEvents(client: ClientConnection, range: MissedRange): Promise<boolean> {
+    if (!this.#clientPhases.has(client)) {
+      return false;
+    }
+    await client.sendAndWaitUntilWritten({
+      type: "replay_announcement",
+      firstSequence: range.afterSequence + 1,
+      lastSequence: range.lastSequence,
+    });
+    const missedEvents = readMissedEvents(this.#threadEventLog, this.threadId, range);
+    for await (const recordedEvent of missedEvents) {
       if (!this.#clientPhases.has(client)) {
         return false;
       }
-      await client.sendAndWaitUntilWritten(message);
+      await client.sendAndWaitUntilWritten({ type: "thread_event", ...recordedEvent });
     }
     return this.#clientPhases.has(client);
-  }
-
-  /** Thread events the replay already covered are skipped, so none is sent twice. */
-  #sendHeldBackMessages(
-    client: ClientConnection,
-    heldBackMessages: HeldBackMessage[],
-    lastReplayedSequence: number,
-  ): void {
-    for (const message of heldBackMessages) {
-      const wasReplayed =
-        message.type === "thread_event" && message.sequence <= lastReplayedSequence;
-      if (!wasReplayed) {
-        client.send(message);
-      }
-    }
   }
 
   #enqueue(description: string, task: () => Promise<void>): void {
@@ -399,9 +428,4 @@ export class ThreadRelay {
       this.#whenUnused();
     }
   }
-}
-
-/** The sequence of the last event a replay covers, which is where it ends even when it is empty. */
-function lastSequenceOf(missed: MissedEvents): number {
-  return missed.events.at(-1)?.sequence ?? missed.afterSequence;
 }

@@ -73,4 +73,63 @@ describe("the control plane configuration", () => {
       "http://localhost:3000",
     ]);
   });
+
+  it("keeps thread history in memory when no database URL is given", () => {
+    const result = readConfiguration({ BARRACK_SUPERVISOR_TOKEN: validToken });
+
+    expect(result.ok && result.configuration.database).toBeUndefined();
+  });
+
+  it("verifies the database's certificate by default, with a pool of five connections", () => {
+    const result = readConfiguration({
+      BARRACK_SUPERVISOR_TOKEN: validToken,
+      BARRACK_DATABASE_URL:
+        "postgresql://postgres.project:p%40ss%2Fword@aws-0-eu-west-1.pooler.supabase.com:5432/postgres",
+    });
+
+    expect(result.ok && result.configuration.database).toEqual({
+      host: "aws-0-eu-west-1.pooler.supabase.com",
+      port: 5432,
+      databaseName: "postgres",
+      user: "postgres.project",
+      password: "p@ss/word",
+      tlsMode: "verify-full",
+      certificateAuthorities: undefined,
+      poolSize: 5,
+    });
+  });
+
+  it("refuses a database URL whose query string would override the TLS settings", () => {
+    const result = readConfiguration({
+      BARRACK_SUPERVISOR_TOKEN: validToken,
+      BARRACK_DATABASE_URL: "postgres://user:secret@db.example:5432/barrack?sslmode=disable",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^BARRACK_DATABASE_URL: must not contain query parameters/)],
+    });
+  });
+
+  it("reports every database problem at once without repeating the URL or its password", () => {
+    const password = "correct-horse-battery-staple";
+
+    const result = readConfiguration({
+      BARRACK_SUPERVISOR_TOKEN: validToken,
+      BARRACK_DATABASE_URL: `mysql://user:${password}@db.example/barrack`,
+      BARRACK_DATABASE_TLS: "require",
+      BARRACK_DATABASE_CA_CERTIFICATE: "not a certificate",
+      BARRACK_DATABASE_POOL_SIZE: "0",
+    });
+
+    expect(result.ok).toBe(false);
+    const problems = result.ok ? [] : result.problems;
+    expect(problems.map((problem) => problem.split(":")[0])).toEqual([
+      "BARRACK_DATABASE_URL",
+      "BARRACK_DATABASE_TLS",
+      "BARRACK_DATABASE_CA_CERTIFICATE",
+      "BARRACK_DATABASE_POOL_SIZE",
+    ]);
+    expect(JSON.stringify(result)).not.toContain(password);
+  });
 });

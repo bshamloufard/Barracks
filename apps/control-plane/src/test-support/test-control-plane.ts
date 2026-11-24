@@ -80,5 +80,6 @@ function testConfiguration(options: TestControlPlaneOptions): ControlPlaneConfig
     allowedClientOrigins: [allowedTestOrigin],
     webClientDirectory: options.webClientDirectory,
     logLevel: "silent",
+    database: undefined,
   };
 }

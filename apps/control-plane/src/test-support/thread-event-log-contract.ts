@@ -1,6 +1,7 @@
 import type { ThreadEvent } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import { readWholeThread } from "./read-whole-thread.js";
 
 /**
  * The behaviour every `ThreadEventLog` must have. Each implementation's test
@@ -80,17 +81,19 @@ export function describeThreadEventLogContract(
 
       const recorded = await log.append("thread-a", event);
 
-      expect(await log.readAfter("thread-a", 0)).toEqual([recorded]);
+      expect(await readWholeThread(log, "thread-a")).toEqual([recorded]);
       expect(recorded.event).toEqual(event);
     });
 
     it("reads only the events after the given sequence, in sequence order", async () => {
       const log = await createEmptyLog();
-      for (const number of [1, 2, 3, 4, 5]) {
-        await log.append("thread-a", userMessageNumbered(number));
-      }
+      await appendUserMessages(log, "thread-a", 5);
 
-      const events = await log.readAfter("thread-a", 2);
+      const events = await log.readEvents("thread-a", {
+        afterSequence: 2,
+        throughSequence: 5,
+        limit: 10,
+      });
 
       expect(events.map((recorded) => recorded.sequence)).toEqual([3, 4, 5]);
       expect(events.map((recorded) => recorded.event)).toEqual([
@@ -100,21 +103,70 @@ export function describeThreadEventLogContract(
       ]);
     });
 
+    it("reads no more events than the limit, starting with the first after the given sequence", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 6);
+
+      const events = await log.readEvents("thread-a", {
+        afterSequence: 1,
+        throughSequence: 6,
+        limit: 2,
+      });
+
+      expect(events.map((recorded) => recorded.sequence)).toEqual([2, 3]);
+    });
+
+    it("reads no event beyond the sequence it is told to read through", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 6);
+
+      const events = await log.readEvents("thread-a", {
+        afterSequence: 1,
+        throughSequence: 4,
+        limit: 10,
+      });
+
+      expect(events.map((recorded) => recorded.sequence)).toEqual([2, 3, 4]);
+    });
+
     it("reads nothing after the newest sequence", async () => {
       const log = await createEmptyLog();
       await log.append("thread-a", userMessageNumbered(1));
 
-      expect(await log.readAfter("thread-a", 1)).toEqual([]);
-      expect(await log.readAfter("thread-a", 7)).toEqual([]);
+      for (const afterSequence of [1, 7]) {
+        expect(
+          await log.readEvents("thread-a", { afterSequence, throughSequence: 10, limit: 10 }),
+        ).toEqual([]);
+      }
     });
 
     it("reads nothing from a thread that has no events", async () => {
       const log = await createEmptyLog();
       await log.append("thread-a", userMessageNumbered(1));
 
-      expect(await log.readAfter("thread-b", 0)).toEqual([]);
+      expect(await readWholeThread(log, "thread-b")).toEqual([]);
+    });
+
+    it("reports the newest sequence of each thread, and 0 for a thread with no events", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 3);
+      await appendUserMessages(log, "thread-b", 1);
+
+      expect(await log.readNewestSequence("thread-a")).toBe(3);
+      expect(await log.readNewestSequence("thread-b")).toBe(1);
+      expect(await log.readNewestSequence("thread-c")).toBe(0);
     });
   });
+}
+
+async function appendUserMessages(
+  log: ThreadEventLog,
+  threadId: string,
+  count: number,
+): Promise<void> {
+  for (let number = 1; number <= count; number += 1) {
+    await log.append(threadId, userMessageNumbered(number));
+  }
 }
 
 function userMessageNumbered(number: number): ThreadEvent {

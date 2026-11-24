@@ -10,6 +10,27 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # The control plane's database tests run against this throwaway Postgres,
+    # the major version Supabase runs, so that in CI they never skip.
+    services:
+      postgres:
+        image: postgres:17.12-alpine
+        env:
+          POSTGRES_USER: barrack
+          POSTGRES_PASSWORD: barrack
+          POSTGRES_DB: barrack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --host 127.0.0.1 --username barrack"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      BARRACK_TEST_DATABASE_URL: postgres://barrack:barrack@127.0.0.1:5432/barrack_test
+
     steps:
       - uses: actions/checkout@v7
 
