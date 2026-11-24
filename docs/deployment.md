@@ -193,14 +193,28 @@ docker compose down
 | `docker-api` | the socket proxy, the control plane       | none (internal)       |
 | `sandboxes`  | the control plane, every thread's sandbox | yes, for agents' work |
 
-A sandbox reaches the control plane as `ws://control-plane:8787`, and the internet. It cannot reach Postgres or the socket proxy, whose networks it never joins, and the Docker socket is not in it. Sandboxes can reach each other, as they could on Docker's default bridge, and, like any container, services on the host that listen on all interfaces.
+A sandbox reaches the control plane as `ws://control-plane:8787`, and the internet. It cannot reach Postgres or the socket proxy, whose networks it never joins, and the Docker socket is not in it. Sandboxes can reach each other, as they could on Docker's default bridge, and, like any container, services on the host that listen on all interfaces, and the cloud metadata address (below).
+
+### The cloud metadata address
+
+> **On a cloud VM, block this before running agents.** A sandbox can reach `169.254.169.254`, where most clouds (AWS, Google Cloud, Azure, DigitalOcean, Hetzner and others) answer the machine's own metadata, and on several of them hand out credentials for the machine's cloud account. Any agent, or anything it downloads, could read them. Nothing in Compose or in Barrack stops it: Docker gives no per-network way to refuse one destination.
+
+The Compose file names the sandboxes' bridge interface `barrack-sandbox`, so one rule on the host, in Docker's `DOCKER-USER` chain (which Docker consults for all traffic it forwards and never flushes), refuses that address to sandboxes alone:
+
+```sh
+sudo iptables -I DOCKER-USER -i barrack-sandbox -d 169.254.169.254 -j REJECT
+```
+
+It holds across `docker compose down` and `up`, since the interface keeps its name, but not across a reboot: save it with your distribution's mechanism (for example `iptables-save` with the `iptables-persistent` package on Debian and Ubuntu), or run it from a unit that starts after Docker. On AWS, also refuse `169.254.170.2` (container credentials) and, if the sandbox network ever gets IPv6, `fd00:ec2::254`. To check it, from a sandbox (`docker exec --user barrack-agent <container> node -e …` connecting to `169.254.169.254` on port 80) the connection should be refused while the internet still answers.
+
+This rule was tested on 2026-11-24 with Docker 29.9 and its default `iptables` firewall backend, on a network declared exactly as in `compose.yaml`: before it, a container on the network got an answer from `169.254.169.254`; after it, the connection was refused, for root and for an unprivileged user alike, while `1.1.1.1:443` still connected, and it still applied after the network was removed and created again. With Docker's `nftables` backend (`docker info` shows `Firewall Backend: nftables`) there is no `DOCKER-USER` chain; an equivalent rule in a table of your own was not tested.
 
 ### The Docker socket
 
 Whoever can create containers through Docker's API can start one that is privileged or mounts the host's files, and so controls the host as root. The control plane must create containers, so **a flaw in the control plane could become control of the machine.** Run this only on a machine you would trust it with. Two things narrow the exposure:
 
-- The control plane never holds the socket. It reaches Docker through [wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy), which answers only the control plane and forwards only the calls the Docker provider makes: create, start, stop, wait for and remove a container, inspect a sandbox by name or ID, and the version check. Listing containers, `exec`, logs, pulls, builds, volumes and networks are refused. The proxy holds no capabilities and has a read-only filesystem.
-- It cannot read other containers: it cannot list them, and it may inspect only containers named `barrack-thread-…` or ones whose full ID it already knows.
+- The control plane never holds the socket. It reaches Docker through [wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy), which answers only the control plane and forwards only the calls the Docker provider makes: create a container; start, stop, wait for, remove and inspect a container named by its full 64-character ID; inspect a container named `barrack-thread-…`; and the version check. Listing containers, `exec`, logs, pulls, builds, volumes and networks are refused. The proxy holds no capabilities and has a read-only filesystem.
+- **These calls are not limited to sandboxes.** The proxy matches only the request's path and cannot tell a sandbox from any other container by its ID, so it would let the control plane start, stop, remove or inspect any container, Postgres's included, whose full ID it had. What keeps it to its own sandboxes is that it cannot list containers: the full IDs it can know are those `docker run` gave it, and its own, which a process can read inside its container. A container ID is 256 random bits, so another container's cannot be guessed. (The proxy offers no way to filter by the target container's labels, and `docker run` itself starts and waits for the container by ID, so the rules cannot name sandboxes only.)
 
 The proxy does not look inside a create request, so it cannot stop a privileged one; a check showed it accepting one. Filtering request bodies, or a Docker authorization plugin, would close that and is not done.
 

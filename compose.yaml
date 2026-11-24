@@ -40,6 +40,12 @@
 # A sandbox can reach the control plane (by the name `control-plane`) and
 # the internet, but neither Postgres nor the socket proxy, whose networks it
 # never joins. Sandboxes can reach each other, as on Docker's default bridge.
+#
+# ON A CLOUD VM, A SANDBOX CAN READ THE MACHINE'S CREDENTIALS. Nothing here
+# stops a sandbox reaching the cloud metadata address, 169.254.169.254,
+# which on most clouds hands out the instance's credentials. Block it on the
+# host before running agents there: docs/deployment.md, "The cloud
+# metadata address", has the rule.
 
 name: barrack
 
@@ -74,14 +80,20 @@ services:
       # The docker CLI checks the API version first.
       - -allowHEAD=(/v[0-9.]+)?/_ping
       - -allowGET=(/v[0-9.]+)?/_ping
-      # Inspect a sandbox by its name or full ID; never list containers.
+      # The proxy sees only the path, so it cannot tell a sandbox from any
+      # other container by its ID: the rules naming a full ID allow that
+      # call on ANY container whose full ID the control plane knows. It
+      # cannot list containers, so those are the ones it created, and its
+      # own. (The `docker run` command itself starts and waits by ID.)
+      #
+      # Inspect a container named as a sandbox, or by its full ID.
       - -allowGET=(/v[0-9.]+)?/containers/(barrack-thread-[A-Za-z0-9_-]+|[0-9a-f]{64})/json
-      # Create, start and stop a sandbox; `docker run --detach` also asks to
-      # wait for the container's exit. Pulling is not allowed, so the
-      # sandbox image must already be on this machine.
+      # Create a container; start, stop and wait for one by its full ID
+      # (`docker run --detach` waits for the container's exit). Pulling is
+      # not allowed, so the sandbox image must already be on this machine.
       - -allowPOST=(/v[0-9.]+)?/containers/create
       - -allowPOST=(/v[0-9.]+)?/containers/[0-9a-f]{64}/(start|stop|wait)
-      # Remove a sandbox.
+      # Remove a container by its full ID.
       - -allowDELETE=(/v[0-9.]+)?/containers/[0-9a-f]{64}
     # Root in this container only to open the socket, which belongs to root
     # and the host's docker group, whose number differs between machines.
@@ -150,3 +162,8 @@ networks:
   sandboxes:
     # A fixed name, because the control plane passes it to `docker run`.
     name: barrack-sandboxes
+    driver_opts:
+      # A fixed name for the bridge interface too, so that a host firewall
+      # rule can keep sandboxes from the cloud metadata address
+      # (docs/deployment.md, "The cloud metadata address").
+      com.docker.network.bridge.name: barrack-sandbox
