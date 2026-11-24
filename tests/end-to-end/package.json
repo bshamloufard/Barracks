@@ -9,6 +9,7 @@
     "typecheck": "tsc --project tsconfig.json"
   },
   "devDependencies": {
+    "@barrack/mock-model-server": "workspace:*",
     "@barrack/protocol": "workspace:*",
     "@barrack/sandbox-providers": "workspace:*",
     "@types/ws": "8.18.2",

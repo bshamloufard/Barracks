@@ -1,13 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 /**
- * A stand-in for an OpenAI-compatible model on 127.0.0.1, so tests can run
- * the real Pi with no network and no API key. It streams chat completions as
- * server-sent events, the way Pi's `openai-completions` API expects:
+ * A stand-in for an OpenAI-compatible model, so tests can run the real Pi
+ * with no network and no API key. It streams chat completions as server-sent
+ * events, the way Pi's `openai-completions` API expects:
  * https://platform.openai.com/docs/api-reference/chat-streaming
  *
  * What it says depends on the newest user message:
  * - containing `RUN_TOOL`: a `bash` tool call that runs `echo hi`;
+ * - starting `RUN_COMMAND `: a `bash` tool call that runs the rest of the
+ *   message, so a test can see what the agent's own commands can do;
  * - containing `CRASH_AGENT`: a `bash` tool call that kills Pi, the shell's
  *   parent process, to test recovery from a crash;
  * - containing `FAIL_ONCE`: an "overloaded" error the first time, which Pi
@@ -24,6 +26,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  */
 export const mockModelTriggers = {
   toolExecution: "RUN_TOOL",
+  command: "RUN_COMMAND ",
   crash: "CRASH_AGENT",
   transientFailure: "FAIL_ONCE",
   persistentFailure: "FAIL_ALWAYS",
@@ -49,6 +52,7 @@ export type ChatMessage = { role: string; content: unknown };
 export type MockModelServer = {
   /** The `baseUrl` for Pi's models.json, ending in `/v1`. */
   baseUrl: string;
+  port: number;
   /** The messages of every request received, oldest request first. */
   receivedConversations: ChatMessage[][];
   close(): Promise<void>;
@@ -57,18 +61,23 @@ export type MockModelServer = {
 type ChunkWriter = (delta: object, finishReason: string | null) => void;
 type ReplyWriter = { writeChunk: ChunkWriter; hasClientLeft: () => boolean };
 
-export async function startMockModelServer(): Promise<MockModelServer> {
+/**
+ * Listens on loopback unless given another local address, such as the one
+ * Docker containers reach the host on.
+ */
+export async function startMockModelServer(host = "127.0.0.1"): Promise<MockModelServer> {
   const receivedConversations: ChatMessage[][] = [];
   const server = createServer((request, response) => {
     void answerRequest(request, response, receivedConversations);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const address = server.address();
   if (address === null || typeof address === "string") {
     throw new Error("The mock model server is not listening on a TCP port.");
   }
   return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    baseUrl: `http://${host}:${address.port}/v1`,
+    port: address.port,
     receivedConversations,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
@@ -139,13 +148,34 @@ function describeUserMessage(message: ChatMessage | undefined): string {
   return message?.role === "user" ? JSON.stringify(message.content) : "";
 }
 
+/** The text of a user message, whether it came as a string or as content parts. */
+function readUserText(message: ChatMessage | undefined): string {
+  if (message?.role !== "user") {
+    return "";
+  }
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
+  return message.content
+    .map((part: unknown) =>
+      typeof part === "object" && part !== null && "text" in part ? String(part.text) : "",
+    )
+    .join("");
+}
+
 async function writeReply(
   lastMessage: ChatMessage | undefined,
   replyWriter: ReplyWriter,
 ): Promise<void> {
   const lastUserText = describeUserMessage(lastMessage);
   const { writeChunk } = replyWriter;
-  if (lastUserText.includes(mockModelTriggers.toolExecution)) {
+  const commandRequest = readUserText(lastMessage);
+  if (commandRequest.startsWith(mockModelTriggers.command)) {
+    writeBashCall(writeChunk, commandRequest.slice(mockModelTriggers.command.length));
+  } else if (lastUserText.includes(mockModelTriggers.toolExecution)) {
     writeBashCall(writeChunk, "echo hi");
   } else if (lastUserText.includes(mockModelTriggers.crash)) {
     writeBashCall(writeChunk, "kill -9 $PPID");
