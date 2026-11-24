@@ -11,8 +11,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * test can show what the service said.
  */
 
-const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const tsxLoaderUrl = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+export const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+export const tsxLoaderUrl = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 const stopTimeoutInMilliseconds = 10_000;
 const readyTimeoutInMilliseconds = 20_000;
 

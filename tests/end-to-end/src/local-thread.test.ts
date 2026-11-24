@@ -1,48 +1,43 @@
-import { randomUUID } from "node:crypto";
 import type { ControlPlaneToClientMessage } from "@barrack/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import {
-  type RunningControlPlane,
-  startControlPlane,
-  startSupervisor,
-} from "./support/local-system.js";
-import type { ServiceProcess } from "./support/service-process.js";
+import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
+import { createThread } from "./support/threads-api.js";
 
 /**
  * The real control plane and the real sandbox supervisor, each in its own
- * process exactly as they run in production, with the supervisor's scripted
- * fake agent. The test clients speak the protocol over real WebSockets, so
- * these tests cover the whole path from a client to the agent and back.
+ * process as they run in production, with the supervisor's scripted fake
+ * agent. Threads are created through the control plane's API, which starts
+ * each thread's supervisor through the local-process sandbox provider with a
+ * token of its own. The test clients speak the protocol over real
+ * WebSockets, so these tests cover the whole path from a client to the
+ * agent and back.
  *
- * One control plane serves every test; each test has a thread and a
- * supervisor of its own, so no test depends on another's history.
+ * One control plane serves every test; each test creates a thread of its
+ * own, so no test depends on another's history.
  */
 
 /** The fake agent quotes a message back one word per step, so a long one gives a long run. */
 const longMessage = Array.from({ length: 40 }, (_, index) => `word${index + 1}`).join(" ");
 
 let controlPlane: RunningControlPlane;
-const supervisors: ServiceProcess[] = [];
 const clients: TestClient[] = [];
 
 beforeAll(async () => {
-  controlPlane = await startControlPlane();
+  controlPlane = await startControlPlane({ sandboxes: { kind: "local-process" } });
 });
 
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.close()));
-  await Promise.all(supervisors.splice(0).map((supervisor) => supervisor.stop()));
 });
 
 afterAll(async () => {
-  await controlPlane?.process.stop();
+  await controlPlane?.stop();
 });
 
-/** A new thread with its own supervisor, and a client watching it once the supervisor is in. */
+/** A new thread, and a client watching it once the thread's supervisor has connected. */
 async function startThread(): Promise<{ threadId: string; client: TestClient }> {
-  const threadId = `end-to-end-${randomUUID()}`;
-  supervisors.push(startSupervisor(controlPlane, threadId));
+  const { threadId } = await createThread(controlPlane.httpBaseUrl);
   const client = await connectClient(threadId, 0);
   await client.waitUntilSupervisorIsConnected();
   return { threadId, client };
@@ -174,5 +169,32 @@ describe("one thread, run by the real control plane and supervisor", () => {
     ]);
     expect(threadEvents[2]?.event).toMatchObject({ endReason: "interrupted" });
     expect(threadEvents[3]?.event).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+  });
+});
+
+describe("two threads created at once", () => {
+  it("each get a supervisor of their own, which answers only its own thread", async () => {
+    const [first, second] = await Promise.all([startThread(), startThread()]);
+
+    first.client.send({ type: "send_user_message", text: "First thread here" });
+    second.client.send({ type: "send_user_message", text: "Second thread here" });
+    await Promise.all([
+      first.client.waitUntilRunsHaveSettled(1),
+      second.client.waitUntilRunsHaveSettled(1),
+    ]);
+
+    const repliesIn = (client: TestClient) =>
+      client
+        .threadEvents()
+        .flatMap((message) =>
+          message.event.type === "assistant_message" ? message.event.content : [],
+        );
+    expect(first.threadId).not.toBe(second.threadId);
+    expect(repliesIn(first.client)).toEqual([
+      { type: "text", text: 'You said: "First thread here"' },
+    ]);
+    expect(repliesIn(second.client)).toEqual([
+      { type: "text", text: 'You said: "Second thread here"' },
+    ]);
   });
 });
