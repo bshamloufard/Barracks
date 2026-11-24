@@ -105,6 +105,16 @@ async function leaveOperationUnderWay(
   expect(outcome.kind).toBe("changed");
 }
 
+/** Resolves once the control plane's provider has been asked for `operation`. */
+async function waitForCall(
+  controlPlane: TestControlPlane,
+  operation: "create" | "destroy",
+): Promise<void> {
+  while (!controlPlane.sandboxProvider.calls.some((call) => call.operation === operation)) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function leaseFromNow(): Date {
   return new Date(clock.now().getTime() + leaseDuration);
 }
@@ -300,6 +310,31 @@ describe("two control planes at once, as during a redeploy", () => {
     expect(first.sandboxProvider.calls.filter((call) => call.operation === "create")).toHaveLength(
       1,
     );
+  });
+
+  it("leaves the sandbox a creation made to the control plane that took the creation over, rather than destroy what it adopted", async () => {
+    const first = await start();
+    const releaseFirstCreation = first.sandboxProvider.holdNextOperation("create");
+    const releaseFirstDestroy = first.sandboxProvider.holdNextOperation("destroy");
+    const created = await first.postThread();
+    const { threadId } = threadResponseSchema.parse(await created.json()).thread;
+    const second = await startAnother(first);
+    const releaseSecondCreation = second.sandboxProvider.holdNextOperation("create");
+    clock.advanceBy(leaseDuration * 10);
+    await second.threadServices.reconciler.reconcile({ includeSettledSandboxes: true });
+    await waitForCall(second, "create");
+
+    releaseFirstCreation();
+    await Promise.race([first.whenOperationsSettle(), waitForCall(first, "destroy")]);
+    releaseSecondCreation();
+    await second.whenOperationsSettle();
+    releaseFirstDestroy();
+    await first.whenOperationsSettle();
+
+    const sandboxId = await sandboxIdFor(second, threadId);
+    expect((await fetchThread(second, threadId)).sandbox).toEqual({ state: "running" });
+    expect(await second.sandboxProvider.getStatus(sandboxId)).toEqual({ state: "running" });
+    expect(first.sandboxProvider.calls.filter((call) => call.operation === "destroy")).toEqual([]);
   });
 
   it("lets only one of them take over an abandoned stop", async () => {

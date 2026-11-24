@@ -13,11 +13,12 @@ import {
   type SupervisorEnvironmentSettings,
 } from "../threads/supervisor-environment.js";
 import { type MintedSupervisorToken, mintSupervisorToken } from "../threads/supervisor-token.js";
-import type {
-  ThreadRecord,
-  ThreadSandboxRecord,
-  ThreadStore,
-  TransitionOutcome,
+import {
+  isOperatingState,
+  type ThreadRecord,
+  type ThreadSandboxRecord,
+  type ThreadStore,
+  type TransitionOutcome,
 } from "../threads/thread-store.js";
 import {
   describeProviderFailure,
@@ -56,7 +57,10 @@ const interruptCheckIntervalInMilliseconds = 100;
  * version the operation was handed, so one taken over or overtaken records
  * nothing; and a provider operation that fails leaves the thread in the
  * state the provider then reports, with a reason the user is shown, never
- * stuck in one under way.
+ * stuck in one under way. An operation that finds it has lost its lease
+ * gives up where it is: it tries the provider no more, records nothing,
+ * removes no history, and destroys no sandbox another control plane may
+ * have adopted.
  */
 export class SandboxOperations {
   readonly #options: SandboxOperationsOptions;
@@ -142,11 +146,19 @@ export class SandboxOperations {
       return;
     }
     let outcome: SandboxRequestOutcome;
+    let made: SandboxRequestOutcome | undefined;
     try {
-      outcome = await this.#withLease(thread, logger, () =>
-        this.#requestSandbox(thread.threadId, token.token, isTakenOver, logger),
-      );
+      outcome = await this.#withLease(thread, logger, async (lease) => {
+        made = await this.#requestSandbox(thread.threadId, token.token, isTakenOver, lease, logger);
+        return made;
+      });
     } catch (error) {
+      if (error instanceof LeaseLostError) {
+        if (made !== undefined) {
+          await this.#removeUnrecordedSandbox(thread.threadId, made, logger);
+        }
+        return;
+      }
       logger.error({ err: error }, "Could not create the thread's sandbox");
       await this.#record(thread, logger, {
         state: "failed",
@@ -197,6 +209,7 @@ export class SandboxOperations {
     threadId: string,
     supervisorToken: string,
     mayFindEarlierSandbox: boolean,
+    lease: Lease,
     logger: Logger,
   ): Promise<SandboxRequestOutcome> {
     const supervisorEnvironment = buildSupervisorEnvironment(
@@ -206,7 +219,7 @@ export class SandboxOperations {
     );
     let attemptCount = 0;
     try {
-      return await this.#callProvider("create the sandbox", logger, async () => {
+      return await this.#callProvider("create the sandbox", lease, logger, async () => {
         attemptCount += 1;
         const { sandboxId } = await this.#options.sandboxProvider.create({
           threadId,
@@ -226,7 +239,7 @@ export class SandboxOperations {
         { sandboxId },
         "An earlier attempt created the thread's sandbox; making sure it runs",
       );
-      await this.#callProvider("start the sandbox", logger, () =>
+      await this.#callProvider("start the sandbox", lease, logger, () =>
         this.#options.sandboxProvider.start(sandboxId),
       );
       return { sandboxId, wasMadeEarlier: true };
@@ -234,19 +247,31 @@ export class SandboxOperations {
   }
 
   /**
-   * The creation was taken over or overtaken (the thread deleted, say). A
-   * sandbox this attempt made, that the thread's record does not name, would
-   * otherwise run unrecorded, so it is destroyed; one an earlier attempt
-   * made is left to whoever holds the thread now.
+   * The creation was taken over. A sandbox this attempt made would run
+   * unrecorded if nobody else takes it, so it is destroyed, but only when
+   * that is certain: the thread is gone, or settled without naming it. While
+   * another control plane holds the creation (the record is still
+   * `creating`), the sandbox is left, since that one will find and adopt
+   * it; and one an earlier attempt made is never this attempt's to destroy.
    */
   async #removeUnrecordedSandbox(
     threadId: string,
     outcome: SandboxRequestOutcome,
     logger: Logger,
   ): Promise<void> {
+    if (outcome.wasMadeEarlier) {
+      return;
+    }
     const current = await this.#options.threadStore.find(threadId);
-    const isRecorded = current !== undefined && sandboxIdOf(current.sandbox) === outcome.sandboxId;
-    if (isRecorded || outcome.wasMadeEarlier) {
+    const isSolelyThisAttempts =
+      current === undefined ||
+      (!isOperatingState(current.sandbox.state) &&
+        sandboxIdOf(current.sandbox) !== outcome.sandboxId);
+    if (!isSolelyThisAttempts) {
+      logger.warn(
+        { sandboxId: outcome.sandboxId },
+        "Another control plane took over this creation; leaving it the sandbox made",
+      );
       return;
     }
     logger.warn(
@@ -265,12 +290,15 @@ export class SandboxOperations {
 
   async #start(thread: ThreadRecord, sandboxId: string, logger: Logger): Promise<void> {
     try {
-      await this.#withLease(thread, logger, () =>
-        this.#callProvider("start the sandbox", logger, () =>
+      await this.#withLease(thread, logger, (lease) =>
+        this.#callProvider("start the sandbox", lease, logger, () =>
           this.#options.sandboxProvider.start(sandboxId),
         ),
       );
     } catch (error) {
+      if (error instanceof LeaseLostError) {
+        return;
+      }
       await this.#settleAfterFailure(
         thread,
         sandboxId,
@@ -306,12 +334,15 @@ export class SandboxOperations {
     threadRuns.prepareForStop(thread.threadId);
     try {
       await this.#waitForInterruptedRun(thread.threadId, logger);
-      await this.#withLease(thread, logger, () =>
-        this.#callProvider("stop the sandbox", logger, () =>
+      await this.#withLease(thread, logger, (lease) =>
+        this.#callProvider("stop the sandbox", lease, logger, () =>
           this.#options.sandboxProvider.stop(sandboxId),
         ),
       );
     } catch (error) {
+      if (error instanceof LeaseLostError) {
+        return;
+      }
       if (!(await this.#hasStoppedAfterAll(sandboxId, error, logger))) {
         await this.#settleAfterFailure(
           thread,
@@ -387,12 +418,15 @@ export class SandboxOperations {
     this.#options.threadRuns.prepareForDeletion(thread.threadId);
     if (sandboxId !== undefined) {
       try {
-        await this.#withLease(thread, logger, () =>
-          this.#callProvider("destroy the sandbox", logger, () =>
+        await this.#withLease(thread, logger, (lease) =>
+          this.#callProvider("destroy the sandbox", lease, logger, () =>
             this.#options.sandboxProvider.destroy(sandboxId),
           ),
         );
       } catch (error) {
+        if (error instanceof LeaseLostError) {
+          return;
+        }
         await this.#settleAfterFailure(
           thread,
           sandboxId,
@@ -404,6 +438,12 @@ export class SandboxOperations {
       }
     }
     const { threadStore, threadEventLog, threadRuns } = this.#options;
+    // A deletion taken over meanwhile is the taker's to finish; a destroy
+    // that failed there may have left the thread with its history.
+    if (!(await threadStore.renewLease(thread.threadId, thread.version, this.leaseExpiry()))) {
+      logger.warn("Lost the lease on a deletion; leaving the thread's history to whoever holds it");
+      return;
+    }
     await threadEventLog.deleteHistory(thread.threadId);
     if (!(await threadStore.remove(thread.threadId, thread.version))) {
       logger.warn("The thread's record moved on while it was being deleted; leaving it as it is");
@@ -560,37 +600,60 @@ export class SandboxOperations {
   }
 
   /**
-   * Renews the operation's lease while `work` runs. A renewal that finds the
-   * thread moved on means the operation was taken over; the work carries
-   * on, since stopping a provider call part way helps nobody, and its
-   * outcome is then not recorded.
+   * Renews the operation's lease while `work` runs, and checks it once more
+   * when the work ends. A renewal that finds the thread moved on means the
+   * operation was taken over: the provider call under way is let finish,
+   * since stopping one part way helps nobody, but `work` is told (through
+   * `lease`) to try nothing more, and this throws `LeaseLostError` however
+   * the work ended, so its caller records nothing and undoes nothing it is
+   * not certain is its own.
    */
   async #withLease<Result>(
     thread: ThreadRecord,
     logger: Logger,
-    work: () => Promise<Result>,
+    work: (lease: Lease) => Promise<Result>,
   ): Promise<Result> {
-    const renew = () => {
-      this.#options.threadStore
-        .renewLease(thread.threadId, thread.version, this.leaseExpiry())
-        .then((isRenewed) => {
-          if (!isRenewed) {
-            logger.warn("Lost the lease on a sandbox operation still under way");
-          }
-        })
-        .catch((error: unknown) => logger.error({ err: error }, "Could not renew a lease"));
+    let isLost = false;
+    const renew = async (): Promise<void> => {
+      try {
+        const isRenewed = await this.#options.threadStore.renewLease(
+          thread.threadId,
+          thread.version,
+          this.leaseExpiry(),
+        );
+        if (!isRenewed && !isLost) {
+          isLost = true;
+          logger.warn("Lost the lease on a sandbox operation still under way; giving it up");
+        }
+      } catch (error) {
+        logger.error({ err: error }, "Could not renew a lease");
+      }
     };
-    const timer = setInterval(renew, this.#options.timing.leaseRenewalIntervalInMilliseconds);
+    const timer = setInterval(() => {
+      void renew();
+    }, this.#options.timing.leaseRenewalIntervalInMilliseconds);
+    let outcome: { result: Result } | { error: unknown };
     try {
-      return await work();
+      outcome = { result: await work({ isLost: () => isLost }) };
+    } catch (error) {
+      outcome = { error };
     } finally {
       clearInterval(timer);
     }
+    await renew();
+    if (isLost) {
+      throw new LeaseLostError();
+    }
+    if ("error" in outcome) {
+      throw outcome.error;
+    }
+    return outcome.result;
   }
 
-  /** Calls the provider, trying again after pauses while it is unavailable. */
+  /** Calls the provider, trying again after pauses while it is unavailable and the lease is held. */
   async #callProvider<Result>(
     attempt: string,
+    lease: Lease,
     logger: Logger,
     call: () => Promise<Result>,
   ): Promise<Result> {
@@ -600,7 +663,11 @@ export class SandboxOperations {
         return await call();
       } catch (error) {
         const delay = delays[attemptIndex];
-        if (!(error instanceof SandboxProviderUnavailableError) || delay === undefined) {
+        if (
+          !(error instanceof SandboxProviderUnavailableError) ||
+          delay === undefined ||
+          lease.isLost()
+        ) {
           throw error;
         }
         logger.warn(
@@ -614,6 +681,17 @@ export class SandboxOperations {
 
   #loggerFor(thread: ThreadRecord): Logger {
     return this.#options.logger.child({ threadId: thread.threadId });
+  }
+}
+
+/** Whether the operation's lease has been found lost, so it should try nothing more. */
+type Lease = { isLost: () => boolean };
+
+/** The operation's lease was taken by another control plane: it gives up, recording nothing. */
+class LeaseLostError extends Error {
+  constructor() {
+    super("Another control plane took over this sandbox operation.");
+    this.name = "LeaseLostError";
   }
 }
 
