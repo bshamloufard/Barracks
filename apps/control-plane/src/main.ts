@@ -53,6 +53,7 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
       controlPlaneUrlForSandboxes: supervisorEnvironment.controlPlaneUrlForSandboxes,
       agent: supervisorEnvironment.agent,
       forwardedModelCredentials: Object.keys(supervisorEnvironment.modelCredentials),
+      forwardedPiSettings: supervisorEnvironment.piSettings,
     },
     "Creating thread sandboxes",
   );

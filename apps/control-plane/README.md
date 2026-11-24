@@ -9,7 +9,7 @@ Threads and their history are stored in Postgres when `BARRACK_DATABASE_URL` is 
 ## Threads and their sandboxes
 
 1. `POST /api/threads` mints a thread identifier (a UUID) and a supervisor token (32 random bytes), records the thread with the token's SHA-256 digest and its sandbox `creating`, and answers `201` at once.
-2. In the background it asks the provider to create the sandbox, with the supervisor's environment: `BARRACK_CONTROL_PLANE_URL` (from `BARRACK_SANDBOX_CONTROL_PLANE_URL`), `BARRACK_THREAD_ID`, `BARRACK_SUPERVISOR_TOKEN`, `BARRACK_AGENT_HARNESS`, and for Pi `BARRACK_MODEL` and the model provider keys described below. The token goes nowhere else: it is never stored, logged or returned.
+2. In the background it asks the provider to create the sandbox, with the supervisor's environment: `BARRACK_CONTROL_PLANE_URL` (from `BARRACK_SANDBOX_CONTROL_PLANE_URL`), `BARRACK_THREAD_ID`, `BARRACK_SUPERVISOR_TOKEN`, `BARRACK_AGENT_HARNESS`, and for Pi `BARRACK_MODEL`, the model provider keys and the Pi settings described below. The token goes nowhere else: it is never stored, logged or returned.
 3. When the provider answers, the thread's sandbox is recorded `ready`; if it refuses, or stays unavailable after two more tries (1 s and 5 s later), it is recorded `failed` with a reason the user is shown. If the sandbox was created but cannot be recorded, it is destroyed, so none is left running unrecorded. A provider that reports the sandbox already exists on a retry is taken to have created it on the earlier attempt.
 4. The supervisor's WebSocket upgrade is accepted only with the token minted for the thread in its URL, compared by digest in constant time: another thread's valid token gets `401`. Clients can connect only to threads that exist (`404` otherwise).
 
@@ -20,6 +20,10 @@ A client learns that the sandbox failed, and why, from the thread's `sandbox` fi
 ### Model provider keys (temporary)
 
 Until each user brings their own model access (Milestone 4), a control plane running Pi forwards the model provider keys in its own environment to every sandbox: the variables listed in [`src/threads/model-credentials.ts`](src/threads/model-credentials.ts), the same list the supervisor passes on to Pi, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Every thread can spend on those keys and every agent can read them. Their names are logged at startup, never their values.
+
+### Pi's settings
+
+A control plane running Pi also forwards two of Pi's own settings from its environment to every sandbox, when set: `PI_OFFLINE` (no automatic network activity at Pi's startup, for sandboxes without general internet access) and `PI_CACHE_RETENTION` (`long` for extended prompt caching). The list is in [`src/threads/pi-settings.ts`](src/threads/pi-settings.ts); other `PI_` variables are not forwarded.
 
 ## The HTTP API
 
@@ -61,6 +65,7 @@ The endpoints and messages are defined in [`@barrack/protocol`](../../packages/p
 | `BARRACK_SANDBOX_CONTROL_PLANE_URL` | none, required                                                                            | The control plane's `ws://` or `wss://` URL as sandboxes reach it, which differs from where it listens: `ws://host.docker.internal:8787` for Docker on this machine, the public `wss://` URL in a deployment. |
 | `BARRACK_AGENT_HARNESS`             | `pi`                                                                                      | What new sandboxes' supervisors run: `pi` or `fake`.                                                                                                                                                          |
 | `BARRACK_MODEL`                     | none; required for `pi`                                                                   | Pi's `provider/model`, e.g. `anthropic/<model-id>`.                                                                                                                                                           |
+| `PI_OFFLINE`, `PI_CACHE_RETENTION`  | unset                                                                                     | Forwarded to sandboxes running Pi; see [Pi's settings](#pis-settings).                                                                                                                                        |
 | `BARRACK_CONTROL_PLANE_HOST`        | `127.0.0.1`                                                                               | Interface to listen on. Must be a loopback address with the `local-process` provider.                                                                                                                         |
 | `BARRACK_CONTROL_PLANE_PORT`        | `8787`                                                                                    | Port for HTTP and both WebSocket endpoints.                                                                                                                                                                   |
 | `BARRACK_ALLOWED_CLIENT_ORIGINS`    | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to open the client endpoint.                                                                                                                                          |

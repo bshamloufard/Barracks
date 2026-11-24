@@ -12,6 +12,7 @@ import {
   toDatabaseConfiguration,
 } from "./database/database-configuration.js";
 import { readModelCredentials } from "./threads/model-credentials.js";
+import { readPiSettings } from "./threads/pi-settings.js";
 import type {
   AgentSettings,
   SupervisorEnvironmentSettings,
@@ -136,6 +137,7 @@ function toConfiguration(
       controlPlaneUrlForSandboxes: settings.BARRACK_SANDBOX_CONTROL_PLANE_URL,
       agent: toAgentSettings(settings),
       modelCredentials: readModelCredentials(environment),
+      piSettings: readPiSettings(environment),
     },
   };
 }

@@ -11,6 +11,8 @@ export type SupervisorEnvironmentSettings = {
   agent: AgentSettings;
   /** Forwarded to sandboxes running Pi; see `model-credentials.ts`. */
   modelCredentials: Readonly<Record<string, string>>;
+  /** Forwarded to sandboxes running Pi; see `pi-settings.ts`. */
+  piSettings: Readonly<Record<string, string>>;
 };
 
 /**
@@ -34,6 +36,7 @@ export function buildSupervisorEnvironment(
   }
   return {
     ...settings.modelCredentials,
+    ...settings.piSettings,
     ...threadVariables,
     BARRACK_AGENT_HARNESS: "pi",
     BARRACK_MODEL: agent.model,

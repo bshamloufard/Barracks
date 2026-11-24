@@ -20,6 +20,7 @@ export const testSupervisorEnvironment: SupervisorEnvironmentSettings = {
   controlPlaneUrlForSandboxes: "ws://control-plane.test:8787",
   agent: { harness: "fake" },
   modelCredentials: {},
+  piSettings: {},
 };
 
 export type TestControlPlaneOptions = {

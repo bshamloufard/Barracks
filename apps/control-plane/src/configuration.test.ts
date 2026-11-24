@@ -41,6 +41,7 @@ describe("the control plane configuration", () => {
           controlPlaneUrlForSandboxes: "ws://host.docker.internal:8787",
           agent: { harness: "fake" },
           modelCredentials: {},
+          piSettings: {},
         },
       },
     });
@@ -83,6 +84,18 @@ describe("the control plane configuration", () => {
 
     expect(result.ok && result.configuration.supervisorEnvironment.modelCredentials).toEqual({
       ANTHROPIC_API_KEY: "developer-key",
+    });
+  });
+
+  it("forwards only the allowlisted Pi settings to sandboxes", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      PI_OFFLINE: "1",
+      PI_SESSION_ID: "the-developer's-own-pi-session",
+    });
+
+    expect(result.ok && result.configuration.supervisorEnvironment.piSettings).toEqual({
+      PI_OFFLINE: "1",
     });
   });
 
