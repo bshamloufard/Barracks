@@ -1,4 +1,8 @@
-import { type AssistantTextFragment, maximumFrameLength } from "@barrack/protocol";
+import {
+  type AssistantTextFragment,
+  maximumFrameLength,
+  parseControlPlaneToClientMessage,
+} from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import { InProgressAssistantText } from "./in-progress-assistant-text.js";
 
@@ -50,6 +54,24 @@ describe("in-progress assistant text", () => {
 
     expect(outcome).toBe("exceeded_limit");
     expect(inProgressText.toCoalescedFragments()).toEqual([]);
+  });
+
+  it("measures the limit in escaped text, so every coalesced fragment fits in a frame", () => {
+    const inProgressText = new InProgressAssistantText();
+    // A control character is six characters long once escaped as JSON.
+    const fragmentText = "\u0001".repeat(64 * 1024);
+    const fittingFragmentCount = Math.floor(maximumFrameLength / 2 / (6 * fragmentText.length));
+
+    for (let count = 0; count < fittingFragmentCount; count += 1) {
+      inProgressText.append(fragment("assistant-1", fragmentText));
+    }
+    const [coalescedFragment] = inProgressText.toCoalescedFragments();
+    const outcome = inProgressText.append(fragment("assistant-1", fragmentText));
+
+    const coalescedFrame = JSON.stringify({ type: "stream_fragment", fragment: coalescedFragment });
+    expect(coalescedFrame.length).toBeLessThanOrEqual(maximumFrameLength);
+    expect(parseControlPlaneToClientMessage(coalescedFrame).ok).toBe(true);
+    expect(outcome).toBe("exceeded_limit");
   });
 
   it("keeps no more of a message that went past the limit, so a joining client never starts mid-message", () => {

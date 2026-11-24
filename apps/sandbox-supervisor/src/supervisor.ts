@@ -1,6 +1,7 @@
 import {
   type AgentEvent,
   type ControlPlaneToSupervisorMessage,
+  maximumAgentEventFrameLength,
   type SupervisorToControlPlaneMessage,
   supervisorToControlPlaneMessageSchema,
 } from "@barrack/protocol";
@@ -13,11 +14,7 @@ import {
   ControlPlaneConnection,
 } from "./control-plane/control-plane-connection.js";
 import { createAgentHarness } from "./create-agent-harness.js";
-import {
-  fitAgentEventInFrame,
-  maximumSupervisorFrameLength,
-  measureAgentEventFrame,
-} from "./fit-agent-event-in-frame.js";
+import { fitAgentEventInFrame, measureAgentEventFrame } from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
 
 export type SupervisorSettings = {
@@ -106,7 +103,7 @@ export class Supervisor {
       return;
     }
     const frameLength = JSON.stringify(message).length;
-    if (frameLength <= maximumSupervisorFrameLength) {
+    if (frameLength <= maximumAgentEventFrameLength) {
       this.#connection.send(message);
       return;
     }
@@ -120,7 +117,7 @@ export class Supervisor {
   #sendOversizedEvent(event: AgentEvent, frameLength: number): void {
     const fittedEvent = fitAgentEventInFrame(event);
     const fittedFrameLength = measureAgentEventFrame(fittedEvent);
-    if (fittedFrameLength > maximumSupervisorFrameLength) {
+    if (fittedFrameLength > maximumAgentEventFrameLength) {
       this.#logger.error(
         { eventType: event.type, frameLength: fittedFrameLength },
         "Not sending an agent event that is too large even after shrinking",

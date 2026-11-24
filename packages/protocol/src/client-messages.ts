@@ -5,7 +5,11 @@ import { parseFrame } from "./parse-frame.js";
 import type { ParseResult } from "./parse-result.js";
 import { sequenceSchema } from "./sequence.js";
 import { streamFragmentMessageSchema } from "./stream-fragments.js";
-import { recordedThreadEventSchema, userMessageTextSchema } from "./thread-events.js";
+import {
+  recordedThreadEventSchema,
+  type ThreadEvent,
+  userMessageTextSchema,
+} from "./thread-events.js";
 
 /**
  * Messages on the WebSocket between a client and the control plane. A client
@@ -48,6 +52,27 @@ export const replayAnnouncementSchema = z
 export const threadEventMessageSchema = recordedThreadEventSchema.extend({
   type: z.literal("thread_event"),
 });
+
+/**
+ * `Date.prototype.toISOString` writes every date from year 0 to 9999 in
+ * exactly this many characters.
+ */
+const recordedAtLength = "2026-11-24T09:00:00.000Z".length;
+
+/**
+ * The length of the frame that carries `event` to a client, with the longest
+ * envelope it can ever have, so it can be checked before the event is
+ * recorded and its sequence known.
+ */
+export function measureLargestThreadEventFrame(event: ThreadEvent): number {
+  const message: ThreadEventMessage = {
+    type: "thread_event",
+    sequence: Number.MAX_SAFE_INTEGER,
+    recordedAt: "0".repeat(recordedAtLength),
+    event,
+  };
+  return JSON.stringify(message).length;
+}
 
 /**
  * Whether the thread's supervisor is connected to the control plane right

@@ -1,6 +1,10 @@
 import { type AssistantTextFragment, maximumFrameLength } from "@barrack/protocol";
 
-type ContentBlockText = Pick<AssistantTextFragment, "contentBlockType"> & { text: string };
+type ContentBlockText = Pick<AssistantTextFragment, "contentBlockType"> & {
+  text: string;
+  /** How long the text is once escaped as a JSON string, which is what a frame carries. */
+  serializedLength: number;
+};
 
 type CurrentMessage = {
   messageId: string;
@@ -17,10 +21,11 @@ export type AppendOutcome = "kept" | "exceeded_limit" | "already_over_limit";
 /**
  * A message whose completed event will have to fit in one frame never gets
  * near this. The bound exists so a misbehaving supervisor cannot grow memory
- * without limit, and is half a frame so the coalesced fragment, once its
- * text is escaped as JSON, still fits in a frame a client will accept.
+ * without limit, and is measured in escaped JSON, as it is sent, so that
+ * each coalesced fragment fits in a frame a client will accept, whatever
+ * characters its text holds, with room to spare for the rest of the frame.
  */
-const maximumTextLengthPerMessage = maximumFrameLength / 2;
+const maximumSerializedTextLengthPerMessage = maximumFrameLength / 2;
 
 /**
  * Real messages have a handful of content blocks (some thinking, some text,
@@ -110,22 +115,31 @@ function appendToBlock(
   const block = blocksByIndex.get(fragment.contentBlockIndex) ?? {
     contentBlockType: fragment.contentBlockType,
     text: "",
+    serializedLength: 0,
   };
   block.text += fragment.appendedText;
+  // Escaping the pieces separately can only overcount (a surrogate pair split
+  // between two fragments is escaped as two), which errs on the safe side.
+  block.serializedLength += measureEscapedText(fragment.appendedText);
   blocksByIndex.set(fragment.contentBlockIndex, block);
 }
 
 function isPastLimits(blocksByIndex: Map<number, ContentBlockText>): boolean {
   return (
     blocksByIndex.size > maximumContentBlocksPerMessage ||
-    totalTextLength(blocksByIndex) > maximumTextLengthPerMessage
+    totalSerializedLength(blocksByIndex) > maximumSerializedTextLengthPerMessage
   );
 }
 
-function totalTextLength(blocksByIndex: Map<number, ContentBlockText>): number {
+function totalSerializedLength(blocksByIndex: Map<number, ContentBlockText>): number {
   let length = 0;
   for (const block of blocksByIndex.values()) {
-    length += block.text.length;
+    length += block.serializedLength;
   }
   return length;
+}
+
+/** The length of `text` inside a JSON string, without the quotes. */
+function measureEscapedText(text: string): number {
+  return JSON.stringify(text).length - 2;
 }

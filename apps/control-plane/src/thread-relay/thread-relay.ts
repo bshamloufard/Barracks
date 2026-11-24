@@ -10,7 +10,7 @@ import type {
   ThreadEvent,
   ThreadEventMessage,
 } from "@barrack/protocol";
-import { closeCodes } from "@barrack/protocol";
+import { closeCodes, maximumFrameLength, measureLargestThreadEventFrame } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import { standardCloseCodes } from "../standard-close-codes.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
@@ -204,6 +204,9 @@ export class ThreadRelay {
   }
 
   async #recordAgentEvent(supervisor: SupervisorConnection, event: ThreadEvent): Promise<void> {
+    if (!this.#fitsInClientFrame(supervisor, event)) {
+      return;
+    }
     try {
       await this.#recordAndBroadcast(event);
     } catch (error) {
@@ -219,6 +222,27 @@ export class ThreadRelay {
         "The control plane could not record an event",
       );
     }
+  }
+
+  /**
+   * An event recorded but too large to send would break every replay of the
+   * thread, so one whose client frame could exceed the limit is refused
+   * before it is recorded. A supervisor that leaves the room the protocol
+   * asks for (`maximumAgentEventFrameLength`) never sends one; one that does
+   * has broken the protocol, and is disconnected as for any invalid message.
+   */
+  #fitsInClientFrame(supervisor: SupervisorConnection, event: ThreadEvent): boolean {
+    const frameLength = measureLargestThreadEventFrame(event);
+    if (frameLength <= maximumFrameLength) {
+      return true;
+    }
+    this.#logger.error(
+      { eventType: event.type, frameLength, maximumFrameLength },
+      "Refused an agent event too large to send to clients; disconnecting the supervisor",
+    );
+    this.#forgetSupervisor();
+    supervisor.close(closeCodes.invalidMessage, "An agent event too large to send to clients");
+    return false;
   }
 
   #forgetSupervisor(): void {

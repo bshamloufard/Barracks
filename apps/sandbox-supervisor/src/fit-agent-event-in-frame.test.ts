@@ -1,17 +1,17 @@
 import {
   type AgentEvent,
   type AssistantMessageEvent,
+  maximumAgentEventFrameLength,
   parseSupervisorToControlPlaneMessage,
 } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import {
   fitAgentEventInFrame,
-  maximumSupervisorFrameLength,
   measureAgentEventFrame,
   omittedArgumentsNoteKey,
 } from "./fit-agent-event-in-frame.js";
 
-const oversizedLength = maximumSupervisorFrameLength + 1_000_000;
+const oversizedLength = maximumAgentEventFrameLength + 1_000_000;
 
 function assistantMessage(content: AssistantMessageEvent["content"]): AssistantMessageEvent {
   return { type: "assistant_message", messageId: "message-1", content, endReason: "completed" };

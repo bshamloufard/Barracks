@@ -3,20 +3,10 @@ import {
   type AgentEventMessage,
   type AssistantContentBlock,
   type AssistantMessageEvent,
-  maximumFrameLength,
+  maximumAgentEventFrameLength,
   type ToolArguments,
 } from "@barrack/protocol";
 import { shortenText } from "./shorten-text.js";
-
-/**
- * The control plane refuses a frame longer than `maximumFrameLength` and
- * closes the connection for it, losing the event. It then forwards each
- * event to viewers inside a slightly larger envelope (its sequence and the
- * time it was recorded), which has to fit the same limit, so supervisor
- * frames leave room for that.
- */
-const viewerEnvelopeAllowance = 1024;
-export const maximumSupervisorFrameLength = maximumFrameLength - viewerEnvelopeAllowance;
 
 /**
  * Below this many characters per content block, a cut-down message would
@@ -53,7 +43,7 @@ export function measureAgentEventFrame(event: AgentEvent): number {
  */
 export function fitAgentEventInFrame(
   event: AgentEvent,
-  maximumLength = maximumSupervisorFrameLength,
+  maximumLength = maximumAgentEventFrameLength,
 ): AgentEvent {
   if (measureAgentEventFrame(event) <= maximumLength) {
     return event;

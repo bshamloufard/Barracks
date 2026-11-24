@@ -6,6 +6,7 @@ import {
 } from "@barrack/protocol";
 import { WebSocket } from "ws";
 import type { Logger } from "../logger.js";
+import { standardCloseCodes } from "../standard-close-codes.js";
 import type { ClientConnection, SupervisorConnection } from "../thread-relay/connections.js";
 
 /**
@@ -44,18 +45,23 @@ export class WebSocketClientConnection implements ClientConnection {
       );
       return;
     }
-    this.#socket.send(JSON.stringify(message), (error) => this.#logSendFailure(error));
+    const frameText = this.#serializeWithinFrameLimit(message);
+    if (frameText === undefined) {
+      return;
+    }
+    this.#socket.send(frameText, (error) => this.#logSendFailure(error));
   }
 
   sendAndWaitUntilWritten(message: ControlPlaneToClientMessage): Promise<void> {
     return new Promise((resolve) => {
-      if (!this.isOpen) {
+      const frameText = this.isOpen ? this.#serializeWithinFrameLimit(message) : undefined;
+      if (frameText === undefined) {
         resolve();
         return;
       }
       // Resolving even on failure is deliberate: a failed write means the
       // socket is closing, which the caller checks for after the replay.
-      this.#socket.send(JSON.stringify(message), (error) => {
+      this.#socket.send(frameText, (error) => {
         this.#logSendFailure(error);
         resolve();
       });
@@ -64,6 +70,29 @@ export class WebSocketClientConnection implements ClientConnection {
 
   close(closeCode: number, reason: string): void {
     this.#socket.close(closeCode, reason);
+  }
+
+  /**
+   * The last line of the guarantee that every frame sent to a client is one
+   * it accepts: the relay already refuses to record a thread event that would
+   * not fit, and bounds the streamed text it coalesces, so only a stream
+   * fragment a supervisor sent at the very limit can get here, re-encoded a
+   * little longer. Fragments may be lost, so such a one is dropped. Anything
+   * else must not silently go missing, so the client is disconnected instead.
+   */
+  #serializeWithinFrameLimit(message: ControlPlaneToClientMessage): string | undefined {
+    const frameText = JSON.stringify(message);
+    if (frameText.length <= maximumFrameLength) {
+      return frameText;
+    }
+    const details = { messageType: message.type, frameLength: frameText.length };
+    if (message.type === "stream_fragment") {
+      this.#logger.warn(details, "Dropped a stream fragment too large to send to a client");
+      return undefined;
+    }
+    this.#logger.error(details, "Disconnecting a client from a message too large to send it");
+    this.#socket.close(standardCloseCodes.internalError, "A message was too large to send");
+    return undefined;
   }
 
   #logSendFailure(error: Error | undefined): void {

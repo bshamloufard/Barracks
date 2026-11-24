@@ -1,5 +1,5 @@
 import type { AgentEvent, ControlPlaneToClientMessage, ThreadEvent } from "@barrack/protocol";
-import { closeCodes } from "@barrack/protocol";
+import { closeCodes, maximumFrameLength, measureLargestThreadEventFrame } from "@barrack/protocol";
 import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { standardCloseCodes } from "../standard-close-codes.js";
@@ -430,6 +430,26 @@ describe("agent events from the supervisor", () => {
       type: "supervisor_connection_status",
       isSupervisorConnected: false,
     });
+  });
+
+  it("are recorded up to the largest whose client frame fits, and one character more is refused", async () => {
+    const supervisor = await controlPlane.connectSupervisor(thread);
+    const client = await controlPlane.connectClient(threadId);
+    const emptyMessage = completedAssistantMessage("assistant-1", "");
+    const roomForText = maximumFrameLength - measureLargestThreadEventFrame(emptyMessage);
+    const largestMessage = completedAssistantMessage("assistant-1", "x".repeat(roomForText));
+    const oversizedMessage = completedAssistantMessage("assistant-2", "x".repeat(roomForText + 1));
+
+    supervisor.sendAgentEvent(largestMessage);
+    await client.waitForSequence(1);
+    supervisor.sendAgentEvent(oversizedMessage);
+    const supervisorClosing = await supervisor.closed;
+
+    expect(client.threadEvents.map((recordedEvent) => recordedEvent.event)).toEqual([
+      largestMessage,
+    ]);
+    expect(supervisorClosing.closeCode).toBe(closeCodes.invalidMessage);
+    expect(await recordedEventTypes(controlPlane.threadEventLog)).toEqual(["assistant_message"]);
   });
 
   it("are ignored from a supervisor that a newer one has superseded", async () => {

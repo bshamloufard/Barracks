@@ -18,6 +18,20 @@
 export const maximumFrameLength = 4 * 1024 * 1024;
 
 /**
+ * The control plane forwards each agent event to clients inside a larger
+ * envelope than the supervisor sent it in (its sequence and the time it was
+ * recorded), and that frame must fit `maximumFrameLength` too. So a
+ * supervisor's agent event frame is limited to this much less, and the
+ * control plane refuses to record an event whose client frame would not
+ * fit, since a recorded event that cannot be sent would break every replay
+ * of its thread. The envelope adds well under 100 characters; the rest is
+ * room for the envelope to grow without both sides having to change.
+ */
+export const threadEventEnvelopeAllowance = 1024;
+
+export const maximumAgentEventFrameLength = maximumFrameLength - threadEventEnvelopeAllowance;
+
+/**
  * Identifiers are stored, indexed and compared. Barrack mints UUIDs (36
  * characters), but tool call identifiers come from model providers, and some
  * join two provider identifiers into one, so the bound is generous.

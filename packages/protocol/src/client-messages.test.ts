@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
+import type { AgentEvent } from "./agent-events.js";
 import {
   type ClientToControlPlaneMessage,
   type ControlPlaneToClientMessage,
+  measureLargestThreadEventFrame,
   parseClientToControlPlaneMessage,
   parseControlPlaneToClientMessage,
 } from "./client-messages.js";
-import { maximumErrorMessageLength, maximumUserMessageLength } from "./limits.js";
+import {
+  maximumAgentEventFrameLength,
+  maximumErrorMessageLength,
+  maximumFrameLength,
+  maximumUserMessageLength,
+} from "./limits.js";
 
 function frameOf(message: unknown): string {
   return JSON.stringify(message);
@@ -145,5 +152,35 @@ describe("client to control plane messages", () => {
 
   it("reject an unknown message type", () => {
     expect(parseClientToControlPlaneMessage(frameOf({ type: "delete_thread" })).ok).toBe(false);
+  });
+});
+
+describe("the envelope a thread event is sent to clients in", () => {
+  /** An assistant message whose supervisor frame is exactly as long as the protocol allows. */
+  function largestAllowedAgentEvent(): AgentEvent {
+    const event: AgentEvent = {
+      type: "assistant_message",
+      messageId: "message-1",
+      content: [{ type: "text", text: "" }],
+      endReason: "completed",
+    };
+    const emptyFrameLength = frameOf({ type: "agent_event", event }).length;
+    const text = "x".repeat(maximumAgentEventFrameLength - emptyFrameLength);
+    return { ...event, content: [{ type: "text", text }] };
+  }
+
+  it("fits in a frame around any agent event a supervisor may send, at the largest sequence", () => {
+    const event = largestAllowedAgentEvent();
+    const clientFrame = frameOf({
+      type: "thread_event",
+      sequence: Number.MAX_SAFE_INTEGER,
+      recordedAt: new Date().toISOString(),
+      event,
+    });
+
+    expect(frameOf({ type: "agent_event", event }).length).toBe(maximumAgentEventFrameLength);
+    expect(measureLargestThreadEventFrame(event)).toBeLessThanOrEqual(maximumFrameLength);
+    expect(clientFrame.length).toBeLessThanOrEqual(measureLargestThreadEventFrame(event));
+    expect(parseControlPlaneToClientMessage(clientFrame).ok).toBe(true);
   });
 });
