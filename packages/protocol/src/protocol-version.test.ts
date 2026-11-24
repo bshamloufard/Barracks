@@ -7,7 +7,7 @@ describe("protocolVersion", () => {
     expect(protocolVersion).toBeGreaterThan(0);
   });
 
-  it("is 5, the first version with the live desktop", () => {
-    expect(protocolVersion).toBe(5);
+  it("is 6, the first version with the model proxy and usage", () => {
+    expect(protocolVersion).toBe(6);
   });
 });

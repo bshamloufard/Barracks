@@ -1,0 +1,473 @@
+import {
+  type MockModelServer,
+  mockModelTriggers,
+  startMockModelServer,
+} from "@barrack/mock-model-server";
+import { buildStopThreadApiPath, ownUsageCapApiPath } from "@barrack/protocol";
+import { FakeSandboxProvider } from "@barrack/sandbox-providers";
+import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CredentialKeyring } from "../model-access/credential-keyring.js";
+import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
+import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import { ControllableThreadEventLog } from "../test-support/controllable-thread-event-log.js";
+import {
+  callModelProxy,
+  type ProxyAccess,
+  relayedFormatExamples,
+  waitForProxyAccess,
+} from "../test-support/model-proxy-peers.js";
+import {
+  TestControlPlane,
+  type TestControlPlaneOptions,
+  type TestThread,
+} from "../test-support/test-control-plane.js";
+import type { FakeSupervisor } from "../test-support/test-peers.js";
+import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
+import { InMemoryModelProxyTokenStore } from "./in-memory-model-proxy-token-store.js";
+
+/**
+ * The model proxy through the real control plane, in front of the mock
+ * model server speaking each relayed provider's own format: a sandbox's
+ * agent presents its thread's proxy token, and the provider sees its
+ * owner's key and nothing of the sandbox's. Two users sign in with tokens
+ * from a test identity issuer.
+ */
+
+const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@example.com" };
+const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
+
+const keys = {
+  adasAnthropic: "sk-ant-ada-real-key-000000000001",
+  adasOpenAi: "sk-openai-ada-real-key-0000000002",
+  adasGroq: "gsk-ada-real-key-00000000000003",
+  gracesAnthropic: "sk-ant-grace-real-key-0000000004",
+  adasReplacement: "sk-ant-ada-replaced-key-00000005",
+};
+
+let modelServer: MockModelServer;
+let issuer: TestIdentityIssuer;
+let controlPlane: TestControlPlane;
+let adaToken: string;
+let graceToken: string;
+
+beforeEach(async () => {
+  modelServer = await startMockModelServer();
+  issuer = await TestIdentityIssuer.start();
+  adaToken = await issuer.mintAccessToken(ada);
+  graceToken = await issuer.mintAccessToken(grace);
+});
+
+afterEach(async () => {
+  await controlPlane?.close();
+  await issuer.close();
+  await modelServer.close();
+});
+
+async function start(options: Omit<TestControlPlaneOptions, "authentication"> = {}) {
+  controlPlane = await TestControlPlane.start({
+    authentication: { kind: "test-issuer", issuer },
+    modelProxyUpstreamOrigin: modelServer.origin,
+    ...options,
+  });
+}
+
+/** A thread of the user's on `model`, with its supervisor attached and its proxy token in hand. */
+async function startThread(
+  userToken: string,
+  model: string,
+): Promise<{ thread: TestThread; supervisor: FakeSupervisor; access: ProxyAccess }> {
+  const thread = await controlPlane.createThread(userToken, model);
+  const supervisor = await controlPlane.connectSupervisor(thread);
+  const providerId = model.split("/")[0] ?? "";
+  return { thread, supervisor, access: await waitForProxyAccess(supervisor, providerId) };
+}
+
+/** Everything the agent was sent, as bytes, to search for keys in. */
+async function readWholeAnswer(response: Response): Promise<string> {
+  return Buffer.from(await response.arrayBuffer()).toString("latin1");
+}
+
+function everyKey(): string[] {
+  return Object.values(keys);
+}
+
+describe("the model proxy", () => {
+  it.each(Object.values(relayedFormatExamples))(
+    "relays $providerId's API with the owner's key, streams the answer back, and measures its usage",
+    async (example) => {
+      await start();
+      const ownersKey = {
+        anthropic: keys.adasAnthropic,
+        openai: keys.adasOpenAi,
+        groq: keys.adasGroq,
+      }[example.providerId];
+      await controlPlane.saveModelCredential(example.providerId, ownersKey, adaToken);
+      await controlPlane.saveModelCredential("anthropic", keys.gracesAnthropic, graceToken);
+      const { thread, access } = await startThread(adaToken, `${example.providerId}/a-model`);
+
+      const response = await callModelProxy(controlPlane, access, example, "Say hello");
+      const answer = await readWholeAnswer(response);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/event-stream");
+      expect(answer).toContain("Hello");
+      const [received] = modelServer.receivedRequests;
+      expect(received?.credential).toBe(ownersKey);
+      expect(JSON.stringify(received?.headers)).not.toContain(access.token);
+      for (const key of everyKey()) {
+        expect(answer).not.toContain(key);
+        expect(JSON.stringify([...response.headers])).not.toContain(key);
+      }
+      await expect
+        .poll(() => controlPlane.modelUsage.listForThread(ada.userId, thread.threadId))
+        .toEqual([
+          {
+            providerId: example.providerId,
+            modelId: example.body("").model,
+            source: "measured",
+            ...received?.usage,
+            answerCount: 1,
+          },
+        ]);
+    },
+  );
+
+  it("accepts at a second control plane, during a redeploy's overlap, a token the first minted", async () => {
+    const shared = {
+      threadStore: new InMemoryThreadStore(),
+      modelCredentialStore: new InMemoryModelCredentialStore(
+        new CredentialKeyring(Buffer.alloc(32, 7)),
+      ),
+      modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
+      modelUsageStore: new InMemoryModelUsageStore(),
+      threadEventLog: new ControllableThreadEventLog(),
+      sandboxProvider: new FakeSandboxProvider(),
+    };
+    await start(shared);
+    const minting = controlPlane;
+    const other = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer },
+      modelProxyUpstreamOrigin: modelServer.origin,
+      ...shared,
+    });
+    try {
+      await minting.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+      const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+
+      const response = await callModelProxy(
+        other,
+        access,
+        relayedFormatExamples.anthropic,
+        "Say hello",
+      );
+      await readWholeAnswer(response);
+
+      expect(response.status).toBe(200);
+      expect(modelServer.receivedCredentials).toEqual([keys.adasAnthropic]);
+      await expect
+        .poll(() => minting.modelUsage.listForThread(ada.userId, thread.threadId))
+        .toEqual([expect.objectContaining({ source: "measured", answerCount: 1 })]);
+    } finally {
+      await other.close();
+    }
+  });
+
+  it("rebuilds the request's headers, keeping only what the provider needs", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+
+    const response = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Say hello",
+      {
+        headers: {
+          authorization: `Bearer ${access.token}`,
+          cookie: "session=stolen",
+          "x-forwarded-for": "10.0.0.1",
+          "openai-organization": "org-elsewhere",
+          "x-stainless-os": "Linux",
+          "anthropic-beta": "a-beta-feature",
+        },
+      },
+    );
+    await readWholeAnswer(response);
+
+    const headers = modelServer.receivedRequests[0]?.headers ?? {};
+    expect(headers["x-api-key"]).toBe(keys.adasAnthropic);
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect(headers["anthropic-beta"]).toBe("a-beta-feature");
+    expect(headers["accept-encoding"]).toBe("identity");
+    for (const dropped of [
+      "authorization",
+      "cookie",
+      "x-forwarded-for",
+      "openai-organization",
+      "x-stainless-os",
+    ]) {
+      expect(headers[dropped]).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ["GET", "/v1/messages", 405],
+    ["POST", "/v1/models", 404],
+    ["POST", "/v1/messages?beta=true&other=1", 404],
+    ["POST", "/v1/messages/../complete", 404],
+    ["POST", "/v1/%6Dessages", 404],
+    ["POST", "/v1//messages", 404],
+  ])(
+    "refuses %s %s, which it does not relay, before reading any credential",
+    async (method, apiPath, status) => {
+      await start();
+      await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+      const { access } = await startThread(adaToken, "anthropic/a-model");
+
+      const response = await fetch(`${controlPlane.httpBaseUrl}${access.basePath}${apiPath}`, {
+        method,
+        headers: { "x-api-key": access.token },
+        ...(method === "GET" ? {} : { body: "{}" }),
+      });
+
+      expect(response.status).toBe(status);
+      expect(modelServer.receivedRequests).toEqual([]);
+    },
+  );
+
+  it("refuses a provider whose key is placed in the sandbox", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+
+    const response = await fetch(
+      `${controlPlane.httpBaseUrl}/threads/${thread.threadId}/model-proxy/mistral/v1/chat/completions`,
+      { method: "POST", headers: { authorization: `Bearer ${access.token}` }, body: "{}" },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("never lets one thread's token spend another user's key, or reach another provider", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    await controlPlane.saveModelCredential("openai", keys.adasOpenAi, adaToken);
+    await controlPlane.saveModelCredential("anthropic", keys.gracesAnthropic, graceToken);
+    const adas = await startThread(adaToken, "anthropic/a-model");
+    const graces = await startThread(graceToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+
+    const onGracesThread = await callModelProxy(
+      controlPlane,
+      { ...adas.access, basePath: graces.access.basePath },
+      anthropic,
+      "Spend Grace's key",
+    );
+    const onAnotherProvider = await callModelProxy(
+      controlPlane,
+      { ...adas.access, basePath: adas.access.basePath.replace("/anthropic", "/openai") },
+      relayedFormatExamples.openai,
+      "Spend Ada's OpenAI key",
+    );
+    const withoutToken = await callModelProxy(
+      controlPlane,
+      { ...adas.access, token: "" },
+      anthropic,
+      "Spend anything",
+    );
+    const withGuessedToken = await callModelProxy(
+      controlPlane,
+      { ...adas.access, token: "a-guessed-token-0000000000000" },
+      anthropic,
+      "Spend anything",
+    );
+
+    for (const refused of [onGracesThread, onAnotherProvider, withoutToken, withGuessedToken]) {
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: { type: "permission_error" } });
+    }
+    expect(modelServer.receivedRequests).toEqual([]);
+  });
+
+  it("stops accepting a thread's token as soon as its sandbox stops, and ends its requests in flight", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+    const inFlight = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      `Please ${mockModelTriggers.slowReply}`,
+    );
+    expect(inFlight.status).toBe(200);
+
+    await controlPlane.sendApi("POST", buildStopThreadApiPath(thread.threadId), adaToken);
+    await expect(inFlight.text()).rejects.toThrow();
+    await controlPlane.whenOperationsSettle();
+    const afterStop = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Say hello",
+    );
+
+    expect(afterStop.status).toBe(403);
+    await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
+    expect(modelServer.receivedRequests).toHaveLength(1);
+  });
+
+  it("uses a replaced key from the next request, and refuses once it is removed, saying so", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+
+    await readWholeAnswer(await callModelProxy(controlPlane, access, anthropic, "First"));
+    await controlPlane.saveModelCredential("anthropic", keys.adasReplacement, adaToken);
+    await readWholeAnswer(await callModelProxy(controlPlane, access, anthropic, "Second"));
+    await controlPlane.sendJson("DELETE", "/api/model-credentials/anthropic", {}, adaToken);
+    const afterRemoval = await callModelProxy(controlPlane, access, anthropic, "Third");
+
+    expect(modelServer.receivedCredentials).toEqual([keys.adasAnthropic, keys.adasReplacement]);
+    expect(afterRemoval.status).toBe(403);
+    expect(await afterRemoval.json()).toMatchObject({
+      error: { message: expect.stringContaining("No API key found") },
+    });
+  });
+
+  it("refuses once the owner's usage cap is reached, in words the agent's harness recognises", async () => {
+    await start({ modelUsageCap: { installationCapTokens: 1_000_000 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+    const lowerCap = await controlPlane.sendJson(
+      "PUT",
+      ownUsageCapApiPath,
+      { tokens: 1 },
+      adaToken,
+    );
+    const aboveInstallation = await controlPlane.sendJson(
+      "PUT",
+      ownUsageCapApiPath,
+      { tokens: 2_000_000 },
+      adaToken,
+    );
+
+    const first = await callModelProxy(controlPlane, access, relayedFormatExamples.anthropic, "Hi");
+    await readWholeAnswer(first);
+    await expect
+      .poll(() => controlPlane.modelUsage.checkCap(ada.userId))
+      .toMatchObject({ isReached: true });
+    const second = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+    const client = await controlPlane.connectClient(thread.threadId, 0, adaToken);
+    client.sendUserMessage("Carry on");
+    const rejection = await client.inbox.waitFor(
+      "the refusal",
+      (message) => message.type === "client_message_rejected",
+    );
+
+    expect(lowerCap.status).toBe(200);
+    expect(aboveInstallation.status).toBe(400);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(403);
+    expect(await second.json()).toMatchObject({
+      type: "error",
+      error: { type: "permission_error", message: expect.stringContaining("model usage cap") },
+    });
+    expect(JSON.stringify(rejection)).toContain("model usage cap");
+    expect(modelServer.receivedRequests).toHaveLength(1);
+  });
+
+  it("refuses a second request at once from a thread allowed one", async () => {
+    await start({ modelProxyLimits: { concurrentRequestsPerThread: 1 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const slow = await callModelProxy(controlPlane, access, anthropic, mockModelTriggers.slowReply);
+
+    const second = await callModelProxy(controlPlane, access, anthropic, "Say hello");
+
+    expect(slow.status).toBe(200);
+    expect(second.status).toBe(429);
+    expect(second.headers.get("retry-after")).toBe("2");
+    await slow.body?.cancel();
+  });
+
+  it("refuses a request body over the limit, whether or not it says its length", async () => {
+    await start({ modelProxyLimits: { maximumRequestBytes: 1_000 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const largeText = "x".repeat(2_000);
+    const chunked = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(anthropic.body(largeText))));
+        controller.close();
+      },
+    });
+
+    const declared = await callModelProxy(controlPlane, access, anthropic, largeText);
+    const undeclared = await callModelProxy(controlPlane, access, anthropic, "", { body: chunked });
+
+    expect(declared.status).toBe(413);
+    expect(undeclared.status).toBe(413);
+  });
+
+  it("ends an answer that outlasts the time allowed, and counts what was generated as estimated", async () => {
+    await start({ modelProxyLimits: { totalTimeoutInMilliseconds: 700 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+
+    const response = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      mockModelTriggers.slowReply,
+    );
+    await expect(response.text()).rejects.toThrow();
+
+    await expect
+      .poll(() => controlPlane.modelUsage.listForThread(ada.userId, thread.threadId))
+      .toEqual([
+        expect.objectContaining({
+          source: "estimated",
+          inputTokens: expect.any(Number),
+          outputTokens: expect.any(Number),
+        }),
+      ]);
+    const [estimate] = await controlPlane.modelUsage.listForThread(ada.userId, thread.threadId);
+    expect(estimate?.outputTokens).toBeGreaterThan(0);
+    // The input is Anthropic's own count from `message_start`, not an estimate.
+    expect(estimate?.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("cancels the provider's request when the agent hangs up, and estimates what it generated", async () => {
+    await start();
+    await controlPlane.saveModelCredential("openai", keys.adasOpenAi, adaToken);
+    const { thread, access } = await startThread(adaToken, "openai/a-model");
+    const hangUp = new AbortController();
+
+    const response = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.openai,
+      mockModelTriggers.slowReply,
+      { signal: hangUp.signal },
+    );
+    const reader = response.body?.getReader();
+    await reader?.read();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    hangUp.abort();
+
+    await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
+    await expect
+      .poll(() => controlPlane.modelUsage.listForThread(ada.userId, thread.threadId))
+      .toEqual([expect.objectContaining({ source: "estimated", answerCount: 1 })]);
+  });
+});

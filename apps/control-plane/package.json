@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@barrack/fake-github": "workspace:*",
+    "@barrack/mock-model-server": "workspace:*",
     "@barrack/test-identity-issuer": "workspace:*",
     "@types/pg": "8.23.1",
     "@types/ws": "8.18.2",

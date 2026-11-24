@@ -76,8 +76,44 @@ describe("the control plane configuration", () => {
           apiUrl: "https://api.github.com",
           allowPlainHttp: false,
         },
+        modelUsageCap: { installationCapTokens: undefined, windowHours: 24 },
+        modelProxyUpstreamOrigin: undefined,
       },
     });
+  });
+
+  it("reads the cap on each user's model usage and its window", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_USAGE_CAP_TOKENS: "5000000",
+      BARRACK_MODEL_USAGE_CAP_WINDOW_HOURS: "168",
+    });
+
+    expect(result.ok && result.configuration.modelUsageCap).toEqual({
+      installationCapTokens: 5_000_000,
+      windowHours: 168,
+    });
+  });
+
+  it("points the model proxy elsewhere only when told it is for development", () => {
+    const declared = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "development-only:http://127.0.0.1:4010",
+    });
+    const undeclared = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "http://127.0.0.1:4010",
+    });
+    const withPath = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "development-only:http://127.0.0.1:4010/v1",
+    });
+
+    expect(declared.ok && declared.configuration.modelProxyUpstreamOrigin).toBe(
+      "http://127.0.0.1:4010",
+    );
+    expect(undeclared.ok).toBe(false);
+    expect(withPath.ok).toBe(false);
   });
 
   it("reads when idle sandboxes stop, how many may run at once and how often they are checked", () => {

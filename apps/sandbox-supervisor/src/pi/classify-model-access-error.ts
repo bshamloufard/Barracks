@@ -25,6 +25,13 @@ import type { ModelAccessErrorKind } from "@barrack/protocol";
 
 const credentialMissingPattern = /provider is not configured|no api key found/i;
 
+/**
+ * Barrack's own refusal, from the control plane's model proxy, once the
+ * thread's owner has reached their usage cap: it says "model usage cap"
+ * for this, and comes as a status the agent does not retry.
+ */
+const usageCapReachedPattern = /model usage cap/i;
+
 const quotaExhaustedPattern = new RegExp(
   [
     "insufficient_quota",
@@ -61,6 +68,9 @@ const credentialRejectedPattern = new RegExp(
 const rateLimitedPattern = /rate.?limit|too many requests|^\s*429\b|resource.?exhausted/i;
 
 export function classifyModelAccessError(errorMessage: string): ModelAccessErrorKind | undefined {
+  if (usageCapReachedPattern.test(errorMessage)) {
+    return "usage_cap_reached";
+  }
   if (credentialMissingPattern.test(errorMessage)) {
     return "credential_missing";
   }

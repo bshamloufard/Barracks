@@ -110,6 +110,15 @@ async function startHarness(access: ModelAccess = mockAccess): Promise<PiAgentHa
   return harness;
 }
 
+/** What the agent reports its last answer used: what the mock said, as Pi read it. */
+function usageTheMockReported(model: string) {
+  const reported = modelServer.receivedRequests.at(-1)?.usage;
+  if (reported === undefined) {
+    throw new Error("The mock's last answer reported no usage.");
+  }
+  return { model, ...reported };
+}
+
 function hasEnded(runCount: number): () => boolean {
   return () =>
     observer.countEvents("agent_run_settled") + observer.countEvents("agent_failed") >= runCount;
@@ -137,6 +146,7 @@ describe("PiAgentHarness with the real Pi", () => {
         messageId: "minted-1",
         content: [{ type: "text", text: "Hello there." }],
         endReason: "completed",
+        usage: usageTheMockReported("mock/mock-1"),
       },
       { type: "agent_run_settled", wasInterrupted: false },
     ]);
@@ -299,6 +309,7 @@ describe("PiAgentHarness with the real Pi", () => {
         messageId: "minted-2",
         content: [{ type: "text", text: "Hello there." }],
         endReason: "completed",
+        usage: usageTheMockReported("mock/mock-1"),
       },
       { type: "agent_run_settled", wasInterrupted: false },
     ]);
@@ -443,6 +454,83 @@ describe("PiAgentHarness with the real Pi", () => {
     ]);
     expect(JSON.stringify(modelServer.receivedConversations.at(-1))).toContain("heliotrope");
     expect(observer.countEvents("agent_failed")).toBe(0);
+  });
+
+  it("lets the run in progress finish on its own model when the thread switches provider mid-run, and switches for the next", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `${mockModelTriggers.command}sleep 2 && echo slept`,
+    });
+    await waitUntil(
+      () => observer.countEvents("tool_execution_started") === 1,
+      "the run's tool starts",
+      piTimeoutInMilliseconds,
+    );
+
+    harness.configureModelAccess(accessTo("backup/backup-1", "key-for-the-backup"));
+    await waitUntil(hasEnded(1), "the first run settles", piTimeoutInMilliseconds);
+    harness.deliverUserMessage({ messageId: "user-2", text: "Carry on" });
+    await waitUntil(hasEnded(2), "the second run settles", piTimeoutInMilliseconds);
+
+    expect(observer.countEvents("agent_failed")).toBe(0);
+    const assistantMessages = observer.events.filter((event) => event.type === "assistant_message");
+    expect(assistantMessages.map((message) => message.endReason)).toEqual([
+      "tool_use_requested",
+      "completed",
+      "completed",
+    ]);
+    expect(modelServer.receivedModels).toEqual(["mock-1", "mock-1", "backup-1"]);
+    expect(modelServer.receivedCredentials).toEqual([
+      "key-of-the-threads-owner",
+      "key-of-the-threads-owner",
+      "key-for-the-backup",
+    ]);
+    expect(JSON.parse(await readFile(credentialFilePath(), "utf8"))).toEqual({
+      backup: { type: "api_key", key: "key-for-the-backup" },
+    });
+  });
+
+  it("sends a relayed provider's requests, with the proxy token, where the control plane says, and nothing of a key", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    // The mock stands in for the control plane's model proxy here: the
+    // agent's own Anthropic client sends to the base URL it was given.
+    const proxyBaseUrl = `${modelServer.origin}/threads/integration-thread/model-proxy/anthropic`;
+    const harness = await startHarness({
+      model: "anthropic/claude-haiku-4-5",
+      credential: {
+        kind: "proxy_token",
+        secret: "proxy-token-for-the-thread",
+        baseUrl: proxyBaseUrl,
+      },
+    });
+    harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedRequests.map((request) => request.target)).toEqual([
+      "/threads/integration-thread/model-proxy/anthropic/v1/messages?beta=true",
+    ]);
+    expect(modelServer.receivedRequests[0]?.credential).toBe("proxy-token-for-the-thread");
+    expect(observer.events.at(-2)).toMatchObject({
+      endReason: "completed",
+      usage: usageTheMockReported("anthropic/claude-haiku-4-5"),
+    });
+    const { agentDirectory } = getPiDirectories(path.join(temporaryDirectory, "state"));
+    const models = JSON.parse(await readFile(path.join(agentDirectory, "models.json"), "utf8"));
+    expect(models.providers.anthropic).toEqual({ baseUrl: proxyBaseUrl });
+    expect(models.providers.mock).toMatchObject({ api: "openai-completions" });
+
+    harness.configureModelAccess(mockAccess);
+    harness.deliverUserMessage({ messageId: "user-2", text: "Say hello again" });
+    await waitUntil(hasEnded(2), "the second run settles", piTimeoutInMilliseconds);
+    const modelsAfter = JSON.parse(
+      await readFile(path.join(agentDirectory, "models.json"), "utf8"),
+    );
+    expect(modelsAfter.providers.anthropic).toBeUndefined();
+    expect(modelsAfter.providers.mock).toMatchObject({ api: "openai-completions" });
   });
 
   it("erases a withdrawn key at once, answers without the model until another comes, then carries on", {

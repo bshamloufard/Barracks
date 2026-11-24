@@ -36,7 +36,7 @@ describeWithTestDatabase("the Postgres thread store", () => {
     const schema = await schemas.createMigrated();
     const userStore = new PostgresUserStore(pool, schema);
     for (const userId of contractOwnerUserIds) {
-      await userStore.recordUser(userId);
+      await userStore.recordUser(userId, undefined);
     }
     return new PostgresThreadStore(pool, schema);
   });
@@ -59,7 +59,7 @@ describeWithTestDatabase("the Postgres thread store", () => {
 
   it("lets exactly one of two control planes, each with its own connections, stop the same sandbox", async () => {
     const schema = await schemas.createMigrated();
-    await new PostgresUserStore(pool, schema).recordUser("user-a");
+    await new PostgresUserStore(pool, schema).recordUser("user-a", undefined);
     const firstInstance = new PostgresThreadStore(pool, schema);
     const secondInstance = new PostgresThreadStore(otherPool, schema);
     const created = await firstInstance.create(
@@ -98,7 +98,7 @@ describeWithTestDatabase("the Postgres thread store", () => {
   it("shows a thread created before sign-in existed, which has no owner, to nobody", async () => {
     const schema = await schemas.createMigrated();
     const store = new PostgresThreadStore(pool, schema);
-    await new PostgresUserStore(pool, schema).recordUser("user-a");
+    await new PostgresUserStore(pool, schema).recordUser("user-a", undefined);
     await pool.query(
       `insert into "${schema}".threads
         (thread_id, created_at, last_activity_at, sandbox_provider, supervisor_token_digest,

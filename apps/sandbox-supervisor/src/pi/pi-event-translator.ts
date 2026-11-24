@@ -4,6 +4,9 @@ import {
   type AssistantMessageEndReason,
   type AssistantMessageEvent,
   maximumErrorMessageLength,
+  maximumTokensPerAnswer,
+  modelReferenceSchema,
+  type ReportedModelUsage,
   type StreamFragment,
   type StreamFragmentMessage,
 } from "@barrack/protocol";
@@ -291,11 +294,13 @@ function translateMessageEnd(
   const messageId = state.currentAssistantMessageId ?? mintIdentifier();
   const content = translateContent(message.content);
   const ending = translateEnding(message);
+  const usage = translateUsage(message);
   const event: AssistantMessageEvent = {
     type: "assistant_message",
     messageId,
     ...ending.fields,
     content: content.blocks,
+    ...(usage === undefined ? {} : { usage }),
   };
   const unrecognized = [...content.unrecognized, ...ending.unrecognized];
   const nextState = { ...state, currentAssistantMessageId: undefined };
@@ -304,6 +309,32 @@ function translateMessageEnd(
     return { ...nothing({ ...nextState, heldErroredMessage }), unrecognized };
   }
   return { ...emit(nextState, event), unrecognized };
+}
+
+/**
+ * What Pi says the answer used, for the control plane to count as reported
+ * where it does not measure it itself; left out when Pi gives no usage, a
+ * model that is no model reference, or nothing used at all (a failed
+ * request).
+ */
+function translateUsage(message: PiAssistantMessage): ReportedModelUsage | undefined {
+  const { usage, provider, model } = message;
+  const reference = `${provider ?? ""}/${model ?? ""}`;
+  if (usage === undefined || !modelReferenceSchema.safeParse(reference).success) {
+    return undefined;
+  }
+  const counts = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
+  if (counts.every((count) => count === 0)) {
+    return undefined;
+  }
+  const bounded = (count: number) => Math.min(count, maximumTokensPerAnswer);
+  return {
+    model: reference,
+    inputTokens: bounded(usage.input),
+    outputTokens: bounded(usage.output),
+    cacheReadTokens: bounded(usage.cacheRead),
+    cacheWriteTokens: bounded(usage.cacheWrite),
+  };
 }
 
 function isErrored(event: AssistantMessageEvent): event is ErroredAssistantMessageEvent {

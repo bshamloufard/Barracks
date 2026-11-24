@@ -34,11 +34,11 @@ import type { SealedModelCredentialRow } from "./model-credential-store.js";
 const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@example.com" };
 const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
 
-const adasAnthropicKey = "sk-ant-ada-0000000000000001";
-const adasOpenAiKey = "sk-openai-ada-00000000000002";
-const gracesAnthropicKey = "sk-ant-grace-000000000000003";
+const adasGoogleKey = "sk-ant-ada-0000000000000001";
+const adasMistralKey = "sk-mistral-ada-00000000000002";
+const gracesGoogleKey = "sk-ant-grace-000000000000003";
 const adasReplacementKey = "sk-ant-ada-replacement-0004";
-const everySecret = [adasAnthropicKey, adasOpenAiKey, gracesAnthropicKey, adasReplacementKey];
+const everySecret = [adasGoogleKey, adasMistralKey, gracesGoogleKey, adasReplacementKey];
 
 let issuer: TestIdentityIssuer;
 let controlPlane: TestControlPlane;
@@ -116,25 +116,25 @@ describe("a user's model keys", () => {
   it("are added, listed by provider and last four characters alone, replaced and removed, and never answered or logged", async () => {
     await start();
 
-    const saved = await saveKey("anthropic", adasAnthropicKey, adaToken);
+    const saved = await saveKey("google", adasGoogleKey, adaToken);
     expect(saved.status).toBe(200);
     expect(saved.body).toEqual({
-      credential: { providerId: "anthropic", addedAt: expect.any(String), secretEnding: "0001" },
+      credential: { providerId: "google", addedAt: expect.any(String), secretEnding: "0001" },
     });
     expect(await listKeys(adaToken)).toEqual([
-      { providerId: "anthropic", addedAt: expect.any(String), secretEnding: "0001" },
+      { providerId: "google", addedAt: expect.any(String), secretEnding: "0001" },
     ]);
 
-    await saveKey("anthropic", adasOpenAiKey, adaToken);
+    await saveKey("google", adasMistralKey, adaToken);
     expect((await listKeys(adaToken)).map((key) => key.secretEnding)).toEqual(["0002"]);
 
     const removed = await read(
-      await controlPlane.sendJson("DELETE", buildModelCredentialApiPath("anthropic"), {}, adaToken),
+      await controlPlane.sendJson("DELETE", buildModelCredentialApiPath("google"), {}, adaToken),
     );
     expect(removed).toEqual({ status: 200, body: { credentials: [] } });
     const removedAgain = await controlPlane.sendJson(
       "DELETE",
-      buildModelCredentialApiPath("anthropic"),
+      buildModelCredentialApiPath("google"),
       {},
       adaToken,
     );
@@ -145,9 +145,9 @@ describe("a user's model keys", () => {
   it("are refused when they cannot be keys, or lack or add settings their provider does not take", async () => {
     await start();
 
-    const withSpace = await saveKey("anthropic", "sk-ant has a space", adaToken);
+    const withSpace = await saveKey("google", "sk-ant has a space", adaToken);
     const withoutAccount = await saveKey("cloudflare-workers-ai", "cf-key-0123456789", adaToken);
-    const withStrangeSetting = await saveKey("anthropic", adasAnthropicKey, adaToken, {
+    const withStrangeSetting = await saveKey("google", adasGoogleKey, adaToken, {
       ANTHROPIC_BASE_URL: "https://elsewhere.example",
     });
     const withAccount = await saveKey("cloudflare-workers-ai", "cf-key-0123456789", adaToken, {
@@ -167,29 +167,26 @@ describe("a user's model keys", () => {
 
   it("are one user's alone: another user sees none of them, cannot remove them, and cannot run on them", async () => {
     await start();
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
-    await saveKey("openai", adasOpenAiKey, adaToken);
-    await saveKey("anthropic", gracesAnthropicKey, graceToken);
+    await saveKey("google", adasGoogleKey, adaToken);
+    await saveKey("mistral", adasMistralKey, adaToken);
+    await saveKey("google", gracesGoogleKey, graceToken);
 
-    expect((await listKeys(graceToken)).map((key) => key.providerId)).toEqual(["anthropic"]);
+    expect((await listKeys(graceToken)).map((key) => key.providerId)).toEqual(["google"]);
     const removingAdas = await controlPlane.sendJson(
       "DELETE",
-      buildModelCredentialApiPath("openai"),
+      buildModelCredentialApiPath("mistral"),
       {},
       graceToken,
     );
     expect(removingAdas.status).toBe(404);
-    const graceOnOpenAi = await read(
+    const graceOnMistral = await read(
       await controlPlane.postThread(
         browserHeaders(graceToken),
-        JSON.stringify({ model: "openai/example-model" }),
+        JSON.stringify({ model: "mistral/example-model" }),
       ),
     );
-    expect(graceOnOpenAi.status).toBe(409);
-    expect((await listKeys(adaToken)).map((key) => key.providerId)).toEqual([
-      "anthropic",
-      "openai",
-    ]);
+    expect(graceOnMistral.status).toBe(409);
+    expect((await listKeys(adaToken)).map((key) => key.providerId)).toEqual(["google", "mistral"]);
     expectNoKeyAnywhere();
   });
 });
@@ -197,11 +194,11 @@ describe("a user's model keys", () => {
 describe("each thread's model access", () => {
   it("hands each thread's supervisor its owner's key for its own model's provider, and no other", async () => {
     await start();
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
-    await saveKey("openai", adasOpenAiKey, adaToken);
-    await saveKey("anthropic", gracesAnthropicKey, graceToken);
-    const adasThread = await createThreadOn("anthropic/example-model", adaToken);
-    const gracesThread = await createThreadOn("anthropic/example-model", graceToken);
+    await saveKey("google", adasGoogleKey, adaToken);
+    await saveKey("mistral", adasMistralKey, adaToken);
+    await saveKey("google", gracesGoogleKey, graceToken);
+    const adasThread = await createThreadOn("google/example-model", adaToken);
+    const gracesThread = await createThreadOn("google/example-model", graceToken);
 
     const adasSupervisor = await controlPlane.connectSupervisor(adasThread);
     const gracesSupervisor = await controlPlane.connectSupervisor(gracesThread);
@@ -211,15 +208,15 @@ describe("each thread's model access", () => {
     expect(modelAccessMessages(adasSupervisor)).toEqual([
       {
         type: "configure_model_access",
-        model: "anthropic/example-model",
-        credential: { kind: "api_key", secret: adasAnthropicKey, settings: {} },
+        model: "google/example-model",
+        credential: { kind: "api_key", secret: adasGoogleKey, settings: {} },
       },
     ]);
     expect(modelAccessMessages(gracesSupervisor)).toEqual([
       {
         type: "configure_model_access",
-        model: "anthropic/example-model",
-        credential: { kind: "api_key", secret: gracesAnthropicKey, settings: {} },
+        model: "google/example-model",
+        credential: { kind: "api_key", secret: gracesGoogleKey, settings: {} },
       },
     ]);
     expect(JSON.stringify(gracesSupervisor.inbox.messages)).not.toContain("ada");
@@ -232,7 +229,7 @@ describe("each thread's model access", () => {
     const withoutKey = await read(
       await controlPlane.postThread(
         browserHeaders(adaToken),
-        JSON.stringify({ model: "openai/example-model" }),
+        JSON.stringify({ model: "mistral/example-model" }),
       ),
     );
     const withoutModel = await read(await controlPlane.postThread(browserHeaders(adaToken), "{}"));
@@ -243,7 +240,7 @@ describe("each thread's model access", () => {
         error: {
           code: "model_credential_missing",
           message:
-            "openai/example-model runs on OpenAI, and you have no OpenAI API key. Add it in Settings, under Model access, then create the thread again.",
+            "mistral/example-model runs on Mistral, and you have no Mistral API key. Add it in Settings, under Model access, then create the thread again.",
         },
       },
     });
@@ -252,9 +249,9 @@ describe("each thread's model access", () => {
 
   it("switches a thread to another model, tells its supervisor at once, and refuses a model without a key", async () => {
     await start();
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
-    await saveKey("openai", adasOpenAiKey, adaToken);
-    const thread = await createThreadOn("anthropic/example-model", adaToken);
+    await saveKey("google", adasGoogleKey, adaToken);
+    await saveKey("mistral", adasMistralKey, adaToken);
+    const thread = await createThreadOn("google/example-model", adaToken);
     const supervisor = await controlPlane.connectSupervisor(thread);
     await waitForModelAccess(supervisor, "the first model access", () => true);
 
@@ -262,32 +259,32 @@ describe("each thread's model access", () => {
       await controlPlane.sendJson(
         "PUT",
         buildThreadModelApiPath(thread.threadId),
-        { model: "openai/other-model" },
+        { model: "mistral/other-model" },
         adaToken,
       ),
     );
     await waitForModelAccess(supervisor, "the new model", (message) => {
-      return message.model === "openai/other-model";
+      return message.model === "mistral/other-model";
     });
     const withoutKey = await controlPlane.sendJson(
       "PUT",
       buildThreadModelApiPath(thread.threadId),
-      { model: "mistral/example-model" },
+      { model: "fireworks/example-model" },
       adaToken,
     );
     const byAnotherUser = await controlPlane.sendJson(
       "PUT",
       buildThreadModelApiPath(thread.threadId),
-      { model: "anthropic/example-model" },
+      { model: "google/example-model" },
       graceToken,
     );
 
     expect(switched.status).toBe(200);
-    expect(threadResponseSchema.parse(switched.body).thread.model).toBe("openai/other-model");
+    expect(threadResponseSchema.parse(switched.body).thread.model).toBe("mistral/other-model");
     expect(modelAccessMessages(supervisor).at(-1)).toEqual({
       type: "configure_model_access",
-      model: "openai/other-model",
-      credential: { kind: "api_key", secret: adasOpenAiKey, settings: {} },
+      model: "mistral/other-model",
+      credential: { kind: "api_key", secret: adasMistralKey, settings: {} },
     });
     expect(withoutKey.status).toBe(409);
     expect(byAnotherUser.status).toBe(404);
@@ -296,17 +293,17 @@ describe("each thread's model access", () => {
 
   it("sends a replaced key at once, withdraws a removed one, and refuses messages until a key is back", async () => {
     await start();
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
-    const thread = await createThreadOn("anthropic/example-model", adaToken);
+    await saveKey("google", adasGoogleKey, adaToken);
+    const thread = await createThreadOn("google/example-model", adaToken);
     const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(thread.threadId, 0, adaToken);
     await waitForModelAccess(supervisor, "the first key", () => true);
 
-    await saveKey("anthropic", adasReplacementKey, adaToken);
+    await saveKey("google", adasReplacementKey, adaToken);
     await waitForModelAccess(supervisor, "the replacement", (message) => {
       return message.credential?.secret === adasReplacementKey;
     });
-    await controlPlane.sendJson("DELETE", buildModelCredentialApiPath("anthropic"), {}, adaToken);
+    await controlPlane.sendJson("DELETE", buildModelCredentialApiPath("google"), {}, adaToken);
     await waitForModelAccess(
       supervisor,
       "the withdrawal",
@@ -318,11 +315,10 @@ describe("each thread's model access", () => {
       "the refusal",
       (message) => message.type === "client_message_rejected",
     );
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
+    await saveKey("google", adasGoogleKey, adaToken);
     await waitForModelAccess(supervisor, "the key again", (message) => {
       return (
-        message.credential?.secret === adasAnthropicKey &&
-        modelAccessMessages(supervisor).length === 4
+        message.credential?.secret === adasGoogleKey && modelAccessMessages(supervisor).length === 4
       );
     });
     client.sendUserMessage("Are you there?", refusedId);
@@ -335,12 +331,12 @@ describe("each thread's model access", () => {
       type: "client_message_rejected",
       messageId: refusedId,
       reason:
-        "anthropic/example-model runs on Anthropic, and you have no Anthropic API key. Add it in Settings, under Model access, then send your message again.",
+        "google/example-model runs on Google, and you have no Gemini API key. Add it in Settings, under Model access, then send your message again.",
     });
     expect(delivery).toMatchObject({ text: "Are you there?" });
     expect(client.threadEvents.map((recorded) => recorded.event.type)).toEqual(["user_message"]);
     expectNoKeyAnywhere();
-    expect(JSON.stringify(client.inbox.messages)).not.toContain(adasAnthropicKey);
+    expect(JSON.stringify(client.inbox.messages)).not.toContain(adasGoogleKey);
   });
 });
 
@@ -351,8 +347,8 @@ describe("rotating the key credentials are sealed under", () => {
     await start({
       modelCredentialStore: new InMemoryModelCredentialStore(new CredentialKeyring(oldKey), rows),
     });
-    await saveKey("anthropic", adasAnthropicKey, adaToken);
-    const thread = await createThreadOn("anthropic/example-model", adaToken);
+    await saveKey("google", adasGoogleKey, adaToken);
+    const thread = await createThreadOn("google/example-model", adaToken);
     const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(thread.threadId, 0, adaToken);
     await waitForModelAccess(supervisor, "the key", () => true);
@@ -373,7 +369,7 @@ describe("rotating the key credentials are sealed under", () => {
 
     expect(modelAccessMessages(supervisor)).toEqual([
       expect.objectContaining({
-        credential: expect.objectContaining({ secret: adasAnthropicKey }),
+        credential: expect.objectContaining({ secret: adasGoogleKey }),
       }),
     ]);
   });

@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CatalogueCredentialSetting,
-  CatalogueProvider,
-  ModelCatalogue,
+  GeneratedCatalogueProvider,
+  GeneratedModelCatalogue,
 } from "@barrack/protocol";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -59,7 +59,7 @@ type KeyLogin = NonNullable<NonNullable<RuntimeProvider["auth"]["apiKey"]>["logi
 type LoginInteraction = Parameters<KeyLogin>[0];
 type LoginPrompt = Parameters<LoginInteraction["prompt"]>[0];
 
-export async function readAgentCatalogue(): Promise<ModelCatalogue> {
+export async function readAgentCatalogue(): Promise<GeneratedModelCatalogue> {
   const scratchDirectory = await mkdtemp(path.join(tmpdir(), "barrack-model-catalogue-"));
   try {
     // A runtime of its own, with empty credentials and no network, so the
@@ -71,7 +71,7 @@ export async function readAgentCatalogue(): Promise<ModelCatalogue> {
       modelsStorePath: path.join(scratchDirectory, "models-store.json"),
       refreshOnCreate: false,
     });
-    const providers: CatalogueProvider[] = [];
+    const providers: GeneratedCatalogueProvider[] = [];
     for (const provider of runtime.getProviders()) {
       const catalogued = await describeProvider(runtime, provider);
       if (catalogued !== undefined) {
@@ -98,7 +98,7 @@ export async function readPinnedAgentVersion(): Promise<string> {
 async function describeProvider(
   runtime: ModelRuntime,
   provider: RuntimeProvider,
-): Promise<CatalogueProvider | undefined> {
+): Promise<GeneratedCatalogueProvider | undefined> {
   const keyLogin = await readKeyLogin(provider);
   if (keyLogin === undefined) {
     return undefined;
@@ -175,7 +175,10 @@ function describePrompt(prompt: LoginPrompt): string {
   return prompt.message.replace(/^Enter\s+/, "");
 }
 
-function compareProviders(first: CatalogueProvider, second: CatalogueProvider): number {
+function compareProviders(
+  first: GeneratedCatalogueProvider,
+  second: GeneratedCatalogueProvider,
+): number {
   const firstRank = rankOf(first.providerId);
   const secondRank = rankOf(second.providerId);
   if (firstRank !== secondRank) {

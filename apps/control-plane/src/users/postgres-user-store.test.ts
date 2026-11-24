@@ -31,7 +31,7 @@ describeWithTestDatabase("the Postgres user store", () => {
     const schema = await schemas.createMigrated();
     const store = new PostgresUserStore(pool, schema);
 
-    await Promise.all(Array.from({ length: 20 }, () => store.recordUser("user-a")));
+    await Promise.all(Array.from({ length: 20 }, () => store.recordUser("user-a", undefined)));
 
     const rows = await pool.query(`select user_id from "${schema}".users`);
     expect(rows.rows).toEqual([{ user_id: "user-a" }]);

@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
   buildModelCredentialApiPath,
-  type ClientAuthenticationConfiguration,
   threadResponseSchema,
   threadsApiPath,
 } from "@barrack/protocol";
@@ -9,6 +8,7 @@ import { FakeSandboxProvider } from "@barrack/sandbox-providers";
 import type { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { pino } from "pino";
 import { Authenticator } from "../authentication/authenticator.js";
+import type { ConfiguredAuthentication } from "../authentication/create-authenticator.js";
 import {
   DevelopmentSingleUserVerifier,
   developmentAccessToken,
@@ -26,6 +26,14 @@ import { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
 import { ModelCredentials } from "../model-access/model-credentials.js";
 import { OwnerModelAccess } from "../model-access/owner-model-access.js";
+import { assembleModelProxy } from "../model-proxy/assemble-model-proxy.js";
+import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import type { ModelProxyLimits } from "../model-proxy/model-proxy-limits.js";
+import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
+import { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
+import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import { ModelUsage, type ModelUsageCapSettings } from "../model-usage/model-usage.js";
+import type { ModelUsageStore } from "../model-usage/model-usage-store.js";
 import type { GitChildLimits } from "../publication/git-child-limits.js";
 import {
   assembleRepositoryServices,
@@ -108,6 +116,16 @@ export type TestControlPlaneOptions = {
   githubConnectionStore?: GithubConnectionStore;
   /** Defaults to an in-memory store, sealing under a key of its own. */
   modelCredentialStore?: ModelCredentialStore;
+  /** Defaults to an in-memory store. */
+  modelProxyTokenStore?: ModelProxyTokenStore;
+  /** Defaults to an in-memory store. */
+  modelUsageStore?: ModelUsageStore;
+  /** No cap by default, over a day. */
+  modelUsageCap?: Partial<ModelUsageCapSettings>;
+  /** Where the model proxy sends every provider's requests; the providers' own hosts by default. */
+  modelProxyUpstreamOrigin?: string;
+  /** Replaces some of the proxy's default limits. */
+  modelProxyLimits?: Partial<ModelProxyLimits>;
   /** Whether threads must have a model, as with the real agent; not by default, as with the fake one. */
   isModelRequired?: boolean;
   /** No GitHub App by default (`testGithubSettings`). */
@@ -157,6 +175,8 @@ export class TestControlPlane {
   readonly threadServices: ThreadServices;
   readonly repositoryServices: RepositoryServices;
   readonly modelCredentials: ModelCredentials;
+  readonly modelUsage: ModelUsage;
+  readonly modelProxyTokens: ModelProxyTokens;
   /** Every line the control plane logged, at every level. */
   readonly logLines: string[];
   readonly #closeServer: () => Promise<void>;
@@ -170,6 +190,8 @@ export class TestControlPlane {
     threadServices: ThreadServices;
     repositoryServices: RepositoryServices;
     modelCredentials: ModelCredentials;
+    modelUsage: ModelUsage;
+    modelProxyTokens: ModelProxyTokens;
     logLines: string[];
     closeServer: () => Promise<void>;
   }) {
@@ -181,6 +203,8 @@ export class TestControlPlane {
     this.threadServices = fields.threadServices;
     this.repositoryServices = fields.repositoryServices;
     this.modelCredentials = fields.modelCredentials;
+    this.modelUsage = fields.modelUsage;
+    this.modelProxyTokens = fields.modelProxyTokens;
     this.logLines = fields.logLines;
     this.#closeServer = fields.closeServer;
   }
@@ -214,18 +238,33 @@ export class TestControlPlane {
       ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
     const isModelRequired = options.isModelRequired ?? false;
+    const modelProxyTokens = new ModelProxyTokens(
+      options.modelProxyTokenStore ?? new InMemoryModelProxyTokenStore(),
+    );
+    const modelUsage = new ModelUsage({
+      store: options.modelUsageStore ?? new InMemoryModelUsageStore(),
+      settings: { installationCapTokens: undefined, windowHours: 24, ...options.modelUsageCap },
+      logger,
+    });
+    const supervisorEnvironment = options.supervisorEnvironment ?? testSupervisorEnvironment;
     const threadServices = assembleThreadServices({
       threadStore,
       threadEventLog,
       sandboxProvider,
       sandboxProviderName: "fake",
-      supervisorEnvironment: options.supervisorEnvironment ?? testSupervisorEnvironment,
+      supervisorEnvironment,
       settings: { ...testLifecycleSettings, ...options.lifecycleSettings },
       workspaces: repositoryServices.workspaces,
       modelAccess: new OwnerModelAccess({
         threadStore,
         credentials: modelCredentials,
         isModelRequired,
+        proxyTokens: modelProxyTokens,
+        usage: modelUsage,
+        controlPlaneUrlForSandboxes: supervisorEnvironment.controlPlaneUrlForSandboxes.replace(
+          /^ws/,
+          "http",
+        ),
       }),
       logger,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
@@ -234,11 +273,25 @@ export class TestControlPlane {
         interruptGracePeriodInMilliseconds: options.interruptGracePeriodInMilliseconds ?? 300,
       },
     });
-    const authentication = createTestAuthentication(
+    const userStore = options.userStore ?? new InMemoryUserStore();
+    const { admission, ...authentication } = createTestAuthentication(
       options.authentication ?? { kind: "development" },
-      options.userStore ?? new InMemoryUserStore(),
+      userStore,
       logger,
     );
+    const modelProxy = assembleModelProxy({
+      threadStore,
+      threadEventLog,
+      userStore,
+      admission,
+      credentials: modelCredentials,
+      tokens: modelProxyTokens,
+      usage: modelUsage,
+      endings: threadServices.relays,
+      upstreamOrigin: options.modelProxyUpstreamOrigin,
+      ...(options.modelProxyLimits === undefined ? {} : { limits: options.modelProxyLimits }),
+      logger,
+    });
     const server = await startControlPlaneServer({
       configuration: {
         host: "127.0.0.1",
@@ -257,6 +310,8 @@ export class TestControlPlane {
         changes: new ModelAccessChanges(threadStore, threadServices.relays),
         isModelRequired,
       },
+      modelProxy,
+      modelUsage,
       publisher: repositoryServices.createPublisher(threadServices.relays),
       ...authentication,
       logger,
@@ -275,6 +330,8 @@ export class TestControlPlane {
       threadServices,
       repositoryServices,
       modelCredentials,
+      modelUsage,
+      modelProxyTokens,
       logLines,
       closeServer: async () => {
         await server.close();
@@ -464,9 +521,10 @@ function createTestAuthentication(
   authentication: TestAuthentication,
   userStore: UserStore,
   logger: Logger,
-): { authenticator: Authenticator; clientAuthentication: ClientAuthenticationConfiguration } {
+): ConfiguredAuthentication {
   if (authentication.kind === "development") {
     return {
+      admission: { kind: "anyone-who-can-sign-in" },
       authenticator: new Authenticator({
         verifier: new DevelopmentSingleUserVerifier(),
         admission: { kind: "anyone-who-can-sign-in" },
@@ -495,6 +553,7 @@ function createTestAuthentication(
       : { keySetCooldownInMilliseconds: authentication.keySetCooldownInMilliseconds }),
   });
   return {
+    admission,
     authenticator: new Authenticator({ verifier, admission, userStore, logger }),
     clientAuthentication: {
       method: "supabase",

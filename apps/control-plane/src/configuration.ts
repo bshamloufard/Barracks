@@ -22,6 +22,7 @@ import {
   readGithubSettings,
 } from "./github/github-settings.js";
 import { parseCredentialKey } from "./model-access/credential-keyring.js";
+import type { ModelUsageCapSettings } from "./model-usage/model-usage.js";
 import type { SandboxLifecycleSettings } from "./sandbox-lifecycle/lifecycle-settings.js";
 import { readPiSettings } from "./threads/pi-settings.js";
 import type { SupervisorEnvironmentSettings } from "./threads/supervisor-environment.js";
@@ -61,6 +62,11 @@ const defaultRunningSandboxesPerUser = 3;
 
 /** How often sandboxes are compared with the provider and checked for idleness. */
 const defaultCheckSeconds = 30;
+
+/** A day: long enough for a cap to mean a budget, short enough to recover from overnight. */
+const defaultUsageCapWindowHours = 24;
+
+const developmentOnlyPrefix = "development-only:";
 
 const environmentSchema = z.object({
   BARRACK_CONTROL_PLANE_HOST: z.string().min(1).default("127.0.0.1"),
@@ -108,6 +114,26 @@ const environmentSchema = z.object({
     .positive()
     .max(60 * 60)
     .default(defaultCheckSeconds),
+  BARRACK_MODEL_USAGE_CAP_TOKENS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  BARRACK_MODEL_USAGE_CAP_WINDOW_HOURS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(31 * 24)
+    .default(defaultUsageCapWindowHours),
+  BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: z
+    .string()
+    .regex(/^development-only:https?:\/\/[^/?#]+$/, {
+      error:
+        'only for tests and local development: "development-only:" followed by an http:// or https:// origin, such as development-only:http://127.0.0.1:4010',
+    })
+    .transform((value) => value.slice(developmentOnlyPrefix.length))
+    .optional(),
   ...databaseEnvironmentShape,
 });
 
@@ -167,6 +193,13 @@ export type ControlPlaneConfiguration = {
   sandboxLifecycle: SandboxLifecycleSettings;
   /** The GitHub App, if any, and which repository URLs are accepted. Holds the App's key: never log it. */
   github: GithubSettings;
+  /** The installation's cap on each user's model usage, if any, and its window. */
+  modelUsageCap: ModelUsageCapSettings;
+  /**
+   * For tests and local development only: where the model proxy sends every
+   * provider's requests instead of the provider's own host.
+   */
+  modelProxyUpstreamOrigin: string | undefined;
 };
 
 export type ConfigurationResult =
@@ -243,6 +276,11 @@ function toConfiguration(
       checkIntervalInMilliseconds: settings.BARRACK_SANDBOX_CHECK_SECONDS * 1000,
     },
     github,
+    modelUsageCap: {
+      installationCapTokens: settings.BARRACK_MODEL_USAGE_CAP_TOKENS,
+      windowHours: settings.BARRACK_MODEL_USAGE_CAP_WINDOW_HOURS,
+    },
+    modelProxyUpstreamOrigin: settings.BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN,
   };
 }
 

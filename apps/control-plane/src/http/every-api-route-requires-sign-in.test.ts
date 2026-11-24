@@ -12,6 +12,8 @@ import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import { ModelCredentials } from "../model-access/model-credentials.js";
+import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import { ModelUsage } from "../model-usage/model-usage.js";
 import { assembleRepositoryServices } from "../repositories/assemble-repository-services.js";
 import { assembleThreadServices } from "../sandbox-lifecycle/assemble-thread-services.js";
 import {
@@ -92,6 +94,15 @@ function createApp() {
       authorizeSupervisor: authorizeWithThreadTokens(threadStore),
       logger,
     },
+    modelUsage: {
+      usage: new ModelUsage({
+        store: new InMemoryModelUsageStore(),
+        settings: { installationCapTokens: undefined, windowHours: 24 },
+        logger,
+      }),
+      threadStore,
+      logger,
+    },
     webClientDirectory: undefined,
   });
 }
@@ -120,6 +131,9 @@ describe("the HTTP API's access control", () => {
         "GET /api/model-credentials",
         "PUT /api/model-credentials/some-identifier",
         "DELETE /api/model-credentials/some-identifier",
+        "GET /api/model-usage",
+        "PUT /api/model-usage/own-cap",
+        "GET /api/threads/some-identifier/model-usage",
         "GET /api/github/connection",
         "POST /api/github/connection",
         "DELETE /api/github/connection",

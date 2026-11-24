@@ -7,6 +7,7 @@ import {
 import { identifierSchema } from "./identifier.js";
 import { maximumErrorMessageLength, maximumToolOutputLength } from "./limits.js";
 import { modelAccessErrorKindSchema } from "./model-access.js";
+import { reportedModelUsageSchema } from "./model-usage.js";
 
 /**
  * Thread events that the agent causes. The supervisor translates the agent
@@ -47,6 +48,11 @@ export const assistantMessageEndReasonSchema = z.enum([
  * harness recognised the failure as one the user can act on, its
  * `errorKind` (see `modelAccessErrorKindSchema`); clients explain the kind,
  * and never read meaning into the message's wording.
+ *
+ * `usage` is what the agent says producing it used, when it says. The
+ * control plane counts it as `reported` usage for providers whose keys are
+ * placed in the sandbox, and ignores it for those whose traffic it relays,
+ * which it measures itself (see `model-usage.ts`).
  */
 export const assistantMessageEventSchema = z
   .strictObject({
@@ -56,6 +62,7 @@ export const assistantMessageEventSchema = z
     endReason: assistantMessageEndReasonSchema,
     errorMessage: errorMessageSchema.exactOptional(),
     errorKind: modelAccessErrorKindSchema.exactOptional(),
+    usage: reportedModelUsageSchema.exactOptional(),
   })
   .refine((event) => (event.endReason === "errored") === (event.errorMessage !== undefined), {
     message: 'errorMessage is required when endReason is "errored" and not allowed otherwise',

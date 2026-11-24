@@ -10,6 +10,7 @@ import type { Authenticator } from "../authentication/authenticator.js";
 import { respondWithApiError } from "./api-error.js";
 import { addGithubRoutes, type GithubRoutesDependencies } from "./github-routes.js";
 import { addModelAccessRoutes } from "./model-access-routes.js";
+import { addModelUsageRoutes, type ModelUsageRoutesDependencies } from "./model-usage-routes.js";
 import { addPublicationRoutes, type PublicationRoutesDependencies } from "./publication-routes.js";
 import { refuseDisallowedOrigins, refuseHostsOtherThanLoopback } from "./request-guards.js";
 import { requireSignedInUser, type SignedInEnvironment } from "./require-signed-in-user.js";
@@ -23,6 +24,7 @@ export type HttpAppOptions = {
   threads: ThreadsRoutesDependencies;
   github: GithubRoutesDependencies;
   publication: PublicationRoutesDependencies;
+  modelUsage: ModelUsageRoutesDependencies;
   /** Where the built web client is; when set, it is served from `/`. */
   webClientDirectory: string | undefined;
   /** Answer only requests addressed to loopback, as development mode must. */
@@ -39,8 +41,11 @@ export const publicApiPaths: ReadonlySet<string> = new Set([clientConfigurationP
 /**
  * The plain HTTP routes. Outside `/api`, besides `/health` and the web
  * client's files, there is one more: where a supervisor uploads a
- * publication bundle, authenticated by its thread's token instead. WebSocket upgrades never reach this app; they are
- * handled on the server's `upgrade` event (see `websocket/route-upgrade.ts`).
+ * publication bundle, authenticated by its thread's token instead.
+ * WebSocket upgrades never reach this app; they are handled on the
+ * server's `upgrade` event (see `websocket/route-upgrade.ts`). Nor does the
+ * model proxy's traffic, which streams in both directions and is handed to
+ * the proxy before this app (see `route-http-request.ts`).
  *
  * The order matters: the loopback check, when on, comes before every route,
  * the web client's files included; the origin check and the authentication
@@ -62,6 +67,7 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
   app.get(clientConfigurationPath, (context) => context.json(clientConfiguration));
   addThreadsRoutes(app, options.threads);
   addModelAccessRoutes(app, { ...options.threads.modelAccess, logger: options.threads.logger });
+  addModelUsageRoutes(app, options.modelUsage);
   addGithubRoutes(app, options.github);
   addPublicationRoutes(app, options.publication);
   app.all("/api/*", (context) =>

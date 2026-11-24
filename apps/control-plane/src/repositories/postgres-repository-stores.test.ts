@@ -50,7 +50,7 @@ describeWithTestDatabase("the Postgres repository and GitHub stores", () => {
 
   async function stores() {
     const schema = await schemas.createMigrated();
-    await new PostgresUserStore(pool, schema).recordUser(owner);
+    await new PostgresUserStore(pool, schema).recordUser(owner, undefined);
     return {
       threads: new PostgresThreadStore(pool, schema),
       repositories: new PostgresThreadRepositoryStore(pool, schema),
