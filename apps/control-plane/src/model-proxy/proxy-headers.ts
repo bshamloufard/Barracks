@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
-import type { ProviderApiFormat } from "@barrack/model-catalogue";
+import type { AgentRequestShape, ProviderApiFormat } from "@barrack/model-catalogue";
 import { bearerTokenFrom } from "../bearer-token.js";
 
 /**
@@ -43,6 +43,29 @@ export function readPresentedToken(headers: IncomingHttpHeaders): string | undef
     return apiKey;
   }
   return bearerTokenFrom(headers.authorization);
+}
+
+/**
+ * Anthropic's `anthropic-beta` header turns on features of the API, among
+ * them ones that run more sampling steps or tools of the provider's own; it
+ * is forwarded only when each of its comma-separated values is one the
+ * agent sends (`AgentRequestShape.betaHeaderValues`). Returns what is not,
+ * named for a refusal, or undefined.
+ */
+export function findUnrelayedHeaderValue(
+  headers: IncomingHttpHeaders,
+  shape: AgentRequestShape,
+): string | undefined {
+  const betas = headers["anthropic-beta"];
+  const values = (Array.isArray(betas) ? betas.join(",") : (betas ?? "")).split(",");
+  for (const value of values.map((written) => written.trim())) {
+    if (value !== "" && !shape.betaHeaderValues.includes(value)) {
+      return /^[a-z0-9-]{1,64}$/.test(value)
+        ? `the anthropic-beta value \`${value}\``
+        : "an anthropic-beta value that is not a plain name";
+    }
+  }
+  return undefined;
 }
 
 export function buildUpstreamHeaders(

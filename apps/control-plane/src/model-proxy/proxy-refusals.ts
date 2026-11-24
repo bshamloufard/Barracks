@@ -54,24 +54,6 @@ export const proxyRefusals = {
     message:
       "Barrack's model proxy relays only a request whose body is a JSON object naming a model.",
   },
-  detachedGenerationRefused: {
-    status: 400,
-    errorType: "invalid_request_error",
-    message:
-      "Barrack's model proxy does not relay background or deferred requests: what the provider generated after answering could not be counted towards the usage cap.",
-  },
-  referencedInputRefused: {
-    status: 400,
-    errorType: "invalid_request_error",
-    message:
-      "Barrack's model proxy does not relay a request that sends a document or file, or refers to input the provider keeps or fetches (an earlier response, a conversation, a stored prompt or item, a file, or a remote MCP server): what it adds could not be counted towards the usage cap.",
-  },
-  modelRoutingRefused: {
-    status: 403,
-    errorType: "permission_error",
-    message:
-      "Barrack's model proxy relays this thread's requests only to its own model, without OpenRouter's plugins, and this request asks for another model or a plugin (OpenRouter's models, route, preset, provider options or plugins).",
-  },
   requestTooLarge: {
     status: 413,
     errorType: "request_too_large",
@@ -119,6 +101,19 @@ export const proxyRefusals = {
     message: "The provider did not answer Barrack's model proxy in time: timed out.",
   },
 } as const satisfies Record<string, ProxyRefusal>;
+
+/**
+ * A request holding something the pinned agent never sends: `what` names
+ * it (a member, a type, a header's value), never quoting a value of the
+ * request's own. Not worth retrying: the same request is refused again.
+ */
+export function notRelayedRefusal(what: string): ProxyRefusal {
+  return {
+    status: 400,
+    errorType: "invalid_request_error",
+    message: `Barrack's model proxy does not relay ${what}: it relays only requests shaped like those of its coding agent.`,
+  };
+}
 
 export function credentialMissingRefusal(providerId: string): ProxyRefusal {
   return {

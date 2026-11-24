@@ -186,10 +186,12 @@ describe("the bytes of request bodies one thread or owner may hold", () => {
       .poll(() => requireControlPlane().modelProxy.activity.requestBodyBytesHeld)
       .toBeGreaterThan(2 * body.length - 200);
     const heldBefore = requireControlPlane().modelProxy.activity.requestBodyBytesHeld;
-    // Each `9e20` the proxy reads is written out again as 21 digits.
-    const growing = Buffer.from(
-      `{"model":"a-model","max_tokens":[${Array(8_000).fill("9e20").join(",")}],"messages":[]}`,
-    );
+    // A body that just fits what is left of the bound as read, but not once
+    // `1e15`, a count the proxy reads, is written out again as 16 digits.
+    const head = '{"model":"a-model","max_tokens":1e15,"messages":[{"role":"user","content":"';
+    const tail = '"}]}';
+    const room = 2 * mebibyte - heldBefore;
+    const growing = Buffer.from(head + "a".repeat(room - head.length - tail.length) + tail);
     const { access } = await startThread(lin);
 
     expect(await send(access, growing).status).toBe(503);
@@ -270,9 +272,12 @@ describe("what one body costs, whatever its shape", () => {
     async (shape) => {
       await start();
       const { access } = await startThread(ada);
-      const head = '{"model":"a-model","max_tokens":8,"x":';
-      const room = 32 * mebibyte - head.length - 1;
-      const body = Buffer.from(`${head}${hostileShapes[shape]?.(room) ?? ""}}`);
+      // Where a body is relayed unread: the arguments of a tool call.
+      const head =
+        '{"model":"a-model","max_tokens":8,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":';
+      const tail = "}]}]}";
+      const room = 32 * mebibyte - head.length - tail.length;
+      const body = Buffer.from(`${head}${hostileShapes[shape]?.(room) ?? ""}${tail}`);
       const before = process.memoryUsage();
       let peakGrowth = 0;
       const sampling = setInterval(() => {

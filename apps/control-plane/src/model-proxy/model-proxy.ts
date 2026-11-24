@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { type AgentRequestShape, findAgentRequestShape } from "@barrack/model-catalogue";
 import { parseModelProxyRequestTarget } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
@@ -20,8 +21,13 @@ import {
 } from "./model-proxy-limits.js";
 import { ModelProxyTokens } from "./model-proxy-tokens.js";
 import { type ExchangeEnding, ProxyExchange } from "./proxy-exchange.js";
-import { readPresentedToken } from "./proxy-headers.js";
-import { type ProxyRefusal, proxyRefusals, sendRefusal } from "./proxy-refusals.js";
+import { findUnrelayedHeaderValue, readPresentedToken } from "./proxy-headers.js";
+import {
+  notRelayedRefusal,
+  type ProxyRefusal,
+  proxyRefusals,
+  sendRefusal,
+} from "./proxy-refusals.js";
 import { relayRequest } from "./relay-request.js";
 import { findRelayedRoute } from "./relayed-routes.js";
 import {
@@ -36,7 +42,7 @@ import { type BodyReading, RequestBodyBudget } from "./request-body-budget.js";
  * worth retrying.
  */
 const bodyReadingRefusals: Record<
-  Exclude<BodyReading["kind"], "read" | "ended" | "invalid">,
+  Exclude<BodyReading["kind"], "read" | "ended" | "invalid" | "not_relayed">,
   ProxyRefusal
 > = {
   too_large: proxyRefusals.requestTooLarge,
@@ -432,6 +438,10 @@ export class ModelProxy {
   ): Promise<RelayedRequestBody | undefined> {
     const { request, response, route, target, logger } = exchange;
     const { limits } = this.#options;
+    const shape = this.#findAgentRequestShape(exchange);
+    if (shape === undefined) {
+      return undefined;
+    }
     const cutOff = () => request.destroy();
     response.setTimeout(limits.idleTimeoutInMilliseconds);
     response.once("timeout", cutOff);
@@ -445,6 +455,7 @@ export class ModelProxy {
           ownerUserId: owner.ownerUserId,
           scannerLimits: requestBodyShapeLimits,
           format: route.format,
+          shape,
         },
         exchange.signal,
       )
@@ -458,6 +469,11 @@ export class ModelProxy {
       sendRefusal(response, route.format, proxyRefusals.invalidRequestBody);
       return undefined;
     }
+    if (reading.kind === "not_relayed") {
+      logger.warn({ notRelayed: reading.what }, "Refused a model request the agent would not send");
+      sendRefusal(response, route.format, notRelayedRefusal(reading.what));
+      return undefined;
+    }
     if (reading.kind !== "read") {
       logger.warn({ reason: reading.kind }, "Did not read a model request's body");
       sendRefusal(response, route.format, bodyReadingRefusals[reading.kind]);
@@ -466,7 +482,7 @@ export class ModelProxy {
     exchange.hold(reading.held.release);
     const inspection = inspectRequestBody(
       route.format,
-      target.providerId,
+      shape,
       reading.bytes,
       reading.scanned,
       limits.maximumRequestBytes,
@@ -483,6 +499,26 @@ export class ModelProxy {
       return undefined;
     }
     return inspection.body;
+  }
+
+  /**
+   * What the pinned agent's requests to this provider in this format may
+   * hold, if its headers are ones the agent sends; otherwise the request is
+   * refused, and undefined returned.
+   */
+  #findAgentRequestShape(exchange: ProxyExchange): AgentRequestShape | undefined {
+    const { request, response, route, target, logger } = exchange;
+    const shape = findAgentRequestShape(target.providerId, route.format);
+    const unrelayed =
+      shape === undefined
+        ? "this provider's requests in this format"
+        : findUnrelayedHeaderValue(request.headers, shape);
+    if (unrelayed === undefined) {
+      return shape;
+    }
+    logger.warn({ notRelayed: unrelayed }, "Refused a model request the agent would not send");
+    sendRefusal(response, route.format, notRelayedRefusal(unrelayed));
+    return undefined;
   }
 
   /** Whether the models the body names are ones the thread may use; refuses the request if not. */

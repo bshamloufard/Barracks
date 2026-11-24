@@ -1,18 +1,16 @@
-import type { ProviderApiFormat } from "@barrack/model-catalogue";
+import {
+  type AgentRequestShape,
+  isAllowedValue,
+  type ProviderApiFormat,
+} from "@barrack/model-catalogue";
 import { maximumModelIdLength } from "@barrack/protocol";
 import { estimateInputTokens } from "./answer-usage.js";
 import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
-import {
-  findModelChangingRouting,
-  type OpenRouterRoutingFields,
-  openRouterRoutingFields,
-} from "./openrouter-routing.js";
-import { type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
+import { notRelayedRefusal, type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
 import {
   type ReasoningFields,
   type ReasoningRequest,
   readReasoningRequest,
-  reasoningFields,
 } from "./reasoning-request.js";
 import { readTopLevelMembers } from "./request-body-members.js";
 
@@ -34,12 +32,6 @@ export const requestBodyShapeLimits: JsonBodyScannerLimits = {
  * and the bytes it relays: the body as received, but for the members it
  * read, which are written out again as it parsed them (see
  * `request-body-members.ts`).
- *
- * Request bodies otherwise pass through unchanged: nothing here is an
- * allow-list of what a request may contain, though a request that sends a
- * document or file, or refers to input the provider keeps or fetches
- * (earlier responses, stored prompts, files, remote MCP servers), is
- * refused, since the input it adds could not be estimated.
  */
 export type RelayedRequestBody = {
   /** What is sent to the provider. */
@@ -63,92 +55,45 @@ export type BodyInspection =
   | { kind: "refused"; refusal: ProxyRefusal; reason: string };
 
 /**
- * The top-level fields, as the relayed providers document them, that make
- * the provider add input it keeps or fetches itself, which the body does
- * not show and an estimate from it could not count: the Responses API's
- * `previous_response_id`, `conversation` and stored `prompt`
- * (https://platform.openai.com/docs/api-reference/responses/create), and
- * Anthropic's remote `mcp_servers`
- * (https://docs.anthropic.com/en/docs/agents-and-tools/mcp-connector).
- * The pinned agent sends none of them (nor any of the parts and tools
- * `json-body-scanner.ts` notes), so they are refused in every format.
- */
-const referencedInputFields = [
-  "previous_response_id",
-  "conversation",
-  "prompt",
-  "mcp_servers",
-] as const;
-
-/** The top-level members the proxy reads, in every format. */
-const readKeys = new Set([
-  "model",
-  "stream",
-  "stream_options",
-  "background",
-  "background_options",
-  "deferred",
-  "fallbacks",
-  "max_tokens",
-  "max_output_tokens",
-  "max_completion_tokens",
-  ...reasoningFields,
-  ...referencedInputFields,
-]);
-
-/** OpenRouter's requests are also read for the fields that route them. */
-const openRouterReadKeys = new Set([...readKeys, ...openRouterRoutingFields]);
-
-/**
- * Checks a request's body, scanned as it arrived (`json-body-scanner.ts`),
- * and makes the changes the proxy makes to it. Refused: anything but a
- * JSON object naming a model, and any request that would detach the
- * provider's generation from this one answer, since what it then generated
- * could never be counted.
+ * Checks a request's body, scanned as it arrived against the shape of the
+ * pinned agent's requests (`json-body-scanner.ts`), and makes the changes
+ * the proxy makes to it. The scanner has refused any top-level member, and
+ * any object of a type, that the agent never sends; here every member the
+ * agent sends as a setting (all but its conversation, tools and system
+ * prompt) is parsed and must hold one of the values the agent gives it
+ * (`AgentRequestShape.members`), so no count, tier or model the agent never
+ * sends reaches the provider. Refused besides: a body that names no model.
  */
 export function inspectRequestBody(
   format: ProviderApiFormat,
-  providerId: string,
+  shape: AgentRequestShape,
   received: Buffer,
   scanned: ScannedJsonBody,
   maximumBytes: number,
 ): BodyInspection {
-  const members = readTopLevelMembers(
-    received,
-    scanned,
-    providerId === "openrouter" ? openRouterReadKeys : readKeys,
+  const settings = Object.entries(shape.members).flatMap(([name, rule]) =>
+    rule === "scanned" ? [] : [name],
   );
+  const members = readTopLevelMembers(received, scanned, new Set(settings));
   if ("problem" in members) {
     return refused(proxyRefusals.invalidRequestBody, members.problem);
+  }
+  for (const [name, value] of members.values) {
+    const rule = shape.members[name];
+    if (!Array.isArray(rule) || !isAllowedValue(rule, value)) {
+      const what = `the value given for \`${name}\``;
+      return refused(notRelayedRefusal(what), `it holds ${what}, which the agent never sends`);
+    }
   }
   const fields = Object.fromEntries(members.values) as RequestFields;
   const model = fields.model;
   if (typeof model !== "string" || model === "" || model.length > maximumModelIdLength) {
     return refused(proxyRefusals.invalidRequestBody, "the body names no model");
   }
-  const routing = providerId === "openrouter" ? findModelChangingRouting(fields) : undefined;
-  if (routing !== undefined) {
-    return refused(proxyRefusals.modelRoutingRefused, routing);
-  }
-  const detachment = findDetachedGeneration(format, fields);
-  if (detachment !== undefined) {
-    return refused(proxyRefusals.detachedGenerationRefused, detachment);
-  }
-  const referencedInput = findReferencedInput(fields, scanned);
-  if (referencedInput !== undefined) {
-    return refused(proxyRefusals.referencedInputRefused, referencedInput);
-  }
-  const fallbackModels = readFallbackModels(format, fields);
-  if (fallbackModels === undefined) {
-    return refused(
-      proxyRefusals.invalidRequestBody,
-      "its fallback models are not a list of models",
-    );
-  }
   const isStreamed = fields.stream === true;
   const bytes = members.rebuild(
-    format === "openai_chat_completions" && isStreamed
-      ? new Map([["stream_options", askForStreamedUsage(fields.stream_options)]])
+    format === "openai_chat_completions" && isStreamed && fields.stream_options === undefined
+      ? new Map([["stream_options", { include_usage: true }]])
       : new Map(),
   );
   if (bytes.length > maximumBytes) {
@@ -159,7 +104,7 @@ export function inspectRequestBody(
     body: {
       bytes,
       model,
-      fallbackModels,
+      fallbackModels: readFallbackModels(fields.fallbacks),
       isStreamed,
       maximumOutputTokens: readMaximumOutputTokens(format, fields),
       estimatedInputTokens: estimateInputTokens(bytes.length, scanned),
@@ -168,18 +113,13 @@ export function inspectRequestBody(
   };
 }
 
-/** The fields the proxy reads, of a body that may hold anything else too. */
+/** The fields the proxy reads, each already one of the values the agent sends. */
 type RequestFields = ReasoningFields &
-  OpenRouterRoutingFields &
-  Partial<Record<(typeof referencedInputFields)[number], unknown>> &
   Partial<
     Record<
       | "model"
       | "stream"
       | "stream_options"
-      | "background"
-      | "background_options"
-      | "deferred"
       | "fallbacks"
       | "max_tokens"
       | "max_output_tokens"
@@ -189,85 +129,18 @@ type RequestFields = ReasoningFields &
   >;
 
 /**
- * A streamed Chat Completions answer reports its usage only when asked
- * (`stream_options.include_usage`); without it the proxy could count only
- * the visible text, missing hidden reasoning. The pinned agent asks for it
- * of every relayed provider already (pi-ai's `openai-completions.js`, whose
- * detection sets `supportsUsageInStreaming` for all of them), so this
- * changes only a request something else in the sandbox wrote.
- * https://platform.openai.com/docs/api-reference/chat/create#chat-create-stream_options
+ * Anthropic's `fallbacks`, `[{ model }]`, the models it may answer with if
+ * the one asked for cannot. The allow-list lets through only lists the
+ * agent sends, each for some model; whether it is the list for the model
+ * requested is checked with the thread's model (`ModelProxyAuthorization`).
  */
-function askForStreamedUsage(options: unknown): object {
-  const isObject = typeof options === "object" && options !== null && !Array.isArray(options);
-  return { ...(isObject ? options : {}), include_usage: true };
-}
-
-/**
- * The request fields, as each provider documents them, that answer at once
- * and leave the provider generating on its own, to be fetched later through
- * a path the proxy does not relay:
- * - OpenAI's Responses API `background` (and `background_options`, which
- *   needs it): https://developers.openai.com/api/docs/guides/background
- *   (xAI's Responses API lists `background` as unsupported, and is refused
- *   the same way.)
- * - xAI's Chat Completions `deferred`:
- *   https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions
- * Anthropic's Messages API has none; its batches are another path.
- */
-function findDetachedGeneration(
-  format: ProviderApiFormat,
-  fields: RequestFields,
-): string | undefined {
-  switch (format) {
-    case "openai_responses":
-      if (isSet(fields.background) || isSet(fields.background_options)) {
-        return "it asks for a background response";
-      }
-      return undefined;
-    case "openai_chat_completions":
-      return isSet(fields.deferred) ? "it asks for a deferred completion" : undefined;
-    case "anthropic_messages":
-      return undefined;
-  }
-}
-
-/** What in the body refers to input the provider keeps or fetches, if anything does. */
-function findReferencedInput(fields: RequestFields, scanned: ScannedJsonBody): string | undefined {
-  const field = referencedInputFields.find((name) => isSet(fields[name]));
-  if (field !== undefined) {
-    return `it refers to stored or remote input (\`${field}\`)`;
-  }
-  if (scanned.referencedInputType !== undefined) {
-    return `it sends or refers to input of type \`${scanned.referencedInputType}\``;
-  }
-  return undefined;
-}
-
-/** Present with any value but `false` or `null`, either of which a provider takes as unset. */
-function isSet(value: unknown): boolean {
-  return value !== undefined && value !== null && value !== false;
-}
-
-/** Anthropic's `fallbacks`, `[{ model }]`, the models it may answer with if the one asked for cannot. */
-function readFallbackModels(
-  format: ProviderApiFormat,
-  fields: RequestFields,
-): string[] | undefined {
-  if (format !== "anthropic_messages" || fields.fallbacks === undefined) {
+function readFallbackModels(fallbacks: unknown): string[] {
+  if (!Array.isArray(fallbacks)) {
     return [];
   }
-  if (!Array.isArray(fields.fallbacks)) {
-    return undefined;
-  }
-  const models: string[] = [];
-  for (const fallback of fields.fallbacks) {
-    const model: unknown = (fallback as { model?: unknown } | null)?.model;
-    if (typeof model !== "string") {
-      return undefined;
-    }
-    models.push(model);
-  }
-  return models;
+  return fallbacks.flatMap((fallback: { model?: unknown }) =>
+    typeof fallback.model === "string" ? [fallback.model] : [],
+  );
 }
 
 /**

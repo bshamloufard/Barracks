@@ -1,16 +1,22 @@
-import type { ProviderApiFormat } from "@barrack/model-catalogue";
+import { findAgentRequestShape, type ProviderApiFormat } from "@barrack/model-catalogue";
 import { describe, expect, it } from "vitest";
 import { JsonBodyScanner, type JsonScanOutcome } from "./json-body-scanner.js";
 import { requestBodyShapeLimits } from "./request-body.js";
 
-/** Scans `text` split into chunks of `chunkSize` bytes, as a body arriving in pieces would be. */
+/**
+ * Scans `text` split into chunks of `chunkSize` bytes, as a body arriving
+ * in pieces would be; against the agent's requests to `providerId` if
+ * given, otherwise for its grammar and images alone.
+ */
 function scan(
   text: string | Buffer,
   chunkSize = 7,
   format: ProviderApiFormat = "anthropic_messages",
+  providerId?: string,
 ): JsonScanOutcome {
   const bytes = typeof text === "string" ? Buffer.from(text) : text;
-  const scanner = new JsonBodyScanner(requestBodyShapeLimits, format);
+  const shape = providerId === undefined ? undefined : findAgentRequestShape(providerId, format);
+  const scanner = new JsonBodyScanner(requestBodyShapeLimits, format, shape);
   for (let start = 0; start < bytes.length; start += chunkSize) {
     scanner.write(bytes.subarray(start, start + chunkSize));
   }
@@ -178,10 +184,10 @@ describe("finding the images a body sends", () => {
   function imagesIn(format: ProviderApiFormat, body: object) {
     const outcome = scan(JSON.stringify(body), 13, format);
     if (outcome.kind !== "scanned") {
-      throw new Error(outcome.reason);
+      throw new Error(JSON.stringify(outcome));
     }
-    const { imageCount, base64ImageBytes, referencedInputType } = outcome.body;
-    return { imageCount, base64ImageBytes, referencedInputType };
+    const { imageCount, base64ImageBytes } = outcome.body;
+    return { imageCount, base64ImageBytes };
   }
 
   it("finds Anthropic's base64 images in a message's parts and in a tool result's", () => {
@@ -199,7 +205,6 @@ describe("finding the images a body sends", () => {
     expect(imagesIn("anthropic_messages", body)).toEqual({
       imageCount: 2,
       base64ImageBytes: 2 * picture.length,
-      referencedInputType: undefined,
     });
   });
 
@@ -216,7 +221,6 @@ describe("finding the images a body sends", () => {
     expect(imagesIn("openai_responses", body)).toEqual({
       imageCount: 2,
       base64ImageBytes: 2 * dataUrl.length,
-      referencedInputType: undefined,
     });
   });
 
@@ -282,55 +286,286 @@ describe("finding the images a body sends", () => {
     expect(imagesIn("openai_chat_completions", body).base64ImageBytes).toBe(0);
     expect(imagesIn("anthropic_messages", body).base64ImageBytes).toBe(0);
   });
+});
+
+/**
+ * With the shape of the agent's requests, the scanner refuses as soon as
+ * it reads it anything the agent never sends: a top-level member, or an
+ * object of a type it never gives one in that place. Names are compared as
+ * written, so a spelling a decoder would read as another name is refused.
+ */
+describe("refusing what the agent never sends", () => {
+  const anthropicBody = (part: object) =>
+    JSON.stringify({ model: "m", max_tokens: 8, messages: [{ role: "user", content: [part] }] });
+
+  function outcomeOf(format: ProviderApiFormat, providerId: string, body: string) {
+    const outcomes = [1, 5, body.length].map((chunkSize) =>
+      scan(body, chunkSize, format, providerId),
+    );
+    // However the body is cut, the outcome is the same.
+    expect(new Set(outcomes.map((outcome) => JSON.stringify(outcome))).size).toBe(1);
+    const [outcome] = outcomes;
+    return outcome?.kind === "not_relayed" ? outcome.what : outcome?.kind;
+  }
 
   it.each([
-    ["anthropic_messages", { type: "document", source: { type: "url", url: "https://a/b.pdf" } }],
-    ["anthropic_messages", { type: "container_upload", file_id: "file_1" }],
-    ["openai_responses", { type: "input_file", file_id: "file-1" }],
-    ["openai_chat_completions", { type: "file", file: { file_id: "file-1" } }],
-  ] as const)("notes, in %s, a part that refers to a file or document: %j", (format, part) => {
-    const conversation = format === "openai_responses" ? "input" : "messages";
-    const body = { model: "m", [conversation]: [{ role: "user", content: [part] }] };
+    [
+      "anthropic_messages",
+      "anthropic",
+      '{"model":"m","messages":[],"thread":{"type":"continue"}}',
+      "the member `thread`",
+    ],
+    [
+      "anthropic_messages",
+      "anthropic",
+      '{"model":"m","messages":[],"compaction":{}}',
+      "the member `compaction`",
+    ],
+    [
+      "anthropic_messages",
+      "anthropic",
+      '{"model":"m","container":{"id":"c"},"messages":[]}',
+      "the member `container`",
+    ],
+    [
+      "anthropic_messages",
+      "anthropic",
+      '{"model":"m","mcp_servers":[],"messages":[]}',
+      "the member `mcp_servers`",
+    ],
+    [
+      "openai_responses",
+      "openai",
+      '{"model":"m","previous_response_id":"r","input":[]}',
+      "the member `previous_response_id`",
+    ],
+    [
+      "openai_responses",
+      "openai",
+      '{"model":"m","background":true,"input":[]}',
+      "the member `background`",
+    ],
+    [
+      "openai_responses",
+      "openai",
+      '{"model":"m","service_tier":"priority","input":[]}',
+      "the member `service_tier`",
+    ],
+    [
+      "openai_chat_completions",
+      "together",
+      '{"model":"m","n":128,"messages":[]}',
+      "the member `n`",
+    ],
+    [
+      "openai_chat_completions",
+      "openrouter",
+      '{"model":"m","plugins":[],"messages":[]}',
+      "the member `plugins`",
+    ],
+    [
+      "openai_chat_completions",
+      "openrouter",
+      '{"model":"m","provider":{},"messages":[]}',
+      "the member `provider`",
+    ],
+    [
+      "openai_chat_completions",
+      "deepseek",
+      '{"model":"m","deferred":true,"messages":[]}',
+      "the member `deferred`",
+    ],
+  ] as const)(
+    "refuses, in %s to %s, a top-level member the agent never sends: %s",
+    (format, providerId, body, what) => {
+      expect(outcomeOf(format, providerId, body)).toBe(what);
+    },
+  );
 
-    expect(imagesIn(format, body).referencedInputType).toBe(part.type);
+  it.each([
+    [
+      { type: "document", source: { type: "url", url: "https://a/b.pdf" } },
+      "the content part type `document`",
+    ],
+    [{ type: "container_upload", file_id: "f" }, "the content part type `container_upload`"],
+    [
+      { type: "image", source: { type: "url", url: "https://a/b.png" } },
+      "the image source type `url`",
+    ],
+    [{ type: "image", source: { type: "file", file_id: "f" } }, "the image source type `file`"],
+    [{ text: "a part without a type" }, "a content part without a `type`"],
+    [{ type: 7 }, "a content part whose `type` is not text"],
+    [
+      { type: "text", text: "Hi", cache_control: { type: "persistent" } },
+      "the cache marker type `persistent`",
+    ],
+  ])("refuses, in Anthropic's format, %j", (part, what) => {
+    expect(outcomeOf("anthropic_messages", "anthropic", anthropicBody(part))).toBe(what);
   });
 
-  it("notes a stored item, a remote MCP server or file search among the Responses API's input and tools", () => {
+  it.each([
+    [{ type: "advisor_20260301", name: "advisor" }, "the tool type `advisor_20260301`"],
+    [{ type: "web_search_20250305", name: "web_search" }, "the tool type `web_search_20250305`"],
+    [
+      { type: "code_execution_20250825", name: "code_execution" },
+      "the tool type `code_execution_20250825`",
+    ],
+  ])("refuses, in Anthropic's format, a tool the provider runs: %j", (tool, what) => {
+    const body = JSON.stringify({ model: "m", messages: [], tools: [tool] });
+
+    expect(outcomeOf("anthropic_messages", "anthropic", body)).toBe(what);
+  });
+
+  it("refuses a provider's tool declared mid-conversation, in an Anthropic tool change or a Responses item", () => {
+    const toolChange = {
+      type: "tool_addition",
+      tool: { type: "tool_definition", definition: { type: "web_search_20250305", name: "w" } },
+    };
+    const additionalTools = {
+      type: "additional_tools",
+      role: "developer",
+      tools: [{ type: "code_interpreter", container: { type: "auto", file_ids: ["f"] } }],
+    };
+
     expect(
-      imagesIn("openai_responses", { model: "m", input: [{ type: "item_reference", id: "msg_1" }] })
-        .referencedInputType,
-    ).toBe("item_reference");
+      outcomeOf(
+        "anthropic_messages",
+        "anthropic",
+        JSON.stringify({ model: "m", messages: [{ role: "system", content: [toolChange] }] }),
+      ),
+    ).toBe("the tool type `web_search_20250305`");
     expect(
-      imagesIn("openai_responses", { model: "m", input: "Hi", tools: [{ type: "mcp" }] })
-        .referencedInputType,
-    ).toBe("mcp");
-    expect(
-      imagesIn("openai_responses", { model: "m", input: "Hi", tools: [{ type: "file_search" }] })
-        .referencedInputType,
-    ).toBe("file_search");
-    // Tools can also be declared mid-conversation, as the pinned agent does with function tools.
-    expect(
-      imagesIn("openai_responses", {
+      outcomeOf(
+        "openai_responses",
+        "openai",
+        JSON.stringify({ model: "m", input: [additionalTools] }),
+      ),
+    ).toBe("the tool type `code_interpreter`");
+  });
+
+  it.each([
+    [
+      "openai_responses",
+      "openai",
+      { model: "m", input: [{ type: "item_reference", id: "r" }] },
+      "the conversation item type `item_reference`",
+    ],
+    [
+      "openai_responses",
+      "openai",
+      { model: "m", input: [{ role: "user", content: [{ type: "input_file", file_id: "f" }] }] },
+      "the content part type `input_file`",
+    ],
+    [
+      "openai_responses",
+      "openai",
+      { model: "m", input: [], tools: [{ type: "mcp", server_url: "https://a" }] },
+      "the tool type `mcp`",
+    ],
+    [
+      "openai_chat_completions",
+      "together",
+      {
         model: "m",
-        input: [{ type: "additional_tools", role: "developer", tools: [{ type: "mcp" }] }],
-      }).referencedInputType,
-    ).toBe("mcp");
+        messages: [
+          { role: "user", content: [{ type: "video_url", video_url: { url: "https://a/b.mp4" } }] },
+        ],
+      },
+      "the content part type `video_url`",
+    ],
+    [
+      "openai_chat_completions",
+      "groq",
+      {
+        model: "m",
+        messages: [{ role: "user", content: [{ type: "file", file: { file_id: "f" } }] }],
+      },
+      "the content part type `file`",
+    ],
+  ] as const)("refuses, in %s to %s, %j", (format, providerId, body, what) => {
+    expect(outcomeOf(format, providerId, JSON.stringify(body))).toBe(what);
   });
 
-  it("notes nothing for the same words elsewhere, such as an argument the agent passed a tool", () => {
-    const body = {
+  it.each([
+    [
+      "a type written with an escape",
+      '{"type":"docum\\u0065nt","source":{"type":"url","url":"u"}}',
+      "the content part type that is not a plain name",
+    ],
+    [
+      "the key `type` written with an escape",
+      '{"t\\u0079pe":"document"}',
+      "a member whose name is written with an escape or outside ASCII",
+    ],
+    [
+      "the key `type` in capitals",
+      '{"type":"text","Type":"document"}',
+      "the member `Type`, in that case",
+    ],
+    [
+      "a key that folds to `source`, with a long s",
+      '{"type":"image","\u017fource":{"type":"url"}}',
+      "a member whose name is written with an escape or outside ASCII",
+    ],
+    ["a type in another case", '{"type":"Text","text":"Hi"}', "the content part type `Text`"],
+  ])(
+    "refuses %s, which a decoder would read otherwise than written",
+    (_description, part, what) => {
+      const body = `{"model":"m","messages":[{"role":"user","content":[${part}]}]}`;
+
+      expect(outcomeOf("anthropic_messages", "anthropic", body)).toBe(what);
+    },
+  );
+
+  it("refuses a top-level member written with an escape, or in another case", () => {
+    expect(outcomeOf("openai_responses", "openai", '{"mod\\u0065l":"m","input":[]}')).toBe(
+      "a member whose name is written with an escape or outside ASCII",
+    );
+    expect(outcomeOf("openai_responses", "openai", '{"model":"m","INPUT":[]}')).toBe(
+      "the member `INPUT`, in that case",
+    );
+    expect(outcomeOf("openai_responses", "openai", '{"model":"m","Stream":true}')).toBe(
+      "the member `Stream`",
+    );
+  });
+
+  it("polices nothing in a tool's schema, a tool call's arguments or a message's text", () => {
+    const body = JSON.stringify({
       model: "m",
+      max_tokens: 8,
       messages: [
+        { role: "user", content: "Please send a document." },
         {
           role: "assistant",
-          content: [{ type: "tool_use", id: "t", name: "x", input: { type: "file" } }],
+          content: [
+            {
+              type: "tool_use",
+              id: "t",
+              name: "x",
+              input: { type: "document", "T\u0079pe": 1, ſ: 2 },
+            },
+          ],
         },
       ],
       tools: [
-        { name: "x", input_schema: { type: "object", properties: { type: { type: "string" } } } },
+        {
+          name: "x",
+          description: "Sends a document.",
+          input_schema: {
+            type: "object",
+            properties: { type: { type: "string", enum: ["document"] } },
+          },
+        },
       ],
-    };
+    });
 
-    expect(imagesIn("anthropic_messages", body).referencedInputType).toBeUndefined();
+    expect(outcomeOf("anthropic_messages", "anthropic", body)).toBe("scanned");
+  });
+
+  it("classes no object under a Responses API part as an image source, whatever its key", () => {
+    const part = { type: "input_text", text: "Hi", extra: { anything: true } };
+    const body = JSON.stringify({ model: "m", input: [{ role: "user", content: [part] }] });
+
+    expect(outcomeOf("openai_responses", "openai", body)).toBe("scanned");
   });
 });

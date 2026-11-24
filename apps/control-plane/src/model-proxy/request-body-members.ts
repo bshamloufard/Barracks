@@ -9,16 +9,12 @@ import type { ScannedJsonBody, TopLevelMember } from "./json-body-scanner.js";
  * say, cannot mean one thing here and another to the provider), and that a
  * member the proxy changes or adds is spliced in. A top-level key that
  * appears twice is refused outright, for the same reason. Everything else
- * is relayed as received: the scanner found it valid JSON.
- *
- * Some providers' JSON decoders match a field's name regardless of case,
- * folding Unicode as they do (Go's `encoding/json` reads `ſtream`, with a
- * long s, as `stream`), so a key the proxy did not read could be read there
- * as one it did. So a body is also refused when two of its top-level keys
- * are the same once folded (`foldKey`), when a top-level key folds to one
- * the proxy reads without being that key, and when any key inside a member
- * the proxy reads is not already in its folded form. The agent's own keys
- * are all lowercase ASCII.
+ * is relayed as received: the scanner found it valid JSON, and found each
+ * top-level key one of the agent's, written without an escape, so its bytes
+ * are the name any decoder reads. A key inside a member read is decoded by
+ * the parse, and the value then compared with the agent's own exactly
+ * (`request-body.ts`), so a name written in another case, or one some
+ * decoder might fold into another, is simply not one of them.
  *
  * Only members the proxy reads are parsed, each at most
  * `maximumReadMemberBytes`, so what this costs is bounded whatever the
@@ -44,21 +40,12 @@ export function readTopLevelMembers(
     return { problem: "the body is not UTF-8" };
   }
   const membersByKey = new Map<string, TopLevelMember>();
-  const keysByFoldedKey = new Map<string, string>();
-  const foldedReadKeys = new Set([...readKeys].map(foldKey));
   for (const member of scanned.members) {
     const key = decodeKey(received, member);
     if (membersByKey.has(key)) {
       return { problem: `the body has "${key.slice(0, 64)}" twice` };
     }
-    const folded = foldKey(key);
-    if (keysByFoldedKey.has(folded) || (foldedReadKeys.has(folded) && !readKeys.has(key))) {
-      return {
-        problem: `the body spells "${folded.slice(0, 64)}" in a way the proxy does not read`,
-      };
-    }
     membersByKey.set(key, member);
-    keysByFoldedKey.set(folded, key);
   }
   const values = new Map<string, unknown>();
   for (const key of readKeys) {
@@ -72,42 +59,12 @@ export function readTopLevelMembers(
     const value: unknown = JSON.parse(
       received.toString("utf8", member.valueStart, member.valueEnd),
     );
-    if (!areKeysFolded(value)) {
-      return { problem: `the body's "${key}" spells a key in a way the proxy does not read` };
-    }
     values.set(key, value);
   }
   return {
     values,
     rebuild: (changes) => rebuildBody(received, scanned, membersByKey, values, changes),
   };
-}
-
-/**
- * A key as a decoder that ignores case might match it: compatibility
- * normalised (a full-width `ｍ` or a long `ſ` becomes `m` or `s`) and case
- * folded (`K`, the Kelvin sign, becomes `k`; `ß` becomes `ss`). Plain
- * ASCII, which every key of the agent's is, takes the short way.
- */
-function foldKey(key: string): string {
-  const isAscii = Buffer.byteLength(key) === key.length;
-  if (isAscii) {
-    return key.toLowerCase();
-  }
-  return key.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
-}
-
-/** Whether every key of every object within `value` is in its folded form. */
-function areKeysFolded(value: unknown): boolean {
-  if (Array.isArray(value)) {
-    return value.every(areKeysFolded);
-  }
-  if (typeof value !== "object" || value === null) {
-    return true;
-  }
-  return Object.entries(value).every(
-    ([key, nested]) => foldKey(key) === key && areKeysFolded(nested),
-  );
 }
 
 /** A key with no escape is its own bytes; one with an escape is decoded as JSON would. */

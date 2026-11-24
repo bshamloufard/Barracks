@@ -18,12 +18,24 @@
  * counts by the picture's size rather than by its bytes. Only an image in
  * the place its format sends one (a part of a message, or of a tool's
  * result or output) is counted so; base64 anywhere else is text the model
- * reads. And it notes a part, input item or tool that refers to input the
- * provider keeps or fetches itself (see `referencedInputTypes`), which no
- * estimate from the body could count.
+ * reads.
+ *
+ * Given the shape of the pinned agent's requests (`AgentRequestShape`, from
+ * `@barrack/model-catalogue`), it also refuses, as soon as it is read, what
+ * the agent never sends: a top-level member not among the agent's, and an
+ * object of a `type` the agent never gives one in that place (an item of
+ * the conversation, a part of an item or of a tool result, an image's
+ * source, a tool, an Anthropic tool change, a cache marker), or without a
+ * `type` where the agent always gives one. So that what it reads is what
+ * any JSON decoder reads, a member's name in any of those places must be
+ * spelt without an escape and in ASCII, and must not be a name it reads in
+ * other letter cases (`Type`, `CONTENT`), which some decoders match
+ * regardless of case; a `type` is compared as written, so one spelt with an
+ * escape is one the agent never sends. Everywhere else (a tool's schema, a
+ * tool call's arguments, the text of a message) nothing is policed.
  */
 
-import type { ProviderApiFormat } from "@barrack/model-catalogue";
+import type { AgentRequestShape, ObjectType, ProviderApiFormat } from "@barrack/model-catalogue";
 
 export type JsonBodyScannerLimits = {
   /** The deepest nesting accepted; the pinned agent's requests nest about a dozen deep. */
@@ -55,13 +67,18 @@ export type ScannedJsonBody = {
   base64ImageBytes: number;
   /** Images the body sends or refers to, however it does. */
   imageCount: number;
-  /** The `type` of the first part, input item or tool that refers to input the provider keeps or fetches, if any. */
-  referencedInputType: string | undefined;
 };
 
 export type JsonScanOutcome = { kind: "scanned"; body: ScannedJsonBody } | JsonScanProblem;
 
-export type JsonScanProblem = { kind: "invalid"; reason: string };
+/**
+ * Why a body is refused: it is not JSON the proxy accepts (`invalid`), or
+ * it holds something the agent never sends (`not_relayed`), described by a
+ * name of the agent's format (a member's or a type's), never by a value.
+ */
+export type JsonScanProblem =
+  | { kind: "invalid"; reason: string }
+  | { kind: "not_relayed"; what: string };
 
 const expecting = {
   value: 0,
@@ -151,6 +168,9 @@ const keyKinds = {
   output: 7,
   conversation: 8,
   tools: 9,
+  tool: 10,
+  definition: 11,
+  cacheControl: 12,
 } as const;
 
 /**
@@ -160,8 +180,10 @@ const keyKinds = {
  * item (its `content`, or a Responses tool call's `output`) or of a part
  * (an Anthropic tool result's `content`); one part; an image part's source
  * (Anthropic's `source`, Chat Completions' `image_url` object); the tools,
- * at the top level or in a conversation item, and one tool. Anything else
- * is `elsewhere`, where nothing is an image.
+ * at the top level or in a conversation item, and one tool; the `tool` of
+ * an Anthropic part adding or removing a tool, whose `definition` is a
+ * tool; and a part's or a tool's `cache_control`. Anything else is
+ * `elsewhere`, where nothing is an image and nothing is policed.
  */
 const positions = {
   elsewhere: 0,
@@ -173,7 +195,46 @@ const positions = {
   imageSource: 6,
   toolList: 7,
   tool: 8,
+  toolChange: 9,
+  cacheControl: 10,
 } as const;
+
+/** What the places where an object's `type` is policed are called, in a refusal. */
+const placeNames: ReadonlyMap<number, string> = new Map([
+  [positions.conversationItem, "conversation item"],
+  [positions.part, "content part"],
+  [positions.imageSource, "image source"],
+  [positions.tool, "tool"],
+  [positions.toolChange, "tool change"],
+  [positions.cacheControl, "cache marker"],
+]);
+
+/** The types allowed in one place; `allowsNone` for an object without one. */
+type AllowedTypes = { allowsNone: boolean; types: Buffer[] };
+
+/** The allow-list as the scanner compares it: bytes, by place. */
+type CompiledShape = {
+  topLevelMembers: Buffer[];
+  typesAt: ReadonlyMap<number, AllowedTypes>;
+};
+
+function compileShape(shape: AgentRequestShape): CompiledShape {
+  const allowed = (types: readonly ObjectType[]): AllowedTypes => ({
+    allowsNone: types.includes(null),
+    types: types.flatMap((type) => (type === null ? [] : [Buffer.from(type)])),
+  });
+  return {
+    topLevelMembers: Object.keys(shape.members).map((name) => Buffer.from(name)),
+    typesAt: new Map([
+      [positions.conversationItem, allowed(shape.itemTypes)],
+      [positions.part, allowed(shape.partTypes)],
+      [positions.imageSource, allowed(shape.imageSourceTypes)],
+      [positions.tool, allowed(shape.toolTypes)],
+      [positions.toolChange, allowed(shape.toolChangeTypes)],
+      [positions.cacheControl, allowed(shape.cacheControlTypes)],
+    ]),
+  };
+}
 
 /** What an object's `type` says, as far as images go; a type given twice says nothing to trust. */
 const typeKinds = { unstated: 0, imagePart: 1, base64Source: 2, other: 3, givenTwice: 4 } as const;
@@ -194,26 +255,12 @@ const imagePartTypes: Readonly<Record<ProviderApiFormat, Buffer>> = {
 const anyImagePartType = Object.values(imagePartTypes);
 const base64SourceType = Buffer.from("base64");
 
-/**
- * The `type`s of a part, input item or tool whose input the provider
- * keeps or fetches itself, or that sends a document or file, whose cost no
- * count of the body's bytes could estimate: Anthropic's `document` and
- * `container_upload`; the Responses API's `input_file`, `item_reference`,
- * and its `mcp` and `file_search` tools; Chat Completions' `file`. The
- * pinned agent sends none of them.
- */
-const referencedInputTypes = [
-  "document",
-  "container_upload",
-  "input_file",
-  "item_reference",
-  "mcp",
-  "file_search",
-  "file",
-].map((type) => Buffer.from(type));
-
 const imageDataUrlPrefix = Buffer.from("data:image/");
 const base64Marker = Buffer.from(";base64,");
+
+function lowerCase(letter: number): number {
+  return letter >= 0x41 && letter <= 0x5a ? letter + 0x20 : letter;
+}
 
 function recognisedKeysFor(format: ProviderApiFormat): ReadonlyArray<[Buffer, number]> {
   return [
@@ -226,6 +273,9 @@ function recognisedKeysFor(format: ProviderApiFormat): ReadonlyArray<[Buffer, nu
     [Buffer.from("output"), keyKinds.output],
     [Buffer.from(format === "openai_responses" ? "input" : "messages"), keyKinds.conversation],
     [Buffer.from("tools"), keyKinds.tools],
+    [Buffer.from("tool"), keyKinds.tool],
+    [Buffer.from("definition"), keyKinds.definition],
+    [Buffer.from("cache_control"), keyKinds.cacheControl],
   ];
 }
 
@@ -235,6 +285,7 @@ const shortestImageData = 64;
 export class JsonBodyScanner {
   readonly #limits: JsonBodyScannerLimits;
   readonly #format: ProviderApiFormat;
+  readonly #shape: CompiledShape | undefined;
   readonly #recognisedKeys: ReadonlyArray<[Buffer, number]>;
   #expecting: Expecting = expecting.value;
   #problem: JsonScanProblem | undefined;
@@ -251,6 +302,8 @@ export class JsonBodyScanner {
   // The string being read.
   #isKey = false;
   #stringLength = 0;
+  #stringHasEscape = false;
+  #stringHasNonAscii = false;
   #lastNonBase64Position = -1;
   readonly #stringPrefix = Buffer.alloc(stringPrefixCapacity);
   #stringPrefixLength = 0;
@@ -266,12 +319,21 @@ export class JsonBodyScanner {
   #base64ImageBytes = 0;
   #base64Images = 0;
   #imageTypeMarks = 0;
-  #referencedInputType: string | undefined;
 
-  /** `format` is the relayed format the body is in, which says where it may send images. */
-  constructor(limits: JsonBodyScannerLimits, format: ProviderApiFormat) {
+  /**
+   * `format` is the relayed format the body is in, which says where it may
+   * send images; `shape`, what the agent's requests in it may hold. Without
+   * a shape, which only tests of the grammar and of images leave out,
+   * nothing is policed.
+   */
+  constructor(
+    limits: JsonBodyScannerLimits,
+    format: ProviderApiFormat,
+    shape: AgentRequestShape | undefined,
+  ) {
     this.#limits = limits;
     this.#format = format;
+    this.#shape = shape === undefined ? undefined : compileShape(shape);
     this.#recognisedKeys = recognisedKeysFor(format);
     this.#isObjectAt = new Uint8Array(limits.maximumDepth + 1);
     this.#keyKindAt = new Uint8Array(limits.maximumDepth + 1);
@@ -306,7 +368,6 @@ export class JsonBodyScanner {
         insignificantBytes: this.#insignificantBytes,
         base64ImageBytes: this.#base64ImageBytes,
         imageCount: Math.max(this.#imageTypeMarks, this.#base64Images),
-        referencedInputType: this.#referencedInputType,
       },
     };
   }
@@ -348,6 +409,7 @@ export class JsonBodyScanner {
     } else if (current === byte.backslash) {
       this.#noteStringByte(current, this.#stringLength);
       this.#stringLength += 1;
+      this.#stringHasEscape = true;
       this.#expecting = expecting.stringEscape;
     } else {
       this.#fail("a string holds an unescaped control character");
@@ -362,6 +424,7 @@ export class JsonBodyScanner {
     }
     if (base64Alphabet[current] === 0) {
       this.#lastNonBase64Position = position;
+      this.#stringHasNonAscii ||= current >= 0x80;
     }
   }
 
@@ -440,6 +503,9 @@ export class JsonBodyScanner {
     if (this.#depth === 1) {
       this.#member.valueStart = offset;
     }
+    if (current !== byte.quote && this.#isPolicedTypeKey()) {
+      return this.#refuse(`a ${this.#placeName()} whose \`type\` is not text`);
+    }
     if (current === byte.openBrace || current === byte.openBracket) {
       this.#openContainer(current === byte.openBrace);
     } else if (current === byte.quote) {
@@ -477,6 +543,8 @@ export class JsonBodyScanner {
   #beginString(isKey: boolean): void {
     this.#isKey = isKey;
     this.#stringLength = 0;
+    this.#stringHasEscape = false;
+    this.#stringHasNonAscii = false;
     this.#stringPrefixLength = 0;
     this.#lastNonBase64Position = -1;
     this.#expecting = expecting.stringContent;
@@ -490,12 +558,43 @@ export class JsonBodyScanner {
     }
     this.#keyKindAt[this.#depth] = this.#recogniseKey();
     this.#expecting = expecting.colon;
-    if (this.#depth !== 1) {
+    if (this.#depth === 1) {
+      this.#member.keyEnd = closingQuoteOffset + 1;
+      if (this.#stringLength > this.#limits.maximumTopLevelKeyBytes) {
+        this.#fail("a top-level key is too long");
+        return;
+      }
+    }
+    this.#checkPolicedKey();
+  }
+
+  /**
+   * In a place the allow-list polices, a member's name must be one any
+   * decoder reads as the proxy does: written without an escape, in ASCII,
+   * and not a name the proxy reads written in other letters' cases; at the
+   * top level, it must be one of the agent's own members.
+   */
+  #checkPolicedKey(): void {
+    const position = this.#positionAt[this.#depth];
+    if (this.#shape === undefined || position === positions.elsewhere) {
       return;
     }
-    this.#member.keyEnd = closingQuoteOffset + 1;
-    if (this.#stringLength > this.#limits.maximumTopLevelKeyBytes) {
-      this.#fail("a top-level key is too long");
+    if (this.#stringHasEscape || this.#stringHasNonAscii) {
+      this.#refuse("a member whose name is written with an escape or outside ASCII");
+      return;
+    }
+    if (
+      this.#keyKindAt[this.#depth] === keyKinds.otherKey &&
+      this.#isRecognisedKeyInAnotherCase()
+    ) {
+      this.#refuse(`the member ${this.#quotedString()}, in that case`);
+      return;
+    }
+    if (
+      position === positions.top &&
+      !this.#shape.topLevelMembers.some((name) => this.#stringIs(name))
+    ) {
+      this.#refuse(`the member ${this.#quotedString()}`);
     }
   }
 
@@ -648,7 +747,17 @@ export class JsonBodyScanner {
         case positions.toolList:
           return positions.tool;
         case positions.part:
-          return key === this.#imageSourceKey() ? positions.imageSource : positions.elsewhere;
+          return key === this.#imageSourceKey()
+            ? positions.imageSource
+            : key === keyKinds.tool
+              ? positions.toolChange
+              : key === keyKinds.cacheControl
+                ? positions.cacheControl
+                : positions.elsewhere;
+        case positions.tool:
+          return key === keyKinds.cacheControl ? positions.cacheControl : positions.elsewhere;
+        case positions.toolChange:
+          return key === keyKinds.definition ? positions.tool : positions.elsewhere;
         default:
           return positions.elsewhere;
       }
@@ -671,15 +780,19 @@ export class JsonBodyScanner {
     return parent === positions.part && isUnderContent ? positions.parts : positions.elsewhere;
   }
 
-  /** The key of an image part whose value is an object holding the image: Anthropic's `source`, Chat Completions' `image_url`. */
-  #imageSourceKey(): number {
+  /**
+   * The key of an image part whose value is an object holding the image:
+   * Anthropic's `source`, Chat Completions' `image_url`. The Responses API
+   * has none: its `image_url` is the data URL itself.
+   */
+  #imageSourceKey(): number | undefined {
     switch (this.#format) {
       case "anthropic_messages":
         return keyKinds.source;
       case "openai_chat_completions":
         return keyKinds.imageUrl;
       case "openai_responses":
-        return keyKinds.otherKey;
+        return undefined;
     }
   }
 
@@ -687,6 +800,13 @@ export class JsonBodyScanner {
     if ((this.#isObjectAt[this.#depth] === 1) !== isObject) {
       this.#fail("a bracket does not match");
       return;
+    }
+    if (isObject && this.#typeAt[this.#depth] === typeKinds.unstated) {
+      const allowed = this.#allowedTypesHere();
+      if (allowed !== undefined && !allowed.allowsNone) {
+        this.#refuse(`a ${this.#placeName()} without a \`type\``);
+        return;
+      }
     }
     if (isObject) {
       this.#settleImages();
@@ -764,22 +884,19 @@ export class JsonBodyScanner {
 
   /**
    * An object's `type`: an image part's anywhere counts as an image sent
-   * (by data or by reference), which errs high; a part, input item or tool
-   * of a type that refers to stored input is noted; and the object's own
-   * type is kept, or marked as given twice.
+   * (by data or by reference), which errs high; in a place the allow-list
+   * polices, it must be one the agent gives an object there; and the
+   * object's own type is kept, or marked as given twice.
    */
   #noteType(depth: number, position: number): void {
     if (anyImagePartType.some((type) => this.#stringIs(type))) {
       this.#imageTypeMarks += 1;
     }
-    const isItemPartOrTool =
-      position === positions.conversationItem ||
-      position === positions.part ||
-      position === positions.tool;
-    const referenced = isItemPartOrTool
-      ? referencedInputTypes.find((type) => this.#stringIs(type))
-      : undefined;
-    this.#referencedInputType ??= referenced?.toString();
+    const allowed = this.#shape?.typesAt.get(position);
+    if (allowed !== undefined && !allowed.types.some((type) => this.#stringIs(type))) {
+      this.#refuse(`the ${placeNames.get(position)} type ${this.#quotedString()}`);
+      return;
+    }
     this.#typeAt[depth] =
       this.#typeAt[depth] !== typeKinds.unstated
         ? typeKinds.givenTwice
@@ -836,6 +953,52 @@ export class JsonBodyScanner {
       this.#stringPrefixLength >= wanted.length &&
       this.#stringPrefix.compare(wanted, 0, wanted.length, 0, wanted.length) === 0
     );
+  }
+
+  /** Whether the value about to be read is an object's `type` in a place the allow-list polices. */
+  #isPolicedTypeKey(): boolean {
+    const depth = this.#depth;
+    return (
+      this.#isObjectAt[depth] === 1 &&
+      this.#keyKindAt[depth] === keyKinds.type &&
+      this.#allowedTypesHere() !== undefined
+    );
+  }
+
+  /** The types allowed of the object open now, if its place is policed. */
+  #allowedTypesHere(): AllowedTypes | undefined {
+    return this.#shape?.typesAt.get(this.#positionAt[this.#depth] ?? positions.elsewhere);
+  }
+
+  #placeName(): string {
+    return placeNames.get(this.#positionAt[this.#depth] ?? positions.elsewhere) ?? "member";
+  }
+
+  /** Whether the key just read is one the scanner reads, written in other letters' cases. */
+  #isRecognisedKeyInAnotherCase(): boolean {
+    return this.#recognisedKeys.some(
+      ([key]) =>
+        this.#stringLength === key.length &&
+        this.#stringPrefixLength >= key.length &&
+        key.every((letter, index) => lowerCase(this.#stringPrefix[index] ?? 0) === letter),
+    );
+  }
+
+  /**
+   * The string just read, quoted, for a refusal: a name of the format's
+   * when it is one (short and in plain ASCII), otherwise only that it is
+   * not one, so no value of the body's reaches a refusal or the log.
+   */
+  #quotedString(): string {
+    const text = this.#stringPrefix.toString("latin1", 0, this.#stringPrefixLength);
+    const isName =
+      this.#stringLength === this.#stringPrefixLength && /^[A-Za-z0-9_.-]{1,48}$/.test(text);
+    return isName ? `\`${text}\`` : "that is not a plain name";
+  }
+
+  #refuse(what: string): false {
+    this.#problem ??= { kind: "not_relayed", what };
+    return false;
   }
 
   #fail(reason: string): false {

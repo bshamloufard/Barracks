@@ -1,8 +1,9 @@
 import type { IncomingMessage } from "node:http";
-import type { ProviderApiFormat } from "@barrack/model-catalogue";
+import type { AgentRequestShape, ProviderApiFormat } from "@barrack/model-catalogue";
 import {
   JsonBodyScanner,
   type JsonBodyScannerLimits,
+  type JsonScanProblem,
   type ScannedJsonBody,
 } from "./json-body-scanner.js";
 
@@ -22,7 +23,7 @@ type ShareRefusal = "instance_busy" | "share_used";
 
 export type BodyReading =
   | { kind: "read"; bytes: Buffer; scanned: ScannedJsonBody; held: HeldBytes }
-  | { kind: "invalid"; reason: string }
+  | JsonScanProblem
   | {
       kind: "too_large" | "instance_busy" | "share_used" | "too_slow" | "agent_went_away" | "ended";
     };
@@ -38,6 +39,8 @@ export type BodyReadingOptions = {
   scannerLimits: JsonBodyScannerLimits;
   /** The format the body is in, which says where it may send images. */
   format: ProviderApiFormat;
+  /** What the agent's requests in that format may hold; anything else is refused as it arrives. */
+  shape: AgentRequestShape;
 };
 
 /**
@@ -76,7 +79,8 @@ export class RequestBodyBudget {
   /**
    * Reads the whole body, checking its JSON as it arrives, and refusing
    * one larger than `maximumBytes`, one that would take the instance, its
-   * thread or its owner over their share, one invalid as JSON, and one
+   * thread or its owner over their share, one invalid as JSON or holding
+   * what the agent never sends, and one
    * that takes longer than the deadline; stopping at once when `signal` is
    * aborted (`ended`), already or later. Settles exactly once, whatever the
    * request has already done, and then listens to it no more. A reading
@@ -95,7 +99,7 @@ export class RequestBodyBudget {
     }
     return new Promise((resolve) => {
       const held = this.#hold(options);
-      const scanner = new JsonBodyScanner(options.scannerLimits, options.format);
+      const scanner = new JsonBodyScanner(options.scannerLimits, options.format, options.shape);
       let chunks: Buffer[] = [];
       let readBytes = 0;
       const settle = (reading: BodyReading) => {
@@ -130,7 +134,7 @@ export class RequestBodyBudget {
       };
       const onEnd = () => {
         const outcome = scanner.finish();
-        if (outcome.kind === "invalid") {
+        if (outcome.kind !== "scanned") {
           settle(outcome);
           return;
         }

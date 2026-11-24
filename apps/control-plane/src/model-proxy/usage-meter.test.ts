@@ -511,30 +511,42 @@ describe("an answer cut short after reasoning it did not show", () => {
   });
 
   it("reads whether a request asks for reasoning, in each format's own words", () => {
-    const reasoningOf = (format: Parameters<typeof inspectWholeBody>[0], fields: object) => {
-      const inspection = inspectWholeBody(format, { model: "m", ...fields });
+    const reasoningOf = (
+      format: Parameters<typeof inspectWholeBody>[0],
+      providerId: string,
+      fields: object,
+    ) => {
+      const inspection = inspectWholeBody(format, { model: "m", ...fields }, providerId);
       return inspection.kind === "relayable" ? inspection.body.reasoningRequest : inspection.kind;
     };
     const anthropic = "anthropic_messages";
     const responses = "openai_responses";
     const chat = "openai_chat_completions";
+    const summarized = { display: "summarized" };
 
-    expect(reasoningOf(anthropic, { thinking: { type: "enabled", budget_tokens: 9 } })).toBe("on");
-    expect(reasoningOf(anthropic, { thinking: { type: "adaptive" } })).toBe("on");
-    expect(reasoningOf(anthropic, { thinking: { type: "disabled" } })).toBe("off");
-    expect(reasoningOf(anthropic, {})).toBe("unstated");
-    expect(reasoningOf(responses, { reasoning: { effort: "high" } })).toBe("on");
-    expect(reasoningOf(responses, { reasoning: { effort: "none" } })).toBe("off");
-    expect(reasoningOf(chat, { reasoning_effort: "low" })).toBe("on");
-    expect(reasoningOf(chat, { reasoning_effort: "none" })).toBe("off");
-    expect(reasoningOf(chat, { reasoning: { enabled: false } })).toBe("off");
-    expect(reasoningOf(chat, { reasoning: { exclude: true } })).toBe("on");
-    expect(reasoningOf(chat, { thinking: { type: "disabled" } })).toBe("off");
-    expect(reasoningOf(chat, { chat_template_kwargs: { enable_thinking: true } })).toBe("on");
-    expect(reasoningOf(chat, { reasoning_effort: "high", thinking: { type: "disabled" } })).toBe(
-      "on",
-    );
-    expect(reasoningOf(chat, {})).toBe("unstated");
+    expect(
+      reasoningOf(anthropic, "anthropic", {
+        thinking: { type: "enabled", budget_tokens: 9, ...summarized },
+      }),
+    ).toBe("on");
+    expect(
+      reasoningOf(anthropic, "anthropic", { thinking: { type: "adaptive", ...summarized } }),
+    ).toBe("on");
+    expect(reasoningOf(anthropic, "anthropic", { thinking: { type: "disabled" } })).toBe("off");
+    expect(reasoningOf(anthropic, "anthropic", {})).toBe("unstated");
+    expect(
+      reasoningOf(responses, "openai", { reasoning: { effort: "high", summary: "auto" } }),
+    ).toBe("on");
+    expect(reasoningOf(responses, "openai", { reasoning: { effort: "none" } })).toBe("off");
+    expect(reasoningOf(chat, "groq", { reasoning_effort: "low" })).toBe("on");
+    expect(reasoningOf(chat, "groq", { reasoning_effort: "none" })).toBe("off");
+    expect(reasoningOf(chat, "together", { reasoning: { enabled: false } })).toBe("off");
+    expect(reasoningOf(chat, "openrouter", { reasoning: { effort: "none" } })).toBe("off");
+    expect(reasoningOf(chat, "deepseek", { thinking: { type: "disabled" } })).toBe("off");
+    expect(
+      reasoningOf(chat, "deepseek", { reasoning_effort: "high", thinking: { type: "disabled" } }),
+    ).toBe("on");
+    expect(reasoningOf(chat, "groq", {})).toBe("unstated");
   });
 
   it("takes a model to reason unless told not to, but for Anthropic's, which reason only when asked", () => {

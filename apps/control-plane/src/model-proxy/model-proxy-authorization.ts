@@ -226,16 +226,13 @@ export class ModelProxyAuthorization {
 }
 
 /**
- * The models a request for `model` may name as `fallbacks`: for Anthropic,
- * those the pinned agent sends for that very model (its server-side
- * fallbacks, which it adds for some models); for OpenRouter's Anthropic
- * format, where the field is OpenRouter's own routing to other models,
- * only the model itself; for any other provider, none.
+ * The models a request for `model` may name as `fallbacks`: those the
+ * pinned agent sends for that very model (Anthropic's server-side
+ * fallbacks, which it adds for some models), and for any other none. The
+ * allow-list lets through only lists the agent sends, but for any model it
+ * sends one for, so this ties the list to the model requested.
  */
 function allowedFallbacks(providerId: string, model: string): readonly string[] {
-  if (providerId === "openrouter") {
-    return [model];
-  }
   return findModelLimits(providerId, model)?.fallbackModelIds ?? [];
 }
 

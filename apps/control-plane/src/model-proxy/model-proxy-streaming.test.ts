@@ -131,7 +131,9 @@ describe("the model proxy as a streaming path", () => {
     const encoder = new TextEncoder();
     const slowUpload = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode('{"model":"a-mod\\u0065l", "fallbacks": [ ],'));
+        controller.enqueue(
+          encoder.encode('{"model":"a-mod\\u0065l", "thinking": {"type" : "disabled"},'),
+        );
         await pause(500);
         lastBytesSentAt = Date.now();
         controller.enqueue(encoder.encode('"max_tokens":5,  "messages":[ ]}'));
@@ -152,7 +154,7 @@ describe("the model proxy as a streaming path", () => {
     expect(firstBytesArrivedAt ?? 0).toBeGreaterThanOrEqual(lastBytesSentAt);
     // What the proxy read is written out as it parsed it; the rest is as sent.
     expect(receivedBody).toBe(
-      '{"model":"a-model", "fallbacks": [],"max_tokens":5,  "messages":[ ]}',
+      '{"model":"a-model", "thinking": {"type":"disabled"},"max_tokens":5,  "messages":[ ]}',
     );
   });
 

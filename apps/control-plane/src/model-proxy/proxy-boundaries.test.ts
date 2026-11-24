@@ -68,14 +68,18 @@ describe("where a relayed request may go", () => {
 });
 
 describe("what the proxy changes in a request's body", () => {
-  function relayedJson(format: Parameters<typeof inspectWholeBody>[0], body: object): unknown {
-    const inspection = inspectWholeBody(format, body);
+  function relayedJson(
+    format: Parameters<typeof inspectWholeBody>[0],
+    body: object,
+    providerId?: string,
+  ): unknown {
+    const inspection = inspectWholeBody(format, body, providerId);
     return inspection.kind === "relayable"
       ? JSON.parse(inspection.body.bytes.toString("utf8"))
       : inspection.kind;
   }
 
-  it("asks for a streamed Chat Completions answer's usage, whatever the request said", () => {
+  it("asks for a streamed Chat Completions answer's usage when the request does not", () => {
     const streamed = { model: "m", stream: true, messages: [] };
 
     expect(relayedJson("openai_chat_completions", streamed)).toEqual({
@@ -85,94 +89,101 @@ describe("what the proxy changes in a request's body", () => {
     expect(
       relayedJson("openai_chat_completions", {
         ...streamed,
-        stream_options: { include_usage: false, other: 1 },
+        stream_options: { include_usage: false },
       }),
-    ).toEqual({ ...streamed, stream_options: { include_usage: true, other: 1 } });
-    expect(
-      relayedJson("openai_chat_completions", { ...streamed, stream_options: "nonsense" }),
-    ).toEqual({ ...streamed, stream_options: { include_usage: true } });
+    ).toBe("refused");
   });
 
   it("changes nothing else, and nothing in other formats or in an answer not streamed", () => {
     const notStreamed = { model: "m", messages: [], max_tokens: 5 };
     const anthropic = { model: "m", stream: true, max_tokens: 5, messages: [] };
 
-    expect(relayedJson("openai_chat_completions", notStreamed)).toEqual(notStreamed);
+    expect(relayedJson("openai_chat_completions", notStreamed, "together")).toEqual(notStreamed);
     expect(relayedJson("anthropic_messages", anthropic)).toEqual(anthropic);
   });
 });
 
 describe("what the proxy reads from a request's body", () => {
-  function maximumOutputOf(format: Parameters<typeof inspectWholeBody>[0], body: object) {
-    const inspection = inspectWholeBody(format, { model: "m", ...body });
+  function maximumOutputOf(
+    format: Parameters<typeof inspectWholeBody>[0],
+    body: object,
+    providerId?: string,
+  ) {
+    const inspection = inspectWholeBody(format, { model: "m", ...body }, providerId);
     return inspection.kind === "relayable" ? inspection.body.maximumOutputTokens : inspection.kind;
   }
 
-  it("takes the larger of Chat Completions' two maximums, since some hosts honour only max_tokens", () => {
+  it("reads each format's and each host's own field for the most output", () => {
     const chat = "openai_chat_completions";
 
-    expect(maximumOutputOf(chat, { max_completion_tokens: 1, max_tokens: 100_000 })).toBe(100_000);
-    expect(maximumOutputOf(chat, { max_completion_tokens: 100_000, max_tokens: 1 })).toBe(100_000);
-    expect(maximumOutputOf(chat, { max_tokens: 50 })).toBe(50);
-    expect(maximumOutputOf(chat, { max_completion_tokens: 50, max_tokens: "lots" })).toBe(50);
-    expect(maximumOutputOf("anthropic_messages", { max_tokens: 7, max_output_tokens: 9 })).toBe(7);
-    expect(maximumOutputOf("openai_responses", { max_tokens: 7, max_output_tokens: 9 })).toBe(9);
+    expect(maximumOutputOf(chat, { max_completion_tokens: 50 }, "groq")).toBe(50);
+    expect(maximumOutputOf(chat, { max_tokens: 50 }, "together")).toBe(50);
+    expect(maximumOutputOf(chat, { max_tokens: 50 }, "groq")).toBe("not_relayed");
+    expect(maximumOutputOf("anthropic_messages", { max_tokens: 7 })).toBe(7);
+    expect(maximumOutputOf("openai_responses", { max_output_tokens: 9 })).toBe(9);
   });
 });
 
 /**
- * Some providers' JSON decoders match a field's name regardless of case,
- * and fold Unicode as they do (Go's `encoding/json` reads `ſtream`, with a
- * long s, as `stream`), so a key the proxy does not read could be read
- * there as one it does.
+ * The proxy reads a setting the way any JSON decoder would, and relays it
+ * only when it is one the agent sends: some providers' decoders match a
+ * field's name regardless of case, folding Unicode as they go (Go's
+ * `encoding/json` reads `ſtream`, with a long s, as `stream`), so a name
+ * the agent never writes is refused rather than read as another.
  */
-describe("keys a provider might read as ones the proxy reads", () => {
-  function refusalOf(
+describe("settings the agent never writes so", () => {
+  function outcomeOf(
     body: string,
     format: Parameters<typeof inspectWholeBody>[0] = "openai_chat_completions",
+    providerId?: string,
   ) {
-    const inspection = inspectWholeBody(format, body);
+    const inspection = inspectWholeBody(format, body, providerId);
     return inspection.kind === "refused" ? inspection.reason : inspection.kind;
   }
 
   it.each([
-    ["another case of a key read", '{"model":"m","Model":"the-dearest-model","messages":[]}'],
-    ["only another case of a key read", '{"MODEL":"m","model":"m","messages":[]}'],
-    ["a Kelvin sign for a k", '{"model":"m","max_tokens":1,"max_toKens":100000}'],
+    ["another case of a member", '{"model":"m","Model":"the-dearest-model","messages":[]}'],
+    ["a Kelvin sign for a k", '{"model":"m","max_completion_toKens":100000}'],
     ["a long s for an s", '{"model":"m","ſtream":true,"messages":[]}'],
-    ["a full-width letter", '{"model":"m","ｍax_tokens":100000,"messages":[]}'],
-    ["a key read, alone, in capitals", '{"model":"m","MAX_TOKENS":100000,"messages":[]}'],
+    ["a full-width letter", '{"model":"m","ｍax_completion_tokens":100000,"messages":[]}'],
+    ["a member in capitals", '{"model":"m","MAX_COMPLETION_TOKENS":100000,"messages":[]}'],
+    ["a member written with an escape", '{"mod\\u0065l":"m","messages":[]}'],
   ])("refuses %s at the top level", (_description, body) => {
-    expect(refusalOf(body)).toMatch(/spell/);
-  });
-
-  it("refuses two keys of the body that a provider could read as one, even keys the proxy does not read", () => {
-    expect(refusalOf('{"model":"m","temperature":0,"Temperature":2,"messages":[]}')).toMatch(
-      /spell/,
-    );
-    expect(refusalOf('{"model":"m","Messages":[],"messages":[]}')).toMatch(/spell/);
+    expect(outcomeOf(body)).toBe("not_relayed");
   });
 
   it.each([
     [
       "stream_options",
       '{"model":"m","stream":true,"stream_options":{"include_usage":true,"INCLUDE_USAGE":false}}',
+      "openai_chat_completions",
     ],
-    ["thinking", '{"model":"m","thinking":{"TYPE":"enabled"},"messages":[]}'],
+    ["thinking", '{"model":"m","thinking":{"TYPE":"enabled"},"messages":[]}', "anthropic_messages"],
     [
-      "reasoning, nested deeper",
-      '{"model":"m","reasoning":{"a":[{"Effort":"none"}]},"messages":[]}',
+      "reasoning, with an escape that decodes to another name",
+      '{"model":"m","reasoning":{"\\u0045ffort":"none"},"input":[]}',
+      "openai_responses",
     ],
-  ])("refuses a key not in its folded form inside %s, a member the proxy reads", (_name, body) => {
-    expect(refusalOf(body)).toMatch(/spell/);
+    [
+      "reasoning, with an effort never sent",
+      '{"model":"m","reasoning":{"effort":"ultra"},"input":[]}',
+      "openai_responses",
+    ],
+  ] as const)("refuses a value of %s the agent never sends", (name, body, format) => {
+    expect(outcomeOf(body, format)).toMatch(/the value given for `\w+`/);
+    expect(name).toBeTruthy();
   });
 
-  it("relays keys the proxy does not read in any case, and an escaped spelling of a key it reads", () => {
-    expect(refusalOf('{"model":"m","Metadata":{},"messages":[{"Role":"user"}]}')).toBe("relayable");
-    expect(refusalOf('{"mod\\u0065l":"m","messages":[]}')).toBe("relayable");
-    expect(refusalOf('{"model":"m","stream":true,"stream_options":{"include_usage":true}}')).toBe(
+  it("relays the agent's own settings", () => {
+    expect(outcomeOf('{"model":"m","stream":true,"stream_options":{"include_usage":true}}')).toBe(
       "relayable",
     );
+    expect(
+      outcomeOf(
+        '{"model":"m","reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],"store":false,"input":[]}',
+        "openai_responses",
+      ),
+    ).toBe("relayable");
   });
 });
 

@@ -311,7 +311,7 @@ describe("the model proxy", () => {
           "x-forwarded-for": "10.0.0.1",
           "openai-organization": "org-elsewhere",
           "x-stainless-os": "Linux",
-          "anthropic-beta": "a-beta-feature",
+          "anthropic-beta": "interleaved-thinking-2025-05-14",
         },
       },
     );
@@ -320,7 +320,7 @@ describe("the model proxy", () => {
     const headers = modelServer.receivedRequests[0]?.headers ?? {};
     expect(headers["x-api-key"]).toBe(keys.adasAnthropic);
     expect(headers["anthropic-version"]).toBe("2023-06-01");
-    expect(headers["anthropic-beta"]).toBe("a-beta-feature");
+    expect(headers["anthropic-beta"]).toBe("interleaved-thinking-2025-05-14");
     expect(headers["accept-encoding"]).toBe("identity");
     for (const dropped of [
       "authorization",
@@ -738,51 +738,34 @@ describe("the model proxy", () => {
     expect(statuses.filter((status) => status === 503).length).toBeGreaterThanOrEqual(14);
   });
 
+  // The proxy relays only requests shaped like the pinned agent's: what it
+  // never sends could be anything a provider adds next, billed or generated
+  // where the cap cannot see it.
   it.each([
-    ["a background response", "openai", { background: true }],
-    ["background options", "openai", { background_options: { completion_window: "8h" } }],
-    ["a deferred completion", "groq", { deferred: true }],
-  ] as const)(
-    "refuses %s, whose output could never be counted, in words the agent shows",
-    async (_description, providerId, detaching) => {
-      await start();
-      const ownersKey = providerId === "openai" ? keys.adasOpenAi : keys.adasGroq;
-      await controlPlane.saveModelCredential(providerId, ownersKey, adaToken);
-      const { access } = await startThread(adaToken, `${providerId}/a-model`);
-      const example = relayedFormatExamples[providerId];
-
-      const response = await callModelProxy(controlPlane, access, example, "Think hard", {
-        body: JSON.stringify({ ...example.body("Think hard"), ...detaching }),
-      });
-
-      expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({
-        error: {
-          type: "invalid_request_error",
-          message: expect.stringContaining("does not relay background or deferred requests"),
-        },
-      });
-      expect(modelServer.receivedRequests).toEqual([]);
-    },
-  );
-
-  // What a provider adds from what it keeps or fetches is invisible in the
-  // body, so a request abandoned before its answer could not be estimated;
-  // the pinned agent sends none of these.
-  it.each([
-    ["an earlier stored response", "openai", { previous_response_id: "resp_1" }],
-    ["a stored conversation", "openai", { conversation: "conv_1" }],
-    ["a stored prompt", "openai", { prompt: { id: "pmpt_1" } }],
-    ["a stored item", "openai", { input: [{ type: "item_reference", id: "msg_1" }] }],
+    ["a background response", "openai", { background: true }, {}, "the member `background`"],
+    ["a deferred completion", "groq", { deferred: true }, {}, "the member `deferred`"],
+    ["128 completions", "groq", { n: 128 }, {}, "the member `n`"],
+    ["the priority tier", "openai", { service_tier: "priority" }, {}, "the member `service_tier`"],
     [
-      "a file by its identifier",
+      "an earlier stored response",
       "openai",
-      { input: [{ role: "user", content: [{ type: "input_file", file_id: "file-1" }] }] },
+      { previous_response_id: "resp_1" },
+      {},
+      "the member `previous_response_id`",
     ],
     [
-      "a remote MCP server among its tools",
+      "a stored item",
       "openai",
-      { tools: [{ type: "mcp", server_label: "s", server_url: "https://example.com/mcp" }] },
+      { input: [{ type: "item_reference", id: "msg_1" }] },
+      {},
+      "the conversation item type `item_reference`",
+    ],
+    [
+      "a code interpreter with stored files",
+      "openai",
+      { tools: [{ type: "code_interpreter", container: { type: "auto", file_ids: ["file-1"] } }] },
+      {},
+      "the tool type `code_interpreter`",
     ],
     [
       "a document by its address",
@@ -797,20 +780,34 @@ describe("the model proxy", () => {
           },
         ],
       },
+      {},
+      "the content part type `document`",
     ],
+    ["a remote MCP server", "anthropic", { mcp_servers: [] }, {}, "the member `mcp_servers`"],
     [
-      "a remote MCP server",
+      "an advisor running another model",
       "anthropic",
-      { mcp_servers: [{ type: "url", url: "https://example.com/mcp", name: "s" }] },
+      { tools: [{ type: "advisor_20260301", name: "advisor", model: "the-dearest-model" }] },
+      {},
+      "the tool type `advisor_20260301`",
     ],
     [
-      "a file in Chat Completions",
-      "groq",
-      { messages: [{ role: "user", content: [{ type: "file", file: { file_id: "file-1" } }] }] },
+      "compaction",
+      "anthropic",
+      { compaction: { type: "summarize" } },
+      { "anthropic-beta": "compact-2026-09-04" },
+      "the anthropic-beta value `compact-2026-09-04`",
+    ],
+    [
+      "a thread continued on the provider",
+      "anthropic",
+      { thread: { type: "continue", previous_message_id: "msg_1" } },
+      {},
+      "the member `thread`",
     ],
   ] as const)(
-    "refuses a request that refers to %s, in words the agent shows",
-    async (_description, providerId, referring) => {
+    "refuses %s, which the agent never sends, naming it in words the agent shows",
+    async (_description, providerId, holding, headers, what) => {
       await start();
       const ownersKey = {
         openai: keys.adasOpenAi,
@@ -822,48 +819,56 @@ describe("the model proxy", () => {
       const example = relayedFormatExamples[providerId];
 
       const response = await callModelProxy(controlPlane, access, example, "Go on", {
-        body: JSON.stringify({ ...example.body("Go on"), ...referring }),
+        headers,
+        body: JSON.stringify({ ...example.body("Go on"), ...holding }),
       });
 
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({
         error: {
-          message: expect.stringContaining("refers to input the provider keeps or fetches"),
+          type: "invalid_request_error",
+          message: `Barrack's model proxy does not relay ${what}: it relays only requests shaped like those of its coding agent.`,
         },
       });
       expect(modelServer.receivedRequests).toEqual([]);
+      expect(controlPlane.logLines.join("\n")).toContain(JSON.stringify(what).slice(1, -1));
     },
   );
 
   it("relays only the thread's own model, and only the fallbacks the agent sends for that model", async () => {
     await start();
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
-    const anthropicModelIds = findCatalogueProvider("anthropic")?.models.map((m) => m.modelId);
+    const anthropicModelIds =
+      findCatalogueProvider("anthropic")?.models.map((m) => m.modelId) ?? [];
+    const fallbacksOf = (modelId: string) =>
+      findModelLimits("anthropic", modelId)?.fallbackModelIds ?? [];
+    // A model with fallbacks, and another model's list naming one its own does not.
+    const lists = anthropicModelIds.map(fallbacksOf).filter((fallbacks) => fallbacks.length > 0);
+    const namesAnother = (list: readonly string[], modelId: string) =>
+      list.some((fallback) => !fallbacksOf(modelId).includes(fallback));
     const withFallbacks =
-      anthropicModelIds?.find(
-        (modelId) => (findModelLimits("anthropic", modelId)?.fallbackModelIds.length ?? 0) > 0,
-      ) ?? "";
-    const ownFallback = findModelLimits("anthropic", withFallbacks)?.fallbackModelIds[0] ?? "";
-    const otherListedModel =
-      anthropicModelIds?.find(
+      anthropicModelIds.find(
         (modelId) =>
-          modelId !== withFallbacks &&
-          !findModelLimits("anthropic", withFallbacks)?.fallbackModelIds.includes(modelId),
+          fallbacksOf(modelId).length > 0 && lists.some((list) => namesAnother(list, modelId)),
       ) ?? "";
+    const otherFallbacks = lists.find((list) => namesAnother(list, withFallbacks)) ?? [];
     const { access } = await startThread(adaToken, `anthropic/${withFallbacks}`);
     const anthropic = relayedFormatExamples.anthropic;
     const asking = (overrides: object) =>
       callModelProxy(controlPlane, access, anthropic, "Hi", {
         body: JSON.stringify({ ...anthropic.body("Hi"), model: withFallbacks, ...overrides }),
       });
+    const asList = (models: readonly string[]) => models.map((model) => ({ model }));
 
     const otherModel = await asking({ model: "the-dearest-model" });
-    const unlistedFallback = await asking({ fallbacks: [{ model: "the-dearest-model" }] });
-    const anotherModelsFallback = await asking({ fallbacks: [{ model: otherListedModel }] });
-    const ownModelsFallback = await asking({ fallbacks: [{ model: ownFallback }] });
-    await readWholeAnswer(ownModelsFallback);
+    // A list the agent sends, but for another model.
+    const anotherModelsFallbacks = await asking({ fallbacks: asList(otherFallbacks) });
+    const unlistedFallback = await asking({ fallbacks: asList(["the-dearest-model"]) });
+    const ownModelsFallbacks = await asking({ fallbacks: asList(fallbacksOf(withFallbacks)) });
+    await readWholeAnswer(ownModelsFallbacks);
 
-    for (const refused of [otherModel, unlistedFallback, anotherModelsFallback]) {
+    expect(otherFallbacks.length).toBeGreaterThan(0);
+    for (const refused of [otherModel, anotherModelsFallbacks]) {
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({
         error: {
@@ -871,11 +876,12 @@ describe("the model proxy", () => {
         },
       });
     }
-    expect(ownModelsFallback.status).toBe(200);
+    expect(unlistedFallback.status).toBe(400);
+    expect(ownModelsFallbacks.status).toBe(200);
     expect(modelServer.receivedModels).toEqual([withFallbacks]);
   });
 
-  it("relays OpenRouter's routing only among hosts of the thread's own model, never to another model", async () => {
+  it("relays OpenRouter's requests only for the thread's own model, without its routing or plugins", async () => {
     await start();
     await controlPlane.saveModelCredential("openrouter", keys.adasOpenRouter, adaToken);
     const { access } = await startThread(adaToken, "openrouter/anthropic/example-model");
@@ -892,25 +898,23 @@ describe("the model proxy", () => {
         body: JSON.stringify({ ...relayedFormatExamples.anthropic.body("Hi"), model, ...fields }),
       });
 
-    const refusals = [
+    const notTheAgents = [
       await chat({ models: [model, "openai/the-dearest-model"] }),
       await chat({ route: "fallback" }),
       await chat({ preset: "@preset/anything" }),
-      await chat({ model: `${model}@preset/anything` }),
-      await chat({ model: `${model}:nitro` }),
       await chat({ provider: { options: { anthropic: { model: "the-dearest-model" } } } }),
-      await chat({ plugins: [{ id: "auto-router", allowed_models: ["*"] }] }),
-      // Plugins the agent never sends, each a charge per call the cap does not count.
+      await chat({ provider: { order: ["a-host"] } }),
       await chat({ plugins: [{ id: "web" }] }),
-      await chat({ plugins: [{ id: "file-parser" }] }),
       await messages({ fallbacks: [{ model: "openai/the-dearest-model" }] }),
     ];
-    const allowed = [
-      await chat({ provider: { order: ["a-host", "another-host"], allow_fallbacks: true } }),
-      await messages({ fallbacks: [{ model }] }),
+    const otherModels = [
+      await chat({ model: `${model}@preset/anything` }),
+      await chat({ model: `${model}:nitro` }),
     ];
+    const allowed = [await chat({}), await messages({})];
 
-    expect(refusals.map((response) => response.status)).toEqual(Array(10).fill(403));
+    expect(notTheAgents.map((response) => response.status)).toEqual(Array(7).fill(400));
+    expect(otherModels.map((response) => response.status)).toEqual([403, 403]);
     for (const response of allowed) {
       await readWholeAnswer(response);
     }
