@@ -80,3 +80,24 @@ export function describeWhySendingIsBlocked(state: ThreadState): string | undefi
       return undefined;
   }
 }
+
+/**
+ * What the conversation says under a message the agent has not been handed
+ * yet. It waits for the agent; when nothing will bring the agent back by
+ * itself (its sandbox is stopped, say, after a wake failed), it says what
+ * the user can do, since a page opened later shows the message waiting
+ * with no other explanation.
+ */
+export function describeWaitingMessage(state: ThreadState): string {
+  const availability = describeAgentAvailability(state);
+  switch (availability.name) {
+    case "stopped":
+      return "Waiting for the agent, whose sandbox is stopped. Resume the thread to deliver this message.";
+    case "sandbox_failed":
+      return availability.canResume
+        ? "Waiting for the agent, whose sandbox failed. Resume the thread to deliver this message."
+        : "Not delivered: this thread's sandbox is gone, so no agent will receive this message.";
+    default:
+      return "Waiting for the agent: it will receive this message as soon as it is connected.";
+  }
+}

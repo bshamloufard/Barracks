@@ -7,9 +7,12 @@ import { useStickToBottom } from "./use-stick-to-bottom";
 export function Conversation({
   entries,
   userMessagesDeliveredThroughSequence,
+  waitingNote,
 }: {
   entries: ConversationEntry[];
   userMessagesDeliveredThroughSequence: number | undefined;
+  /** Shown under each user message the agent has not been handed yet. */
+  waitingNote: string;
 }) {
   const conversationReference = useRef<HTMLDivElement>(null);
   useStickToBottom(conversationReference);
@@ -24,6 +27,7 @@ export function Conversation({
               <ConversationEntryView
                 entry={entry}
                 userMessagesDeliveredThroughSequence={userMessagesDeliveredThroughSequence}
+                waitingNote={waitingNote}
               />
             </li>
           ))}
@@ -36,9 +40,11 @@ export function Conversation({
 function ConversationEntryView({
   entry,
   userMessagesDeliveredThroughSequence,
+  waitingNote,
 }: {
   entry: ConversationEntry;
   userMessagesDeliveredThroughSequence: number | undefined;
+  waitingNote: string;
 }) {
   switch (entry.kind) {
     case "user_message":
@@ -46,9 +52,7 @@ function ConversationEntryView({
         <>
           <p className="user-message">{entry.text}</p>
           {isWaitingForAgent(userMessagesDeliveredThroughSequence, entry) && (
-            <p className="quiet-note">
-              Waiting for the agent: it will receive this message as soon as it is connected.
-            </p>
+            <p className="quiet-note">{waitingNote}</p>
           )}
         </>
       );

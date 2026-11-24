@@ -1,4 +1,5 @@
 import { threadListAddress } from "../page-address";
+import { describeWaitingMessage } from "../presentation/describe-agent-availability";
 import { threadNameOf } from "../presentation/describe-sandbox";
 import { useThread } from "../use-thread";
 import { AccountBar } from "./account-bar";
@@ -50,6 +51,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
         <Conversation
           entries={state.entries}
           userMessagesDeliveredThroughSequence={state.userMessagesDeliveredThroughSequence}
+          waitingNote={describeWaitingMessage(state)}
         />
         <UnconfirmedUserMessages
           messages={state.unconfirmedUserMessages}

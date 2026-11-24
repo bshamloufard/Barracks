@@ -332,7 +332,7 @@ describe("the limit on running sandboxes", () => {
     const client = await controlPlane.connectClient(threadId);
 
     const resumed = await resumeThread(threadId);
-    client.sendUserMessage("Hello?");
+    const messageId = client.sendUserMessage("Hello?");
     const rejection = await client.inbox.waitFor(
       "the rejection",
       (message) => message.type === "client_message_rejected",
@@ -345,9 +345,31 @@ describe("the limit on running sandboxes", () => {
     });
     expect(rejection).toMatchObject({
       reason: expect.stringContaining("your message was not sent"),
+      messageId,
     });
     expect(await eventsOf(threadId)).toEqual([]);
     expect((await fetchThread(threadId)).sandbox).toEqual({ state: "stopped" });
+  });
+
+  it("refuses a message, rather than leave it waiting, when the stopped sandbox could not be woken for it", async () => {
+    await start();
+    const { threadId } = await controlPlane.createThread();
+    await stopAndSettle(threadId);
+    const client = await controlPlane.connectClient(threadId);
+    vi.spyOn(controlPlane.threadStore, "transition").mockResolvedValue({ kind: "conflict" });
+
+    const messageId = client.sendUserMessage("Hello?");
+    const rejection = await client.inbox.waitFor(
+      "the rejection",
+      (message) => message.type === "client_message_rejected",
+    );
+
+    expect(rejection).toEqual({
+      type: "client_message_rejected",
+      reason: expect.stringContaining("kept changing"),
+      messageId,
+    });
+    expect(await eventsOf(threadId)).toEqual([]);
   });
 
   it("refuses anyone at the installation's limit", async () => {

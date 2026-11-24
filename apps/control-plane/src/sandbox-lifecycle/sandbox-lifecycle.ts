@@ -165,17 +165,38 @@ export class SandboxLifecycle {
    */
   async admitUserMessage(threadId: string, text: string): Promise<UserMessageAdmission> {
     const { threadStore, operations, logger } = this.#options;
-    let woken: ThreadRecord | undefined;
+    const readiness = await this.#makeReadyForMessage(threadId);
+    if (readiness.kind === "refused") {
+      return { isAccepted: false, reason: readiness.reason };
+    }
+    await threadStore.recordUserMessageArrival(threadId, {
+      at: this.#options.clock(),
+      title: deriveThreadTitle(text),
+    });
+    if (readiness.kind === "woken") {
+      logger.info({ threadId }, "A message arrived for a stopped sandbox; waking it");
+      operations.carryOut(readiness.thread);
+    }
+    return { isAccepted: true };
+  }
+
+  /**
+   * Wakes the thread's sandbox if it is stopped, reading the thread again if
+   * another request changed it in between. A sandbox still stopped after
+   * every attempt refuses the message: recorded, it would wait for an agent
+   * nothing starts.
+   */
+  async #makeReadyForMessage(threadId: string): Promise<MessageReadiness> {
     for (let attempt = 1; attempt <= attemptsPerRequest; attempt += 1) {
-      const thread = await threadStore.find(threadId);
+      const thread = await this.#options.threadStore.find(threadId);
       if (thread === undefined || thread.sandbox.state === "deleting") {
         return {
-          isAccepted: false,
+          kind: "refused",
           reason: "This thread is being deleted, so it takes no more messages.",
         };
       }
       if (thread.sandbox.state !== "stopped") {
-        break;
+        return { kind: "ready" };
       }
       const outcome = await this.#transition(
         thread,
@@ -187,22 +208,17 @@ export class SandboxLifecycle {
         true,
       );
       if (outcome.kind === "limit_reached") {
-        return { isAccepted: false, reason: describeLimitReached(outcome, "wake") };
+        return { kind: "refused", reason: describeLimitReached(outcome, "wake") };
       }
       if (outcome.kind === "changed") {
-        woken = outcome.thread;
-        break;
+        return { kind: "woken", thread: outcome.thread };
       }
     }
-    await threadStore.recordUserMessageArrival(threadId, {
-      at: this.#options.clock(),
-      title: deriveThreadTitle(text),
-    });
-    if (woken !== undefined) {
-      logger.info({ threadId }, "A message arrived for a stopped sandbox; waking it");
-      operations.carryOut(woken);
-    }
-    return { isAccepted: true };
+    return {
+      kind: "refused",
+      reason:
+        "The thread kept changing while this message was sent, so it was not sent. Send it again.",
+    };
   }
 
   /**
@@ -282,6 +298,12 @@ export class SandboxLifecycle {
     return this.#options.operations.leaseExpiry();
   }
 }
+
+/** Whether a message may be recorded: at once, after waking the stopped sandbox, or not. */
+type MessageReadiness =
+  | { kind: "ready" }
+  | { kind: "woken"; thread: ThreadRecord }
+  | { kind: "refused"; reason: string };
 
 type RequestedChange =
   | { refusal: string }

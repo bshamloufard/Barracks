@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { initialThreadState, type ThreadState } from "../thread-state/thread-state";
 import {
   describeAgentAvailability,
+  describeWaitingMessage,
   describeWhySendingIsBlocked,
 } from "./describe-agent-availability";
 
@@ -136,5 +137,28 @@ describe("why sending is blocked", () => {
     expect(describeWhySendingIsBlocked(stateWith({ state: "deleting" }, connected))).toMatch(
       /being deleted/,
     );
+  });
+});
+
+describe("what a message waiting for the agent says", () => {
+  it("is that it will be delivered when the agent connects, while the sandbox runs or wakes", () => {
+    for (const sandbox of [{ state: "running" }, { state: "starting" }] as const) {
+      expect(describeWaitingMessage(stateWith(sandbox, wentAway))).toMatch(/as soon as/);
+    }
+  });
+
+  it("asks for the thread to be resumed when its sandbox is stopped or failed, since nothing else wakes it", () => {
+    const failed = { state: "failed", reason: "x", canResume: true } as const;
+
+    expect(describeWaitingMessage(stateWith({ state: "stopped" }, wentAway))).toMatch(
+      /Resume the thread/,
+    );
+    expect(describeWaitingMessage(stateWith(failed, wentAway))).toMatch(/Resume the thread/);
+  });
+
+  it("says it will not be delivered when the sandbox is gone", () => {
+    const gone = { state: "failed", reason: "x", canResume: false } as const;
+
+    expect(describeWaitingMessage(stateWith(gone, wentAway))).toMatch(/Not delivered/);
   });
 });
