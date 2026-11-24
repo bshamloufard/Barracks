@@ -29,6 +29,9 @@ importers:
 
   apps/control-plane:
     dependencies:
+      '@barrack/model-catalogue':
+        specifier: workspace:*
+        version: link:../../packages/model-catalogue
       '@barrack/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -131,6 +134,19 @@ importers:
       vite:
         specifier: 8.3.8
         version: 8.3.8(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
+
+  packages/model-catalogue:
+    dependencies:
+      '@barrack/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: 1.6.0
+        version: 1.6.0(@aws-sdk/credential-provider-node@3.972.98)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1)(ws@8.23.0)(zod@4.6.7)
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
 
   packages/protocol:
     dependencies:
@@ -2261,7 +2277,7 @@ snapshots:
       '@aws-sdk/types': 3.975.1
       '@smithy/core': 3.41.1
       '@smithy/fetch-http-handler': 5.8.1
-      '@smithy/node-http-handler': 4.12.1
+      '@smithy/node-http-handler': 4.14.2
       '@smithy/types': 4.20.0
       tslib: 2.9.1
 
