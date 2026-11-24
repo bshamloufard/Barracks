@@ -1,4 +1,5 @@
 import {
+  type AgentEvent,
   type ControlPlaneToSupervisorMessage,
   type SupervisorToControlPlaneMessage,
   supervisorToControlPlaneMessageSchema,
@@ -11,6 +12,11 @@ import {
   ControlPlaneConnection,
 } from "./control-plane/control-plane-connection.js";
 import { createAgentHarness } from "./create-agent-harness.js";
+import {
+  fitAgentEventInFrame,
+  maximumSupervisorFrameLength,
+  measureAgentEventFrame,
+} from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
 
 export type SupervisorSettings = {
@@ -80,8 +86,11 @@ export class Supervisor {
   }
 
   /**
-   * The control plane closes the connection on any invalid frame, so a
-   * message that would fail its checks is held back here and logged instead.
+   * The control plane closes the connection on any invalid frame, losing
+   * it, so a message that would fail its checks is held back here and
+   * logged instead. An event too large for one frame is sent shrunk, saying
+   * what was left out; a stream fragment that large is dropped, because the
+   * completed message that follows it is the record.
    */
   #send(message: SupervisorToControlPlaneMessage): void {
     const validation = supervisorToControlPlaneMessageSchema.safeParse(message);
@@ -92,7 +101,33 @@ export class Supervisor {
       );
       return;
     }
-    this.#connection.send(message);
+    const frameLength = JSON.stringify(message).length;
+    if (frameLength <= maximumSupervisorFrameLength) {
+      this.#connection.send(message);
+      return;
+    }
+    if (message.type === "stream_fragment") {
+      this.#logger.warn({ frameLength }, "Dropping a stream fragment too large for one frame");
+      return;
+    }
+    this.#sendOversizedEvent(message.event, frameLength);
+  }
+
+  #sendOversizedEvent(event: AgentEvent, frameLength: number): void {
+    const fittedEvent = fitAgentEventInFrame(event);
+    const fittedFrameLength = measureAgentEventFrame(fittedEvent);
+    if (fittedFrameLength > maximumSupervisorFrameLength) {
+      this.#logger.error(
+        { eventType: event.type, frameLength: fittedFrameLength },
+        "Not sending an agent event that is too large even after shrinking",
+      );
+      return;
+    }
+    this.#logger.warn(
+      { eventType: event.type, frameLength, fittedFrameLength },
+      "Shrank an agent event too large for one frame",
+    );
+    this.#connection.send({ type: "agent_event", event: fittedEvent });
   }
 
   #handleControlPlaneMessage(message: ControlPlaneToSupervisorMessage): void {

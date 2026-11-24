@@ -1,4 +1,5 @@
 import { maximumToolOutputLength, type ToolOutput } from "@barrack/protocol";
+import { shortenText } from "../shorten-text.js";
 import type { PiToolResultContentBlock } from "./pi-records.js";
 
 /**
@@ -36,39 +37,9 @@ export function truncateToolOutput(
   if (text.length <= maximumLength) {
     return { text, isTruncated: false, originalSizeInBytes };
   }
-  // Reserve room for the longest marker this text could need.
-  const markerLength = describeOmission(text.length).length;
-  const keptLength = maximumLength - markerLength;
-  // A cut between the two halves of a UTF-16 surrogate pair (an emoji, say)
-  // would leave half a character behind, so such cuts move outwards by one,
-  // which only ever shortens the kept text.
-  let startEnd = Math.floor(keptLength * keptShareFromStart);
-  if (isInsideSurrogatePair(text, startEnd)) {
-    startEnd -= 1;
-  }
-  let tailStart = text.length - (keptLength - startEnd);
-  if (isInsideSurrogatePair(text, tailStart)) {
-    tailStart += 1;
-  }
-  const truncatedText =
-    text.slice(0, startEnd) + describeOmission(tailStart - startEnd) + text.slice(tailStart);
-  return { text: truncatedText, isTruncated: true, originalSizeInBytes };
-}
-
-function describeOmission(omittedCharacterCount: number): string {
-  return `\n\n[… ${omittedCharacterCount} characters omitted …]\n\n`;
-}
-
-function isInsideSurrogatePair(text: string, cutIndex: number): boolean {
-  return (
-    isHighSurrogate(text.charCodeAt(cutIndex - 1)) && isLowSurrogate(text.charCodeAt(cutIndex))
-  );
-}
-
-function isHighSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
-}
-
-function isLowSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+  return {
+    text: shortenText(text, maximumLength, keptShareFromStart),
+    isTruncated: true,
+    originalSizeInBytes,
+  };
 }
