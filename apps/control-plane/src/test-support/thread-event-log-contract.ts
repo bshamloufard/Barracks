@@ -359,6 +359,32 @@ export function describeThreadEventLogContract(
       expect(await log.readOpenRun("thread-a")).toBeUndefined();
     });
 
+    it("tells one run from the next by the sequence of the event that started it", async () => {
+      const log = await createEmptyLog();
+      const beforeAnyRun = await log.readOpenRunStart("thread-a");
+      await openRunFrom(log, "instance-1");
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "agent_run_settled", wasInterrupted: false },
+        { supervisorInstanceId: "instance-1", eventNumber: 2 },
+      );
+      const betweenRuns = await log.readOpenRunStart("thread-a");
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "agent_run_started" },
+        { supervisorInstanceId: "instance-1", eventNumber: 3 },
+      );
+      await log.appendUserMessage("thread-a", {
+        type: "user_message",
+        messageId: "message-1",
+        text: "Carry on",
+      });
+
+      expect(beforeAnyRun).toBeUndefined();
+      expect(betweenRuns).toBeUndefined();
+      expect(await log.readOpenRunStart("thread-a")).toBe(3);
+    });
+
     it("records the end once, however often it is asked, and nothing for a run already ended", async () => {
       const log = await createEmptyLog();
       await openRunFrom(log, "instance-1");

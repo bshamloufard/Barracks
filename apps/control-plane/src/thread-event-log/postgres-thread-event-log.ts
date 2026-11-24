@@ -180,6 +180,28 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     return openedBy === undefined ? undefined : { openedBySupervisorInstanceId: openedBy };
   }
 
+  /**
+   * The newest `agent_run_started` while the counter row says a run is open:
+   * every run start opens a run, so that one began the run open now. Read
+   * from the newest event back along the thread's primary key, which within
+   * a run open now is a short way.
+   */
+  async readOpenRunStart(threadId: string): Promise<number | undefined> {
+    const result = await this.#pool.query<{ sequence: string }>(
+      `select recorded.sequence from ${this.#qualifiedSchema}.thread_events as recorded
+        join ${this.#qualifiedSchema}.thread_sequence_counters as counter
+          on counter.thread_id = recorded.thread_id
+        where recorded.thread_id = $1
+          and counter.open_run_supervisor_instance_id is not null
+          and recorded.event->>'type' = 'agent_run_started'
+        order by recorded.sequence desc
+        limit 1`,
+      [threadId],
+    );
+    const sequence = result.rows[0]?.sequence;
+    return sequence === undefined ? undefined : Number(sequence);
+  }
+
   async readNewestSequence(threadId: string): Promise<number> {
     const result = await this.#pool.query<{ last_sequence: string }>(
       this.#readNewestSequenceStatement,

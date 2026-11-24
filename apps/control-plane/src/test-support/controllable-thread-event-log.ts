@@ -132,6 +132,11 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     return this.#log.readOpenRun(threadId);
   }
 
+  async readOpenRunStart(threadId: string): Promise<number | undefined> {
+    this.#throwNextReadFailure();
+    return this.#log.readOpenRunStart(threadId);
+  }
+
   async readNewestSequence(threadId: string): Promise<number> {
     const gates = this.#nextNewestSequenceReadGates;
     this.#nextNewestSequenceReadGates = undefined;

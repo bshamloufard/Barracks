@@ -105,6 +105,16 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     return openedBy === undefined ? undefined : { openedBySupervisorInstanceId: openedBy };
   }
 
+  /** A run is open from the newest `agent_run_started`, which nothing has closed since. */
+  async readOpenRunStart(threadId: string): Promise<number | undefined> {
+    const history = this.#historiesByThreadId.get(threadId);
+    if (history?.openRunSupervisorInstanceId === undefined) {
+      return undefined;
+    }
+    return history.events.findLast((recorded) => runBoundaryOf(recorded.event) === "opens_run")
+      ?.sequence;
+  }
+
   async readNewestSequence(threadId: string): Promise<number> {
     return this.#historiesByThreadId.get(threadId)?.events.length ?? 0;
   }
