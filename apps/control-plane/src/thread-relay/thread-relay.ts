@@ -252,16 +252,15 @@ export class ThreadRelay {
       this.#inProgressText.discardMessage(event.messageId);
     }
     if (event.type === "agent_run_settled" || event.type === "agent_failed") {
-      this.#inProgressText.discardAll();
+      this.#inProgressText.discardCurrentMessage();
     }
   }
 
   #relayAssistantTextFragment(fragment: AssistantTextFragment): void {
-    const isStillTracked = this.#inProgressText.append(fragment);
-    if (!isStillTracked) {
+    if (this.#inProgressText.append(fragment) === "exceeded_limit") {
       this.#logger.warn(
         { messageId: fragment.messageId },
-        "Stopped keeping streamed text for an assistant message that grew past the size limit",
+        "Stopped keeping streamed text for an assistant message that went past a size limit",
       );
     }
     this.#broadcast({ type: "stream_fragment", fragment });

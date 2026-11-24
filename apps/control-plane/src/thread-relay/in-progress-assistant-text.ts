@@ -2,6 +2,18 @@ import { type AssistantTextFragment, maximumFrameLength } from "@barrack/protoco
 
 type ContentBlockText = Pick<AssistantTextFragment, "contentBlockType"> & { text: string };
 
+type CurrentMessage = {
+  messageId: string;
+  /** Undefined once the message has gone past a limit: none of its text is kept from then on. */
+  blocksByIndex: Map<number, ContentBlockText> | undefined;
+};
+
+/**
+ * What became of a fragment: its text was kept, its message has just gone
+ * past a limit, or its message had already gone past one.
+ */
+export type AppendOutcome = "kept" | "exceeded_limit" | "already_over_limit";
+
 /**
  * A message whose completed event will have to fit in one frame never gets
  * near this. The bound exists so a misbehaving supervisor cannot grow memory
@@ -11,63 +23,103 @@ type ContentBlockText = Pick<AssistantTextFragment, "contentBlockType"> & { text
 const maximumTextLengthPerMessage = maximumFrameLength / 2;
 
 /**
- * The text streamed so far for each assistant message that is still being
- * produced. Stream fragments are never stored, so without this a client that
- * connects in the middle of a message would see it start mid-sentence. It is
- * kept only until the completed message is recorded, which supersedes it.
+ * Real messages have a handful of content blocks (some thinking, some text,
+ * a few tool calls). Without this bound a supervisor could grow memory with
+ * empty fragments for ever-new block indices, which the text bound never sees.
+ */
+const maximumContentBlocksPerMessage = 1_000;
+
+/**
+ * The text streamed so far for the assistant message still being produced.
+ * Stream fragments are never stored, so without this a client that connects
+ * in the middle of a message would see it start mid-sentence.
+ *
+ * Only the current message is kept, because the supervisor is untrusted and
+ * must not be able to make the control plane hold text for many messages; an
+ * agent produces its messages one after another anyway. A fragment for a
+ * different message therefore replaces the current one, and the completed
+ * message, once recorded, supersedes its streamed text.
+ *
+ * A message that goes past a limit is remembered as such, and none of its
+ * text is kept until a different message starts: picking it up again from
+ * the next fragment would send a joining client text that starts mid-message.
  */
 export class InProgressAssistantText {
-  readonly #blocksByMessageId = new Map<string, Map<number, ContentBlockText>>();
+  #currentMessage: CurrentMessage | undefined;
 
-  /** Returns false, and stops tracking the message, if it grew past the size limit. */
-  append(fragment: AssistantTextFragment): boolean {
-    const blocks = this.#blocksByMessageId.get(fragment.messageId) ?? new Map();
-    this.#blocksByMessageId.set(fragment.messageId, blocks);
-    const block = blocks.get(fragment.contentBlockIndex) ?? {
-      contentBlockType: fragment.contentBlockType,
-      text: "",
-    };
-    block.text += fragment.appendedText;
-    blocks.set(fragment.contentBlockIndex, block);
-    if (totalTextLength(blocks) > maximumTextLengthPerMessage) {
-      this.discardMessage(fragment.messageId);
-      return false;
+  append(fragment: AssistantTextFragment): AppendOutcome {
+    const message = this.#startOrContinue(fragment.messageId);
+    const blocksByIndex = message.blocksByIndex;
+    if (blocksByIndex === undefined) {
+      return "already_over_limit";
     }
-    return true;
+    appendToBlock(blocksByIndex, fragment);
+    if (isPastLimits(blocksByIndex)) {
+      message.blocksByIndex = undefined;
+      return "exceeded_limit";
+    }
+    return "kept";
   }
 
+  /** Called once the completed message is recorded, which supersedes its streamed text. */
   discardMessage(messageId: string): void {
-    this.#blocksByMessageId.delete(messageId);
+    if (this.#currentMessage?.messageId === messageId) {
+      this.#currentMessage = undefined;
+    }
   }
 
-  discardAll(): void {
-    this.#blocksByMessageId.clear();
+  discardCurrentMessage(): void {
+    this.#currentMessage = undefined;
   }
 
   /** One fragment per content block, carrying all of that block's text so far. */
   toCoalescedFragments(): AssistantTextFragment[] {
-    const fragments: AssistantTextFragment[] = [];
-    for (const [messageId, blocks] of this.#blocksByMessageId) {
-      const blocksInOrder = [...blocks].sort(
-        ([firstIndex], [secondIndex]) => firstIndex - secondIndex,
-      );
-      for (const [contentBlockIndex, block] of blocksInOrder) {
-        fragments.push({
-          type: "assistant_text_fragment",
-          messageId,
-          contentBlockIndex,
-          contentBlockType: block.contentBlockType,
-          appendedText: block.text,
-        });
-      }
+    const message = this.#currentMessage;
+    if (message?.blocksByIndex === undefined) {
+      return [];
     }
-    return fragments;
+    const blocksInOrder = [...message.blocksByIndex].sort(
+      ([firstIndex], [secondIndex]) => firstIndex - secondIndex,
+    );
+    return blocksInOrder.map(([contentBlockIndex, block]) => ({
+      type: "assistant_text_fragment",
+      messageId: message.messageId,
+      contentBlockIndex,
+      contentBlockType: block.contentBlockType,
+      appendedText: block.text,
+    }));
+  }
+
+  #startOrContinue(messageId: string): CurrentMessage {
+    if (this.#currentMessage?.messageId !== messageId) {
+      this.#currentMessage = { messageId, blocksByIndex: new Map() };
+    }
+    return this.#currentMessage;
   }
 }
 
-function totalTextLength(blocks: Map<number, ContentBlockText>): number {
+function appendToBlock(
+  blocksByIndex: Map<number, ContentBlockText>,
+  fragment: AssistantTextFragment,
+): void {
+  const block = blocksByIndex.get(fragment.contentBlockIndex) ?? {
+    contentBlockType: fragment.contentBlockType,
+    text: "",
+  };
+  block.text += fragment.appendedText;
+  blocksByIndex.set(fragment.contentBlockIndex, block);
+}
+
+function isPastLimits(blocksByIndex: Map<number, ContentBlockText>): boolean {
+  return (
+    blocksByIndex.size > maximumContentBlocksPerMessage ||
+    totalTextLength(blocksByIndex) > maximumTextLengthPerMessage
+  );
+}
+
+function totalTextLength(blocksByIndex: Map<number, ContentBlockText>): number {
   let length = 0;
-  for (const block of blocks.values()) {
+  for (const block of blocksByIndex.values()) {
     length += block.text.length;
   }
   return length;
