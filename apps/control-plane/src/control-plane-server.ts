@@ -6,10 +6,10 @@ import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
 import { createHttpApp } from "./http/http-app.js";
 import type { Logger } from "./logger.js";
+import type { SandboxLifecycle } from "./sandbox-lifecycle/sandbox-lifecycle.js";
 import { standardCloseCodes } from "./standard-close-codes.js";
 import type { ThreadEventLog } from "./thread-event-log/thread-event-log.js";
-import { ThreadRelayRegistry } from "./thread-relay/thread-relay-registry.js";
-import type { ThreadCreator } from "./threads/thread-creator.js";
+import type { ThreadRelayRegistry } from "./thread-relay/thread-relay-registry.js";
 import type { ThreadStore } from "./threads/thread-store.js";
 import { createUpgradeRouter } from "./websocket/route-upgrade.js";
 import { authorizeWithThreadTokens } from "./websocket/supervisor-authorization.js";
@@ -42,7 +42,8 @@ export type ControlPlaneServerOptions = {
   >;
   threadEventLog: ThreadEventLog;
   threadStore: ThreadStore;
-  threadCreator: ThreadCreator;
+  relays: ThreadRelayRegistry;
+  sandboxLifecycle: SandboxLifecycle;
   authenticator: Authenticator;
   /** What clients are told about signing in. */
   clientAuthentication: ClientAuthenticationConfiguration;
@@ -72,7 +73,12 @@ export async function startControlPlaneServer(
     authenticator: options.authenticator,
     clientAuthentication: options.clientAuthentication,
     allowedClientOrigins,
-    threads: { threadStore, threadCreator: options.threadCreator, logger },
+    threads: {
+      threadStore,
+      threadEventLog: options.threadEventLog,
+      sandboxLifecycle: options.sandboxLifecycle,
+      logger,
+    },
     webClientDirectory: configuration.webClientDirectory,
   });
   // Hono's adapter would otherwise replace the global Request and Response
@@ -84,7 +90,7 @@ export async function startControlPlaneServer(
     "upgrade",
     createUpgradeRouter({
       webSocketServer,
-      relays: new ThreadRelayRegistry(options.threadEventLog, logger),
+      relays: options.relays,
       threadStore,
       authorizeSupervisor: authorizeWithThreadTokens(threadStore),
       authenticator: options.authenticator,

@@ -13,12 +13,14 @@ import {
 } from "@barrack/sandbox-providers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { developmentAccessToken } from "../authentication/development-single-user.js";
+import { ControllableClock } from "../test-support/controllable-clock.js";
 import { toolExecutionStarted } from "../test-support/example-agent-events.js";
 import { readWholeThread } from "../test-support/read-whole-thread.js";
 import {
   browserHeaders,
   TestControlPlane,
   type TestControlPlaneOptions,
+  testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
 import { InMemoryThreadStore } from "./in-memory-thread-store.js";
 
@@ -71,11 +73,11 @@ describe("creating a thread", () => {
     const created = await createThreadThroughApi();
     const whileCreating = await fetchThread(created.threadId);
     release();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
 
     expect(created.sandbox).toEqual({ state: "creating" });
     expect(whileCreating.sandbox).toEqual({ state: "creating" });
-    expect((await fetchThread(created.threadId)).sandbox).toEqual({ state: "ready" });
+    expect((await fetchThread(created.threadId)).sandbox).toEqual({ state: "running" });
   });
 
   it("asks the provider once for a sandbox whose supervisor is told the thread, the control plane and a token of its own", async () => {
@@ -119,7 +121,7 @@ describe("creating a thread", () => {
     }
   });
 
-  it("lists threads newest first, each with when it was created and its sandbox's state", async () => {
+  it("lists threads most recently active first, each with when it was created and last active, and its sandbox's state", async () => {
     await start();
     const first = await controlPlane.createThread();
     const second = await controlPlane.createThread();
@@ -130,7 +132,10 @@ describe("creating a thread", () => {
     expect(threads[0]).toEqual({
       threadId: second.threadId,
       createdAt: expect.any(String),
-      sandbox: { state: "ready" },
+      lastActiveAt: expect.any(String),
+      title: null,
+      isAgentWorking: false,
+      sandbox: { state: "running" },
     });
   });
 
@@ -173,11 +178,13 @@ describe("a sandbox that cannot be created", () => {
     );
 
     const { threadId } = await createThreadThroughApi();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
 
     expect((await fetchThread(threadId)).sandbox).toEqual({
       state: "failed",
-      reason: "Could not create a sandbox: the image does not exist.",
+      reason:
+        "Its sandbox could not be created: Could not create a sandbox: the image does not exist. Delete this thread and create a new one to try again.",
+      canResume: false,
     });
     expect(controlPlane.sandboxProvider.sandboxIds()).toEqual([]);
   });
@@ -190,11 +197,12 @@ describe("a sandbox that cannot be created", () => {
     );
 
     const { threadId } = await createThreadThroughApi();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
 
     expect((await fetchThread(threadId)).sandbox).toEqual({
       state: "failed",
-      reason: expect.stringMatching(/the provider timed out\. .*create a new thread to try again/),
+      reason: expect.stringMatching(/the provider timed out\. .*create a new one to try again/),
+      canResume: false,
     });
     expect(controlPlane.sandboxProvider.sandboxIds()).toEqual([]);
   });
@@ -207,45 +215,58 @@ describe("a sandbox that cannot be created", () => {
     );
 
     const { threadId } = await createThreadThroughApi();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
 
-    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "ready" });
+    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "running" });
     expect(controlPlane.sandboxProvider.sandboxIds()).toHaveLength(1);
   });
 
-  it("takes the sandbox an earlier, apparently failed, attempt created after all", async () => {
+  it("takes the sandbox an earlier, apparently failed, attempt created after all, and makes sure it runs", async () => {
     const sandboxProvider = new FakeSandboxProvider();
     vi.spyOn(sandboxProvider, "create")
       .mockRejectedValueOnce(
         new SandboxProviderUnavailableError("create a sandbox", "the request timed out"),
       )
       .mockRejectedValueOnce(new SandboxAlreadyExistsError("thread", "sandbox-from-attempt-1"));
+    const startSandbox = vi.spyOn(sandboxProvider, "start").mockResolvedValue();
     const threadStore = new InMemoryThreadStore();
     await start({ sandboxProvider, threadStore, retryDelaysInMilliseconds: [0] });
 
     const { threadId } = await createThreadThroughApi();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
 
     expect((await threadStore.find(threadId))?.sandbox).toEqual({
-      state: "ready",
+      state: "running",
       sandboxId: "sandbox-from-attempt-1",
+      problem: undefined,
     });
+    expect(startSandbox).toHaveBeenCalledWith("sandbox-from-attempt-1");
   });
 
-  it("is destroyed again when its thread cannot be recorded as having it", async () => {
+  it("is taken as the thread's when a creation whose outcome could not be recorded is taken over", async () => {
     const threadStore = new InMemoryThreadStore();
-    vi.spyOn(threadStore, "recordSandboxReady").mockRejectedValue(
-      new Error("The database went away"),
-    );
-    await start({ threadStore });
+    const clock = new ControllableClock();
+    const recordOutcome = vi
+      .spyOn(threadStore, "transition")
+      .mockRejectedValueOnce(new Error("The database went away"));
+    await start({ threadStore, clock: clock.now });
 
     const { threadId } = await createThreadThroughApi();
-    await controlPlane.threadCreator.whenSandboxCreationsSettle();
+    await controlPlane.whenOperationsSettle();
+    const whileUnrecorded = await fetchThread(threadId);
+    recordOutcome.mockRestore();
+    clock.advanceBy(testLifecycleSettings.checkIntervalInMilliseconds * 3);
+    await controlPlane.threadServices.reconciler.reconcile({ includeSettledSandboxes: false });
+    await controlPlane.whenOperationsSettle();
 
-    const operations = controlPlane.sandboxProvider.calls.map((call) => call.operation);
-    expect(operations).toEqual(["create", "destroy"]);
-    expect(controlPlane.sandboxProvider.sandboxIds()).toEqual([]);
-    expect((await fetchThread(threadId)).sandbox).toMatchObject({ state: "failed" });
+    expect(whileUnrecorded.sandbox).toEqual({ state: "creating" });
+    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "running" });
+    expect(controlPlane.sandboxProvider.sandboxIds()).toHaveLength(1);
+    expect(controlPlane.sandboxProvider.calls.map((call) => call.operation)).toEqual([
+      "create",
+      "create",
+      "start",
+    ]);
   });
 });
 

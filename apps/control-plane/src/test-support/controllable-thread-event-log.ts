@@ -1,6 +1,7 @@
 import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import type {
+  AgentWork,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -129,6 +130,20 @@ export class ControllableThreadEventLog implements ThreadEventLog {
 
   recordUserMessagesDelivered(threadId: string, throughSequence: number): Promise<void> {
     return this.#log.recordUserMessagesDelivered(threadId, throughSequence);
+  }
+
+  async readAgentWork(threadId: string): Promise<AgentWork> {
+    this.#throwNextReadFailure();
+    return this.#log.readAgentWork(threadId);
+  }
+
+  async findThreadsWithOpenRuns(threadIds: readonly string[]): Promise<Set<string>> {
+    this.#throwNextReadFailure();
+    return this.#log.findThreadsWithOpenRuns(threadIds);
+  }
+
+  deleteHistory(threadId: string): Promise<void> {
+    return this.#log.deleteHistory(threadId);
   }
 
   async #controlAppend<Outcome>(appendToLog: () => Promise<Outcome>): Promise<Outcome> {

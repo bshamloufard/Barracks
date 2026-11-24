@@ -1,6 +1,7 @@
 import { type ThreadEvent, type ToolArguments, threadEventSchema } from "@barrack/protocol";
 import { escapeIdentifier, type Pool } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { acceptingThreadActivity } from "../test-support/accepting-thread-activity.js";
 import { agentRunStarted, toolExecutionStarted } from "../test-support/example-agent-events.js";
 import {
   attachGreetedSupervisor,
@@ -211,6 +212,7 @@ describeWithTestDatabase("the Postgres thread event log", () => {
     const relay = new ThreadRelay({
       threadId,
       threadEventLog: log,
+      threadActivity: acceptingThreadActivity,
       logger: silentLogger,
       whenUnused: () => undefined,
     });

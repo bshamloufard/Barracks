@@ -1,5 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  buildResumeThreadApiPath,
+  buildStopThreadApiPath,
   buildThreadApiPath,
   closeCodes,
   threadListResponseSchema,
@@ -118,6 +120,62 @@ describe("each user's threads", () => {
       await describeAnswer(missingThread, missingThreadId),
     );
     expect(othersThread.status).toBe(404);
+  });
+
+  it.each([
+    ["stopping", "POST", (threadId: string) => buildStopThreadApiPath(threadId)],
+    ["resuming", "POST", (threadId: string) => buildResumeThreadApiPath(threadId)],
+    ["deleting", "DELETE", (threadId: string) => buildThreadApiPath(threadId)],
+  ] as const)(
+    "answers %s another user's thread exactly as one that does not exist, and changes nothing",
+    async (_, method, pathFor) => {
+      const missingThreadId = "33333333-3333-4333-8333-333333333333";
+      const before = await controlPlane.getApi(buildThreadApiPath(adaThread.threadId), adaToken);
+
+      const othersThread = await controlPlane.sendApi(
+        method,
+        pathFor(adaThread.threadId),
+        graceToken,
+      );
+      const missingThread = await controlPlane.sendApi(
+        method,
+        pathFor(missingThreadId),
+        graceToken,
+      );
+      await controlPlane.whenOperationsSettle();
+
+      expect(await describeAnswer(othersThread, adaThread.threadId)).toEqual(
+        await describeAnswer(missingThread, missingThreadId),
+      );
+      expect(othersThread.status).toBe(404);
+      const after = await controlPlane.getApi(buildThreadApiPath(adaThread.threadId), adaToken);
+      expect(await after.json()).toEqual(await before.json());
+      expect(controlPlane.sandboxProvider.calls.map((call) => call.operation)).toEqual(["create"]);
+    },
+  );
+
+  it("lets the owner stop, resume and delete their own thread", async () => {
+    const stopped = await controlPlane.sendApi(
+      "POST",
+      buildStopThreadApiPath(adaThread.threadId),
+      adaToken,
+    );
+    await controlPlane.whenOperationsSettle();
+    const resumed = await controlPlane.sendApi(
+      "POST",
+      buildResumeThreadApiPath(adaThread.threadId),
+      adaToken,
+    );
+    await controlPlane.whenOperationsSettle();
+    const deleted = await controlPlane.sendApi(
+      "DELETE",
+      buildThreadApiPath(adaThread.threadId),
+      adaToken,
+    );
+    await controlPlane.whenOperationsSettle();
+
+    expect([stopped.status, resumed.status, deleted.status]).toEqual([202, 202, 202]);
+    expect(await listThreadIds(adaToken)).toEqual([]);
   });
 
   it.each([

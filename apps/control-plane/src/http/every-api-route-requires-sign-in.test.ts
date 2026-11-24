@@ -7,9 +7,13 @@ import {
   DevelopmentSingleUserVerifier,
   developmentAccessToken,
 } from "../authentication/development-single-user.js";
-import { testSupervisorEnvironment } from "../test-support/test-control-plane.js";
+import { assembleThreadServices } from "../sandbox-lifecycle/assemble-thread-services.js";
+import {
+  testLifecycleSettings,
+  testSupervisorEnvironment,
+} from "../test-support/test-control-plane.js";
+import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
-import { ThreadCreator } from "../threads/thread-creator.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
 import { createHttpApp, publicApiPaths } from "./http-app.js";
 
@@ -23,6 +27,16 @@ const logger = pino({ level: "silent" });
 
 function createApp() {
   const threadStore = new InMemoryThreadStore();
+  const threadEventLog = new InMemoryThreadEventLog();
+  const { sandboxLifecycle } = assembleThreadServices({
+    threadStore,
+    threadEventLog,
+    sandboxProvider: new FakeSandboxProvider(),
+    sandboxProviderName: "fake",
+    supervisorEnvironment: testSupervisorEnvironment,
+    settings: testLifecycleSettings,
+    logger,
+  });
   return createHttpApp({
     authenticator: new Authenticator({
       verifier: new DevelopmentSingleUserVerifier(),
@@ -35,17 +49,7 @@ function createApp() {
       accessToken: developmentAccessToken,
     },
     allowedClientOrigins: new Set(),
-    threads: {
-      threadStore,
-      threadCreator: new ThreadCreator({
-        threadStore,
-        sandboxProvider: new FakeSandboxProvider(),
-        sandboxProviderName: "fake",
-        supervisorEnvironment: testSupervisorEnvironment,
-        logger,
-      }),
-      logger,
-    },
+    threads: { threadStore, threadEventLog, sandboxLifecycle, logger },
     webClientDirectory: undefined,
   });
 }
@@ -60,8 +64,16 @@ function registeredRoutes(): Array<{ method: string; path: string }> {
 }
 
 describe("the HTTP API's access control", () => {
-  it("has routes to check", () => {
-    expect(registeredRoutes().length).toBeGreaterThan(3);
+  it("has routes to check, the thread lifecycle's among them", () => {
+    const routes = registeredRoutes().map((route) => `${route.method} ${route.path}`);
+
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        "POST /api/threads/some-identifier/stop",
+        "POST /api/threads/some-identifier/resume",
+        "DELETE /api/threads/some-identifier",
+      ]),
+    );
   });
 
   it.each(registeredRoutes())(
