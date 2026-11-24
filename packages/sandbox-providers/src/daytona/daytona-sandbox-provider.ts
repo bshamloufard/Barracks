@@ -313,7 +313,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
    * supervisor's alone (0400). The directory is the supervisor's, mode 0700,
    * so whatever mode Daytona's daemon first gives the file, nobody else can
    * open it before its mode is set. Which user that daemon writes as has
-   * not been confirmed against Daytona (see docs/deployment.md); if it can
+   * not been confirmed against Daytona (docs/deployment.md, "First deployment checklist"); if it can
    * write there neither as root nor as the supervisor, the upload fails and
    * so does the launch, saying so, rather than leave a secret anywhere else.
    * https://www.daytona.io/docs/en/typescript-sdk/file-system
