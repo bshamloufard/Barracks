@@ -24,7 +24,7 @@ export interface SandboxProvider {
   /**
    * Brings a new sandbox into existence for a thread and starts it. When the
    * returned promise resolves the sandbox is running and its supervisor has
-   * been launched with exactly the environment in the request.
+   * been launched with exactly the environment and secrets in the request.
    *
    * A thread has at most one sandbox: if one already exists for the thread,
    * this throws `SandboxAlreadyExistsError` naming it, rather than creating a
@@ -34,10 +34,11 @@ export interface SandboxProvider {
 
   /**
    * Starts a stopped (or failed) sandbox, with its files as they were, and
-   * launches its supervisor again with the environment it was created with.
-   * Starting a sandbox that is already running does nothing.
+   * launches its supervisor again with the environment and secrets it was
+   * created with. Starting a sandbox that is already running does nothing,
+   * except hand over `replacementSecrets`.
    */
-  start(sandboxId: string): Promise<void>;
+  start(sandboxId: string, options?: SandboxStartOptions): Promise<void>;
 
   /**
    * Stops a running sandbox, keeping its files so that `start` can resume it.
@@ -80,12 +81,36 @@ export type SandboxCreationRequest = {
    */
   threadId: string;
   /**
-   * The environment the supervisor runs with: the control plane's URL, the
-   * thread, the supervisor's credentials and the agent's settings. Providers
-   * treat it as opaque, pass it on unchanged, and never log or echo its
-   * values, because it holds secrets.
+   * The supervisor's plain settings, as environment variables: the control
+   * plane's URL, the thread and the agent's settings. Nothing secret: a
+   * sandbox's environment reaches every process started in it, the agent's
+   * included (through `docker exec` or a provider's command interface), and
+   * anyone who can inspect the sandbox. Providers pass it on unchanged.
    */
   supervisorEnvironment: Readonly<Record<string, string>>;
+  /**
+   * The supervisor's secrets, by name, such as `BARRACK_SUPERVISOR_TOKEN`.
+   * Each reaches the supervisor as a file of that name in the directory its
+   * `BARRACK_SUPERVISOR_SECRETS_DIRECTORY` names (`supervisor-secrets.ts`),
+   * which only the supervisor's user can read, and which is kept across a
+   * stop and a start. A provider never puts a secret in the sandbox's
+   * environment, in a command's arguments, in what it reports about the
+   * sandbox, or in a log line or error. Where the sandbox has no user for
+   * the agent apart from the supervisor's (the local-process provider), the
+   * agent can still read them.
+   */
+  supervisorSecrets: Readonly<Record<string, string>>;
+};
+
+export type SandboxStartOptions = {
+  /**
+   * Secrets to hand the supervisor instead of those of the same name it
+   * has, before it is launched (a running one keeps what it read until it
+   * is launched again). A creation taken over uses this to give a sandbox
+   * an earlier attempt made the token it minted itself, whatever that
+   * attempt managed to hand over. Treated as `supervisorSecrets` are.
+   */
+  replacementSecrets?: Readonly<Record<string, string>>;
 };
 
 export type CreatedSandbox = {

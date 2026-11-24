@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildSupervisorEndpointPath } from "@barrack/protocol";
 import { describeSandboxProviderContract } from "../test-support/sandbox-provider-contract.js";
-import { standInSupervisorCommand } from "../test-support/stand-in-supervisor.js";
+import {
+  standInLaunchFileName,
+  standInSupervisorCommand,
+} from "../test-support/stand-in-supervisor.js";
 import { SupervisorConnectionRecorder } from "../test-support/supervisor-connection-recorder.js";
 import { LocalProcessSandboxProvider } from "./local-process-sandbox-provider.js";
 
@@ -30,13 +33,20 @@ describeSandboxProviderContract({
       stopTimeoutInMilliseconds: 5_000,
     };
     const provider = new LocalProcessSandboxProvider(settings);
-    const localPathOf = (sandboxId: string, imagePath: string): string => {
+    const workspaceOf = (sandboxId: string): string => {
       const workspaceDirectory = provider.workspaceDirectoryOf(sandboxId);
-      if (workspaceDirectory === undefined || !imagePath.startsWith(imageWorkspacePrefix)) {
+      if (workspaceDirectory === undefined) {
+        throw new Error(`Sandbox ${sandboxId} does not exist.`);
+      }
+      return workspaceDirectory;
+    };
+    const localPathOf = (sandboxId: string, imagePath: string): string => {
+      if (!imagePath.startsWith(imageWorkspacePrefix)) {
         throw new Error(`Cannot map ${imagePath} into sandbox ${sandboxId}.`);
       }
-      return path.join(workspaceDirectory, imagePath.slice(imageWorkspacePrefix.length));
+      return path.join(workspaceOf(sandboxId), imagePath.slice(imageWorkspacePrefix.length));
     };
+    const sandboxDirectoryOf = (sandboxId: string): string => path.dirname(workspaceOf(sandboxId));
     return {
       provider,
       unknownSandboxId: "local-sandbox-that-was-never-created",
@@ -55,6 +65,24 @@ describeSandboxProviderContract({
         await writeFile(localPathOf(sandboxId, imagePath), content);
       },
       readFile: (sandboxId, imagePath) => readFile(localPathOf(sandboxId, imagePath), "utf8"),
+      readSecretAsSupervisor: (sandboxId, secretName) =>
+        readFile(path.join(sandboxDirectoryOf(sandboxId), "secrets", secretName), "utf8"),
+      // What it keeps about a sandbox, and the environment its supervisor runs with.
+      async describeSandboxAsProviderReportsIt(sandboxId) {
+        const record = await readFile(
+          path.join(sandboxDirectoryOf(sandboxId), "sandbox-record.json"),
+          "utf8",
+        );
+        const launch = await readFile(
+          path.join(workspaceOf(sandboxId), standInLaunchFileName),
+          "utf8",
+        );
+        return `${record}\n${launch}`;
+      },
+      agentCommands: {
+        unavailableBecause:
+          "a local-process sandbox has no command interface, and its agent runs as the supervisor's user",
+      },
       async dispose() {
         await recorder.close();
         await rm(sandboxesDirectory, { recursive: true, force: true });

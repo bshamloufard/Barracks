@@ -28,7 +28,15 @@ const settings: DaytonaProviderSettings = {
   autoArchiveIntervalInMinutes: 60,
 };
 
-const supervisorEnvironment = { BARRACK_THREAD_ID: "thread-1", BARRACK_SUPERVISOR_TOKEN: "secret" };
+const supervisorEnvironment = { BARRACK_THREAD_ID: "thread-1" };
+const supervisorSecrets = { BARRACK_SUPERVISOR_TOKEN: "the-token" };
+const request = { threadId: "thread-1", supervisorEnvironment, supervisorSecrets };
+/** What the provider adds to the environment: the agent's user and where the secrets are. */
+const sandboxEnvironment = {
+  BARRACK_AGENT_USER: "barrack-agent",
+  ...supervisorEnvironment,
+  BARRACK_SUPERVISOR_SECRETS_DIRECTORY: "/var/lib/barrack/secrets",
+};
 
 type ApiCall = { method: keyof DaytonaApi; sandboxId?: string; detail?: unknown };
 
@@ -98,6 +106,23 @@ class InMemoryDaytona implements DaytonaApi {
     return { exitCode: this.supervisorLaunchExitCode, output: "" };
   }
 
+  async uploadFile(sandboxId: string, path: string, content: Buffer): Promise<void> {
+    this.calls.push({
+      method: "uploadFile",
+      sandboxId,
+      detail: { path, content: String(content) },
+    });
+    this.#throwIfFailing("uploadFile");
+  }
+
+  async setFilePermissions(
+    sandboxId: string,
+    path: string,
+    permissions: { owner: string; group: string; mode: string },
+  ): Promise<void> {
+    this.calls.push({ method: "setFilePermissions", sandboxId, detail: { path, ...permissions } });
+  }
+
   async createSignedPreviewUrl(sandboxId: string, port: number, expiresInSeconds: number) {
     this.calls.push({
       method: "createSignedPreviewUrl",
@@ -139,12 +164,12 @@ describe("the Daytona sandbox provider", () => {
   it("creates sandboxes with Daytona's own lifecycle timers off, except archiving, and the agent's user named", async () => {
     const { daytona, provider } = createProvider();
 
-    await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    await provider.create(request);
 
     expect(daytona.callsTo("createSandbox")[0]?.detail).toEqual({
       name: "barrack-thread-thread-1",
       snapshot: "barrack-sandbox-test",
-      envVars: { BARRACK_AGENT_USER: "barrack-agent", ...supervisorEnvironment },
+      envVars: sandboxEnvironment,
       labels: { "barrack.sandbox": "true", "barrack.thread-id": "thread-1" },
       public: false,
       autoStopInterval: 0,
@@ -157,7 +182,7 @@ describe("the Daytona sandbox provider", () => {
   it("launches the supervisor, with the sandbox's environment, after creating and after every start", async () => {
     const { daytona, provider } = createProvider();
 
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     await provider.stop(sandboxId);
     await provider.start(sandboxId);
     await provider.start(sandboxId);
@@ -166,16 +191,76 @@ describe("the Daytona sandbox provider", () => {
     expect(launches).toHaveLength(3);
     expect(launches[0]?.detail).toEqual({
       command: "/usr/local/bin/barrack-ensure-supervisor",
-      environment: { BARRACK_AGENT_USER: "barrack-agent", ...supervisorEnvironment },
+      environment: sandboxEnvironment,
     });
     expect(daytona.callsTo("startSandbox")).toHaveLength(1);
+  });
+
+  it("hands the supervisor its secrets as files only it can read, before launching it, and never in the sandbox's environment", async () => {
+    const { daytona, provider } = createProvider();
+
+    await provider.create(request);
+
+    const createdWith = JSON.stringify(daytona.callsTo("createSandbox"));
+    const handOver = daytona.calls
+      .filter(({ method }) => method !== "createSandbox")
+      .map(({ method, detail }) => ({ method, detail }));
+    expect(createdWith).not.toContain("the-token");
+    expect(handOver).toEqual([
+      {
+        method: "uploadFile",
+        detail: { path: "/var/lib/barrack/secrets/BARRACK_SUPERVISOR_TOKEN", content: "the-token" },
+      },
+      {
+        method: "setFilePermissions",
+        detail: {
+          path: "/var/lib/barrack/secrets/BARRACK_SUPERVISOR_TOKEN",
+          owner: "barrack-supervisor",
+          group: "barrack-supervisor",
+          mode: "400",
+        },
+      },
+      {
+        method: "executeCommand",
+        detail: {
+          command: "/usr/local/bin/barrack-ensure-supervisor",
+          environment: sandboxEnvironment,
+        },
+      },
+    ]);
+  });
+
+  it("hands over replacement secrets when a start asks, and none otherwise", async () => {
+    const { daytona, provider } = createProvider();
+    const { sandboxId } = await provider.create(request);
+    await provider.stop(sandboxId);
+
+    await provider.start(sandboxId);
+    await provider.stop(sandboxId);
+    await provider.start(sandboxId, { replacementSecrets: { BARRACK_SUPERVISOR_TOKEN: "newer" } });
+
+    expect(daytona.callsTo("uploadFile").map(({ detail }) => detail)).toEqual([
+      { path: "/var/lib/barrack/secrets/BARRACK_SUPERVISOR_TOKEN", content: "the-token" },
+      { path: "/var/lib/barrack/secrets/BARRACK_SUPERVISOR_TOKEN", content: "newer" },
+    ]);
+  });
+
+  it("deletes a sandbox whose secrets could not be handed over, without launching its supervisor", async () => {
+    const { daytona, provider } = createProvider();
+    daytona.failures.set("uploadFile", new DaytonaApiFailure("permission denied", 403, false));
+
+    const creation = provider.create(request);
+
+    await expect(creation).rejects.toThrow(SandboxRefusedError);
+    expect(daytona.callsTo("executeCommand")).toEqual([]);
+    expect(daytona.sandboxes.size).toBe(0);
   });
 
   it("deletes a sandbox whose supervisor could not be launched and reports the launch failure", async () => {
     const { daytona, provider } = createProvider();
     daytona.supervisorLaunchExitCode = 1;
 
-    const creation = provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const creation = provider.create(request);
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     await expect(creation).rejects.toThrow(/could not launch its supervisor \(exit code 1\)/);
@@ -189,10 +274,10 @@ describe("the Daytona sandbox provider", () => {
     const { daytona, provider } = createProvider();
     daytona.failures.set("executeCommand", new DaytonaApiFailure("timed out", undefined, true));
 
-    const firstAttempt = provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const firstAttempt = provider.create(request);
     await expect(firstAttempt).rejects.toThrow(SandboxProviderUnavailableError);
     daytona.failures.delete("executeCommand");
-    const retry = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const retry = await provider.create(request);
 
     expect(retry).toEqual({ sandboxId: "daytona-2" });
     expect([...daytona.sandboxes.keys()]).toEqual(["daytona-2"]);
@@ -203,7 +288,7 @@ describe("the Daytona sandbox provider", () => {
     daytona.failures.set("executeCommand", new DaytonaApiFailure("timed out", undefined, true));
     daytona.failures.set("deleteSandbox", new DaytonaApiFailure("bad gateway", 502, false));
 
-    const creation = provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const creation = provider.create(request);
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     await expect(creation).rejects.toThrow(
@@ -213,7 +298,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("stops a started sandbox whose supervisor could not be launched instead of leaving it running", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     await provider.stop(sandboxId);
     daytona.supervisorLaunchExitCode = 1;
 
@@ -224,7 +309,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("reports both failures when a started sandbox without its supervisor cannot be stopped", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     daytona.supervisorLaunchExitCode = 1;
     daytona.failures.set("stopSandbox", new DaytonaApiFailure("bad gateway", 502, false));
 
@@ -238,9 +323,9 @@ describe("the Daytona sandbox provider", () => {
 
   it("names the thread's existing sandbox instead of creating a second one", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
 
-    const secondCreation = provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const secondCreation = provider.create(request);
 
     await expect(secondCreation).rejects.toThrow(SandboxAlreadyExistsError);
     await expect(secondCreation).rejects.toMatchObject({ existingSandboxId: sandboxId });
@@ -249,7 +334,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("does not stop a sandbox that is already stopped or archived", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     daytona.setState(sandboxId, "archived");
 
     await provider.stop(sandboxId);
@@ -260,7 +345,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("waits for a sandbox that is already starting rather than starting it again", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     daytona.setState(sandboxId, "restoring");
 
     await provider.start(sandboxId);
@@ -271,7 +356,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("asks the caller to try again later when starting a sandbox that is still stopping", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
     daytona.setState(sandboxId, "stopping");
 
     await expect(provider.start(sandboxId)).rejects.toThrow(SandboxProviderUnavailableError);
@@ -279,7 +364,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("destroys a sandbox and does nothing when it is already gone", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
 
     await provider.destroy(sandboxId);
     await provider.destroy(sandboxId);
@@ -307,7 +392,7 @@ describe("the Daytona sandbox provider", () => {
 
   it("hands out a signed URL for one port, expiring when asked and never later than Daytona allows", async () => {
     const { daytona, provider } = createProvider();
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create(request);
 
     const shortLived = await provider.getServiceAddress({
       sandboxId,

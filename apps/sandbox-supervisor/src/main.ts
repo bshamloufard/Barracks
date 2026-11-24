@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import { getPiDirectories } from "./pi/pi-agent-harness.js";
 import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
+import { readSupervisorSecrets } from "./supervisor-secrets.js";
 
 function exitWithProblems(problems: readonly string[]): never {
   const problemList = problems.map((problem) => `  - ${problem}`).join("\n");
@@ -38,8 +39,17 @@ const configurationResult = readConfiguration(process.env);
 if (!configurationResult.ok) {
   exitWithProblems(configurationResult.problems);
 }
+const { supervisorSecretsDirectory, ...configurationFromEnvironment } =
+  configurationResult.configuration;
+const secretsResult = await readSupervisorSecrets(supervisorSecretsDirectory);
+if (!secretsResult.ok) {
+  exitWithProblems(secretsResult.problems);
+}
 
-const { configuration } = configurationResult;
+const configuration = {
+  ...configurationFromEnvironment,
+  supervisorToken: secretsResult.secrets.supervisorToken,
+};
 const agentProcessLauncher = await prepareLauncher(configuration.agentHarness);
 const secretRedactor = new SecretRedactor();
 const logger = createLogger(configuration.logLevel, configuration.threadId, secretRedactor);
@@ -47,10 +57,10 @@ let isShuttingDown = false;
 
 const supervisor = new Supervisor({
   configuration,
-  // Pi's environment is built from an allowlist of this one that leaves the
-  // supervisor token out. Whether the agent could still read the token from
-  // this process depends on the user it runs as; src/pi/pi-environment.ts
-  // says exactly what is protected.
+  // Pi's environment is built from an allowlist of this one. The token is
+  // not in it anyway: it was read from a file. Whether the agent could still
+  // read it from this process's memory depends on the user it runs as;
+  // src/pi/pi-environment.ts says exactly what is protected.
   sourceEnvironment: process.env,
   agentProcessLauncher,
   logger,

@@ -56,6 +56,14 @@ export function createDaytonaSdkApi(apiKey: string): DaytonaApi {
         );
         return { exitCode: response.exitCode, output: response.result };
       }),
+    uploadFile: (sandboxId, path, content, timeoutInSeconds) =>
+      translateFailures(async () =>
+        (await getSandbox(sandboxId)).fs.uploadFile(content, path, timeoutInSeconds),
+      ),
+    setFilePermissions: (sandboxId, path, permissions) =>
+      translateFailures(async () =>
+        (await getSandbox(sandboxId)).fs.setFilePermissions(path, permissions),
+      ),
     createSignedPreviewUrl: (sandboxId, port, expiresInSeconds) =>
       translateFailures(async () => {
         const signed = await (await getSandbox(sandboxId)).getSignedPreviewUrl(

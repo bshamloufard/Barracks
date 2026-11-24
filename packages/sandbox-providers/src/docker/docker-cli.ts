@@ -15,8 +15,8 @@ import { execFile } from "node:child_process";
 export type DockerCommandOptions = {
   /** Variables added to the CLI's environment, e.g. for `--env NAME` to read. */
   extraEnvironment?: Readonly<Record<string, string>>;
-  /** Written to the command's standard input. */
-  standardInput?: string;
+  /** Written to the command's standard input, such as a tar archive for `docker cp -`. */
+  standardInput?: string | Buffer;
   timeoutInMilliseconds: number;
 };
 

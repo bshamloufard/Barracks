@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -42,8 +42,15 @@ function createProvider(supervisorCommand: [string, ...string[]]): LocalProcessS
   );
 }
 
-async function createSandbox(supervisorEnvironment: Record<string, string> = {}): Promise<string> {
-  const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+async function createSandbox(
+  supervisorEnvironment: Record<string, string> = {},
+  supervisorSecrets: Record<string, string> = {},
+): Promise<string> {
+  const { sandboxId } = await provider.create({
+    threadId: "thread-1",
+    supervisorEnvironment,
+    supervisorSecrets,
+  });
   createdSandboxIds.push(sandboxId);
   return sandboxId;
 }
@@ -64,10 +71,7 @@ async function readLaunch(sandboxId: string): Promise<StandInLaunch> {
 
 describe("the local-process sandbox provider", () => {
   it("runs the supervisor in the sandbox's own workspace, with the requested environment, the sandbox's directories and only the host's basics", async () => {
-    const sandboxId = await createSandbox({
-      BARRACK_THREAD_ID: "thread-1",
-      BARRACK_SUPERVISOR_TOKEN: "secret",
-    });
+    const sandboxId = await createSandbox({ BARRACK_THREAD_ID: "thread-1" });
 
     const launch = await readLaunch(sandboxId);
 
@@ -76,12 +80,32 @@ describe("the local-process sandbox provider", () => {
     expect(launch.environment).toMatchObject({
       HOME: "/home/developer",
       BARRACK_THREAD_ID: "thread-1",
-      BARRACK_SUPERVISOR_TOKEN: "secret",
       BARRACK_WORKSPACE_DIRECTORY: workspaceDirectory,
       BARRACK_STATE_DIRECTORY: path.join(path.dirname(workspaceDirectory), "state"),
       BARRACK_SUPERVISOR_STATE_DIRECTORY: path.join(path.dirname(workspaceDirectory), "supervisor"),
     });
     expect(launch.environment).not.toHaveProperty("DATABASE_PASSWORD");
+  });
+
+  it("hands over secrets as files only this user may read, never in the supervisor's environment or the sandbox's record", async () => {
+    const sandboxId = await createSandbox({}, { BARRACK_SUPERVISOR_TOKEN: "secret" });
+    const sandboxDirectory = path.dirname(workspaceOf(sandboxId));
+    const secretsDirectory = path.join(sandboxDirectory, "secrets");
+
+    const launch = await readLaunch(sandboxId);
+    const record = await readFile(path.join(sandboxDirectory, "sandbox-record.json"), "utf8");
+
+    const { BARRACK_SUPERVISOR_SECRETS_DIRECTORY: secretsDirectoryGiven } = launch.environment;
+    expect(secretsDirectoryGiven).toBe(secretsDirectory);
+    expect(JSON.stringify(launch.environment)).not.toContain('secret"');
+    expect(record).not.toContain('secret"');
+    expect(await readFile(path.join(secretsDirectory, "BARRACK_SUPERVISOR_TOKEN"), "utf8")).toBe(
+      "secret",
+    );
+    expect((await stat(secretsDirectory)).mode & 0o777).toBe(0o700);
+    expect((await stat(path.join(secretsDirectory, "BARRACK_SUPERVISOR_TOKEN"))).mode & 0o777).toBe(
+      0o600,
+    );
   });
 
   it("tells the supervisor, by name, that its agent shares its user, since there is no other", async () => {
@@ -109,6 +133,7 @@ describe("the local-process sandbox provider", () => {
     const { sandboxId: second } = await provider.create({
       threadId: "thread-2",
       supervisorEnvironment: {},
+      supervisorSecrets: {},
     });
     createdSandboxIds.push(second);
 
@@ -129,7 +154,11 @@ describe("the local-process sandbox provider", () => {
   it("refuses a sandbox whose supervisor cannot be started, and leaves nothing behind", async () => {
     provider = createProvider(["/no/such/supervisor"]);
 
-    const creation = provider.create({ threadId: "thread-1", supervisorEnvironment: {} });
+    const creation = provider.create({
+      threadId: "thread-1",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     expect(await readdir(sandboxesDirectory)).toEqual([]);

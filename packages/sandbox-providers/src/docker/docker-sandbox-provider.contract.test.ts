@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   describeWhyDockerTestsCannotRun,
@@ -7,7 +8,7 @@ import {
 import { describeSandboxProviderContract } from "../test-support/sandbox-provider-contract.js";
 import { SupervisorConnectionRecorder } from "../test-support/supervisor-connection-recorder.js";
 import { createDockerCommandRunner } from "./docker-cli.js";
-import { hostAlias } from "./docker-run-arguments.js";
+import { hostAlias } from "./docker-create-arguments.js";
 import { DockerSandboxProvider } from "./docker-sandbox-provider.js";
 
 /**
@@ -20,6 +21,24 @@ const supervisorConnectionTimeoutInMilliseconds = 30_000;
 const docker = createDockerCommandRunner("docker");
 const dockerCommandOptions = { timeoutInMilliseconds: 30_000 };
 const asAgent = ["--user", "barrack-agent"];
+
+/** `docker exec` as the agent's user, reporting the exit code rather than throwing on it. */
+function runAsAgentThroughDocker(
+  sandboxId: string,
+  shellCommand: string,
+): Promise<{ exitCode: number; output: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      "docker",
+      ["exec", ...asAgent, sandboxId, "sh", "-c", shellCommand],
+      { timeout: 30_000, encoding: "utf8" },
+      (error, standardOutput, standardError) => {
+        const exitCode = error === null ? 0 : typeof error.code === "number" ? error.code : -1;
+        resolve({ exitCode, output: `${standardOutput}${standardError}` });
+      },
+    );
+  });
+}
 
 describeSandboxProviderContract({
   providerName: "Docker",
@@ -44,7 +63,6 @@ describeSandboxProviderContract({
       supervisorEnvironmentFor: (threadId) => ({
         BARRACK_CONTROL_PLANE_URL: `ws://${hostAlias}:${recorder.port}`,
         BARRACK_THREAD_ID: threadId,
-        BARRACK_SUPERVISOR_TOKEN: randomBytes(32).toString("hex"),
         BARRACK_AGENT_HARNESS: "fake",
       }),
       waitForSupervisorLaunches: (threadId, launchCount) =>
@@ -63,6 +81,23 @@ describeSandboxProviderContract({
       },
       readFile: (sandboxId, path) =>
         docker(["exec", ...asAgent, sandboxId, "cat", path], dockerCommandOptions),
+      readSecretAsSupervisor: (sandboxId, secretName) =>
+        docker(
+          [
+            "exec",
+            ...["--user", "barrack-supervisor"],
+            sandboxId,
+            "sh",
+            "-c",
+            'cat "$BARRACK_SUPERVISOR_SECRETS_DIRECTORY/$1"',
+            "sh",
+            secretName,
+          ],
+          dockerCommandOptions,
+        ),
+      describeSandboxAsProviderReportsIt: (sandboxId) =>
+        docker(["container", "inspect", sandboxId], dockerCommandOptions),
+      agentCommands: { run: runAsAgentThroughDocker },
       dispose: () => recorder.close(),
     };
   },

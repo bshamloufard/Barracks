@@ -8,10 +8,8 @@ import { z } from "zod";
  * sandboxes an earlier one made, and whether their supervisors still run:
  *
  * - `sandbox-record.json`: the thread and the supervisor's environment, so
- *   that the supervisor can be started again with it. The environment holds
- *   the supervisor's token; the file is readable by its owner only, though
- *   on this provider the agent runs as that same user and can read it
- *   anyway (see the provider's own comment).
+ *   that the supervisor can be started again with it. Its secrets are not
+ *   here but in `secrets/`, a file each, which the supervisor reads.
  * - `supervisor.pid`: the process identifier of the running supervisor,
  *   written by the shell that launches it, before the supervisor runs (see
  *   the provider's `launchScript`), so no supervisor ever runs unrecorded,

@@ -87,15 +87,19 @@ services:
       # other container by its ID: the rules naming a full ID allow that
       # call on ANY container whose full ID the control plane knows. It
       # cannot list containers, so those are the ones it created, and its
-      # own. (The `docker run` command itself starts and waits by ID.)
+      # own.
       #
       # Inspect a container named as a sandbox, or by its full ID.
       - -allowGET=(/v[0-9.]+)?/containers/(barrack-thread-[A-Za-z0-9_-]+|[0-9a-f]{64})/json
-      # Create a container; start, stop and wait for one by its full ID
-      # (`docker run --detach` waits for the container's exit). Pulling is
-      # not allowed, so the sandbox image must already be on this machine.
+      # Create a container; start and stop one by its full ID.
+      # Pulling is not allowed, so the sandbox image must already be on this
+      # machine.
       - -allowPOST=(/v[0-9.]+)?/containers/create
-      - -allowPOST=(/v[0-9.]+)?/containers/[0-9a-f]{64}/(start|stop|wait)
+      - -allowPOST=(/v[0-9.]+)?/containers/[0-9a-f]{64}/(start|stop)
+      # Put the supervisor's secrets into a container by its full ID, before
+      # it starts (`docker cp -`, which looks at the destination first).
+      - -allowHEAD=(/v[0-9.]+)?/containers/[0-9a-f]{64}/archive
+      - -allowPUT=(/v[0-9.]+)?/containers/[0-9a-f]{64}/archive
       # Remove a container by its full ID.
       - -allowDELETE=(/v[0-9.]+)?/containers/[0-9a-f]{64}
     # Root in this container only to open the socket, which belongs to root
@@ -164,7 +168,7 @@ networks:
   docker-api:
     internal: true
   sandboxes:
-    # A fixed name, because the control plane passes it to `docker run`.
+    # A fixed name, because the control plane passes it to `docker container create`.
     name: barrack-sandboxes
     driver_opts:
       # A fixed name for the bridge interface too, so that a host firewall

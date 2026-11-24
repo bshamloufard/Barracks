@@ -18,23 +18,44 @@ export type SupervisorEnvironmentSettings = {
 };
 
 /**
- * Everything a new thread's supervisor is told, as the environment variables
- * its configuration reads. The result holds the thread's token, so it goes
- * to the sandbox provider and nowhere else.
+ * Everything a new thread's supervisor is told, in the two forms a sandbox
+ * provider takes: plain settings, as the environment variables the
+ * supervisor's configuration reads, which every process in the sandbox can
+ * see; and secrets, which the provider hands the supervisor's user alone.
+ * The only secret is the thread's token, so the result goes to the sandbox
+ * provider and nowhere else.
  */
 export function buildSupervisorEnvironment(
   settings: SupervisorEnvironmentSettings,
   threadId: string,
   supervisorToken: string,
-): Record<string, string> {
+): {
+  supervisorEnvironment: Record<string, string>;
+  supervisorSecrets: Record<string, string>;
+} {
   const threadVariables = {
     BARRACK_CONTROL_PLANE_URL: settings.controlPlaneUrlForSandboxes,
     BARRACK_THREAD_ID: threadId,
-    BARRACK_SUPERVISOR_TOKEN: supervisorToken,
   };
+  const supervisorSecrets = buildSupervisorSecrets(supervisorToken);
   const { agent } = settings;
   if (agent.harness === "fake") {
-    return { ...threadVariables, BARRACK_AGENT_HARNESS: "fake" };
+    return {
+      supervisorEnvironment: { ...threadVariables, BARRACK_AGENT_HARNESS: "fake" },
+      supervisorSecrets,
+    };
   }
-  return { ...settings.piSettings, ...threadVariables, BARRACK_AGENT_HARNESS: "pi" };
+  return {
+    supervisorEnvironment: {
+      ...settings.piSettings,
+      ...threadVariables,
+      BARRACK_AGENT_HARNESS: "pi",
+    },
+    supervisorSecrets,
+  };
+}
+
+/** The secrets a supervisor is handed, named as it reads them. */
+export function buildSupervisorSecrets(supervisorToken: string): Record<string, string> {
+  return { BARRACK_SUPERVISOR_TOKEN: supervisorToken };
 }

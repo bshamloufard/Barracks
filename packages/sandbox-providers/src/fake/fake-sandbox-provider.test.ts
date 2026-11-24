@@ -6,14 +6,23 @@ import {
 } from "../sandbox-provider-errors.js";
 import { FakeSandboxProvider } from "./fake-sandbox-provider.js";
 
-const environment = { BARRACK_THREAD_ID: "thread-1", BARRACK_SUPERVISOR_TOKEN: "secret" };
+const environment = { BARRACK_THREAD_ID: "thread-1" };
+const secrets = { BARRACK_SUPERVISOR_TOKEN: "secret" };
 
 describe("the fake sandbox provider", () => {
   it("numbers sandboxes in the order they are created", async () => {
     const provider = new FakeSandboxProvider();
 
-    const first = await provider.create({ threadId: "thread-1", supervisorEnvironment: {} });
-    const second = await provider.create({ threadId: "thread-2", supervisorEnvironment: {} });
+    const first = await provider.create({
+      threadId: "thread-1",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
+    const second = await provider.create({
+      threadId: "thread-2",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
 
     expect([first.sandboxId, second.sandboxId]).toEqual(["fake-sandbox-1", "fake-sandbox-2"]);
   });
@@ -24,6 +33,7 @@ describe("the fake sandbox provider", () => {
     const { sandboxId } = await provider.create({
       threadId: "thread-1",
       supervisorEnvironment: environment,
+      supervisorSecrets: secrets,
     });
     await provider.stop(sandboxId);
     await provider.getStatus(sandboxId);
@@ -31,7 +41,11 @@ describe("the fake sandbox provider", () => {
     expect(provider.calls).toEqual([
       {
         operation: "create",
-        request: { threadId: "thread-1", supervisorEnvironment: environment },
+        request: {
+          threadId: "thread-1",
+          supervisorEnvironment: environment,
+          supervisorSecrets: secrets,
+        },
       },
       { operation: "stop", sandboxId },
       { operation: "getStatus", sandboxId },
@@ -46,6 +60,7 @@ describe("the fake sandbox provider", () => {
     const { sandboxId } = await provider.create({
       threadId: "thread-1",
       supervisorEnvironment: environment,
+      supervisorSecrets: secrets,
     });
     await provider.stop(sandboxId);
     await provider.start(sandboxId);
@@ -56,6 +71,7 @@ describe("the fake sandbox provider", () => {
         sandboxId,
         threadId: "thread-1",
         supervisorEnvironment: environment,
+        supervisorSecrets: secrets,
       }),
     );
     expect(stopSupervisor).toHaveBeenCalledTimes(1);
@@ -66,6 +82,7 @@ describe("the fake sandbox provider", () => {
     const { sandboxId } = await provider.create({
       threadId: "thread-1",
       supervisorEnvironment: {},
+      supervisorSecrets: {},
     });
     const outage = new SandboxProviderUnavailableError("stop", "the fake is down");
 
@@ -82,9 +99,9 @@ describe("the fake sandbox provider", () => {
     provider.failNextOperation(refusal, "create");
     await provider.getStatus("fake-sandbox-1");
 
-    await expect(provider.create({ threadId: "thread-1", supervisorEnvironment: {} })).rejects.toBe(
-      refusal,
-    );
+    await expect(
+      provider.create({ threadId: "thread-1", supervisorEnvironment: {}, supervisorSecrets: {} }),
+    ).rejects.toBe(refusal);
   });
 
   it("lets a test mark a sandbox failed, stopped or missing from outside", async () => {
@@ -95,6 +112,7 @@ describe("the fake sandbox provider", () => {
     const { sandboxId } = await provider.create({
       threadId: "thread-1",
       supervisorEnvironment: {},
+      supervisorSecrets: {},
     });
 
     await provider.markFailed(sandboxId, "the supervisor crashed");
@@ -116,6 +134,7 @@ describe("the fake sandbox provider", () => {
     const { sandboxId } = await provider.create({
       threadId: "thread-1",
       supervisorEnvironment: {},
+      supervisorSecrets: {},
     });
 
     const address = await provider.getServiceAddress({

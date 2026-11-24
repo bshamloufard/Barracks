@@ -2,11 +2,13 @@ import {
   describeServiceAddressLookup,
   validateCreationRequest,
   validateServiceAddressRequest,
+  validateStartOptions,
 } from "../request-validation.js";
 import type {
   CreatedSandbox,
   SandboxCreationRequest,
   SandboxProvider,
+  SandboxStartOptions,
   SandboxStatus,
   ServiceAddress,
   ServiceAddressRequest,
@@ -33,13 +35,16 @@ export type FakeSandboxOperation = keyof SandboxProvider;
 export type FakeSandboxProviderCall =
   | { operation: "create"; request: SandboxCreationRequest }
   | { operation: "getServiceAddress"; request: ServiceAddressRequest }
-  | { operation: "start" | "stop" | "destroy" | "getStatus"; sandboxId: string };
+  | { operation: "start"; sandboxId: string; options: SandboxStartOptions | undefined }
+  | { operation: "stop" | "destroy" | "getStatus"; sandboxId: string };
 
 /** What a supervisor launcher is told about the sandbox it runs in. */
 export type FakeSandboxLaunch = {
   sandboxId: string;
   threadId: string;
   supervisorEnvironment: Readonly<Record<string, string>>;
+  /** The secrets the supervisor finds, as given at creation and replaced by any start since. */
+  supervisorSecrets: Readonly<Record<string, string>>;
   /** The sandbox's disk: kept across stop and start, gone on destroy. */
   files: Map<string, string>;
 };
@@ -110,6 +115,7 @@ export class FakeSandboxProvider implements SandboxProvider {
       sandboxId: `fake-sandbox-${this.#world.createdCount}`,
       threadId: request.threadId,
       supervisorEnvironment: { ...request.supervisorEnvironment },
+      supervisorSecrets: { ...request.supervisorSecrets },
       files: new Map(),
       status: { state: "starting" },
       launchedSupervisor: undefined,
@@ -119,10 +125,13 @@ export class FakeSandboxProvider implements SandboxProvider {
     return { sandboxId: sandbox.sandboxId };
   }
 
-  async start(sandboxId: string): Promise<void> {
-    this.calls.push({ operation: "start", sandboxId });
+  async start(sandboxId: string, options?: SandboxStartOptions): Promise<void> {
+    this.calls.push({ operation: "start", sandboxId, options });
     await this.#beforeOperation("start");
-    const sandbox = this.#require(`start sandbox "${sandboxId}"`, sandboxId);
+    const attemptedOperation = `start sandbox "${sandboxId}"`;
+    validateStartOptions(options, attemptedOperation);
+    const sandbox = this.#require(attemptedOperation, sandboxId);
+    sandbox.supervisorSecrets = { ...sandbox.supervisorSecrets, ...options?.replacementSecrets };
     if (sandbox.status.state === "running") {
       return;
     }

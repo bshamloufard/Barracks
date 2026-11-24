@@ -130,9 +130,10 @@ export class SandboxOperations {
    * that control plane minted, so it mints another and adds its digest to
    * those the thread accepts before asking for a sandbox, so that a
    * supervisor made with it can connect at once. A sandbox that turns up
-   * already made holds the token of whichever attempt made it (this one's,
-   * if a request that seemed to fail went through, or an earlier one's),
-   * and every one of those is still accepted.
+   * already made is handed this attempt's token before it is started, since
+   * the attempt that made it may have been cut short before handing its own
+   * over; a supervisor already running keeps the one it read, and every
+   * token minted for the creation is still accepted.
    */
   async #create(
     handedOver: ThreadRecord,
@@ -212,7 +213,7 @@ export class SandboxOperations {
     lease: Lease,
     logger: Logger,
   ): Promise<SandboxRequestOutcome> {
-    const supervisorEnvironment = buildSupervisorEnvironment(
+    const { supervisorEnvironment, supervisorSecrets } = buildSupervisorEnvironment(
       this.#options.supervisorEnvironment,
       threadId,
       supervisorToken,
@@ -224,6 +225,7 @@ export class SandboxOperations {
         const { sandboxId } = await this.#options.sandboxProvider.create({
           threadId,
           supervisorEnvironment,
+          supervisorSecrets,
         });
         return { sandboxId, wasMadeEarlier: false };
       });
@@ -237,10 +239,13 @@ export class SandboxOperations {
       const sandboxId = error.existingSandboxId;
       logger.warn(
         { sandboxId },
-        "An earlier attempt created the thread's sandbox; making sure it runs",
+        "An earlier attempt created the thread's sandbox; making sure it runs, with this attempt's token",
       );
+      // The attempt that made it may have been cut short before it handed
+      // its token over, so this attempt's is handed over again; the thread
+      // accepts both.
       await this.#callProvider("start the sandbox", lease, logger, () =>
-        this.#options.sandboxProvider.start(sandboxId),
+        this.#options.sandboxProvider.start(sandboxId, { replacementSecrets: supervisorSecrets }),
       );
       return { sandboxId, wasMadeEarlier: true };
     }

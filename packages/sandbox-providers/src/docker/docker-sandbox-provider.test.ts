@@ -5,7 +5,7 @@ import {
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
 import { DockerCommandFailure, type DockerCommandOptions } from "./docker-cli.js";
-import type { DockerProviderSettings } from "./docker-run-arguments.js";
+import type { DockerProviderSettings } from "./docker-create-arguments.js";
 import { DockerSandboxProvider } from "./docker-sandbox-provider.js";
 
 /**
@@ -52,13 +52,13 @@ function createScriptedDocker() {
       }
       throw new DockerCommandFailure("exited-with-error", `Error: No such object: ${target}`);
     }
-    if (command === "run" && commandArguments.includes("barrack-thread-taken")) {
+    if (subcommand === "create" && commandArguments.includes("barrack-thread-taken")) {
       throw new DockerCommandFailure(
         "exited-with-error",
         `Conflict. The container name "/barrack-thread-taken" is already in use by container "${barrackContainerId}".`,
       );
     }
-    if (command === "run") {
+    if (subcommand === "create") {
       return `${"d".repeat(64)}\n`;
     }
     if (command === "container" && subcommand === "port") {
@@ -85,7 +85,10 @@ function createDockerWhoseRunLeavesAContainer({ removalFails }: { removalFails: 
   const docker = async (commandArguments: readonly string[]) => {
     commands.push(commandArguments);
     const [command, subcommand] = commandArguments;
-    if (command === "run") {
+    if (subcommand === "create") {
+      return `${leftoverId}\n`;
+    }
+    if (subcommand === "start") {
       throw new DockerCommandFailure("exited-with-error", "Error: Minimum memory limit allowed");
     }
     if (command === "container" && subcommand === "inspect") {
@@ -100,17 +103,50 @@ function createDockerWhoseRunLeavesAContainer({ removalFails }: { removalFails: 
 }
 
 describe("the Docker sandbox provider", () => {
-  it("passes the supervisor's environment to docker through the CLI's environment only", async () => {
+  it("creates the container, puts the secrets in it through standard input, and only then starts it", async () => {
     const { docker, commands } = createScriptedDocker();
     const provider = new DockerSandboxProvider(settings, docker);
-    const supervisorEnvironment = { BARRACK_SUPERVISOR_TOKEN: "secret-value" };
 
-    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    const { sandboxId } = await provider.create({
+      threadId: "thread-1",
+      supervisorEnvironment: { BARRACK_THREAD_ID: "thread-1" },
+      supervisorSecrets: { BARRACK_SUPERVISOR_TOKEN: "secret-value" },
+    });
 
-    const run = commands.find(({ commandArguments }) => commandArguments[0] === "run");
+    const steps = commands.map(({ commandArguments }) => commandArguments.slice(0, 2).join(" "));
+    const create = commands.find(({ commandArguments }) => commandArguments[1] === "create");
+    const copy = commands.find(({ commandArguments }) => commandArguments[1] === "cp");
     expect(sandboxId).toBe("d".repeat(64));
-    expect(run?.options.extraEnvironment).toEqual(supervisorEnvironment);
-    expect(run?.commandArguments.join(" ")).not.toContain("secret-value");
+    expect(steps).toEqual(["container create", "container cp", "container start"]);
+    expect(create?.options.extraEnvironment).toEqual({
+      BARRACK_THREAD_ID: "thread-1",
+      BARRACK_SUPERVISOR_SECRETS_DIRECTORY: "/var/lib/barrack/secrets",
+    });
+    expect(copy?.commandArguments).toEqual([
+      "container",
+      "cp",
+      "-",
+      `${"d".repeat(64)}:/var/lib/barrack/secrets`,
+    ]);
+    expect(String(copy?.options.standardInput)).toContain("secret-value");
+    expect(JSON.stringify(commands.map(({ commandArguments }) => commandArguments))).not.toContain(
+      "secret-value",
+    );
+  });
+
+  it("replaces the secrets of an existing container before starting it, when asked", async () => {
+    const { docker, commands } = createScriptedDocker();
+    const provider = new DockerSandboxProvider(settings, docker);
+
+    await provider.start(barrackContainerId);
+    await provider.start(barrackContainerId, {
+      replacementSecrets: { BARRACK_SUPERVISOR_TOKEN: "newer" },
+    });
+
+    const steps = commands
+      .map(({ commandArguments }) => commandArguments[1])
+      .filter((step) => step !== "inspect");
+    expect(steps).toEqual(["start", "cp", "start"]);
   });
 
   it("refuses environment variable names that would reconfigure the docker command", async () => {
@@ -119,6 +155,7 @@ describe("the Docker sandbox provider", () => {
     const creation = provider.create({
       threadId: "thread-1",
       supervisorEnvironment: { DOCKER_HOST: "tcp://elsewhere:2375" },
+      supervisorSecrets: {},
     });
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
@@ -127,17 +164,25 @@ describe("the Docker sandbox provider", () => {
   it("reports the thread's existing sandbox when its container name is taken", async () => {
     const provider = new DockerSandboxProvider(settings, createScriptedDocker().docker);
 
-    const creation = provider.create({ threadId: "taken", supervisorEnvironment: {} });
+    const creation = provider.create({
+      threadId: "taken",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
 
     await expect(creation).rejects.toThrow(SandboxAlreadyExistsError);
     await expect(creation).rejects.toMatchObject({ existingSandboxId: barrackContainerId });
   });
 
-  it("removes the container a failed run left behind and reports the run's failure", async () => {
+  it("removes the container a creation that could not start left behind, and reports why", async () => {
     const { docker, commands } = createDockerWhoseRunLeavesAContainer({ removalFails: false });
     const provider = new DockerSandboxProvider(settings, docker);
 
-    const creation = provider.create({ threadId: "half-created", supervisorEnvironment: {} });
+    const creation = provider.create({
+      threadId: "half-created",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     await expect(creation).rejects.toThrow(/Minimum memory limit/);
@@ -148,7 +193,11 @@ describe("the Docker sandbox provider", () => {
     const { docker } = createDockerWhoseRunLeavesAContainer({ removalFails: true });
     const provider = new DockerSandboxProvider(settings, docker);
 
-    const creation = provider.create({ threadId: "half-created", supervisorEnvironment: {} });
+    const creation = provider.create({
+      threadId: "half-created",
+      supervisorEnvironment: {},
+      supervisorSecrets: {},
+    });
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     await expect(creation).rejects.toThrow(

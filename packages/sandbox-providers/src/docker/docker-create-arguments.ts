@@ -1,4 +1,8 @@
 import type { SandboxCreationRequest } from "../sandbox-provider.js";
+import {
+  sandboxImageSecretsDirectory,
+  supervisorSecretsDirectoryVariable,
+} from "../supervisor-secrets.js";
 import { sandboxLabel, threadIdLabel } from "./docker-container.js";
 
 export type DockerProviderSettings = {
@@ -43,16 +47,27 @@ export function containerNameFor(threadId: string): string {
 }
 
 /**
- * The arguments of the `docker run` that creates a thread's sandbox. The
- * supervisor's environment is passed as bare `--env NAME` flags, which make
- * the CLI copy each value from its own environment, so no value ever appears
- * in the process list.
+ * The supervisor's plain settings, and where its secrets are. The secrets
+ * themselves are never in a container's environment (see `create`).
  */
-export function buildRunArguments(
+export function buildContainerEnvironment(request: SandboxCreationRequest): Record<string, string> {
+  return {
+    ...request.supervisorEnvironment,
+    [supervisorSecretsDirectoryVariable]: sandboxImageSecretsDirectory,
+  };
+}
+
+/**
+ * The arguments of the `docker container create` that makes a thread's
+ * sandbox. The environment (`buildContainerEnvironment`) is passed as bare
+ * `--env NAME` flags, which make the CLI copy each value from its own
+ * environment, so no value appears in the process list either.
+ */
+export function buildCreateArguments(
   settings: DockerProviderSettings,
   request: SandboxCreationRequest,
 ): string[] {
-  const environmentArguments = Object.keys(request.supervisorEnvironment)
+  const environmentArguments = Object.keys(buildContainerEnvironment(request))
     .sort()
     .flatMap((name) => ["--env", name]);
   const networkArguments = settings.network === undefined ? [] : ["--network", settings.network];
@@ -61,8 +76,8 @@ export function buildRunArguments(
     `127.0.0.1::${port}`,
   ]);
   return [
-    "run",
-    "--detach",
+    "container",
+    "create",
     "--name",
     containerNameFor(request.threadId),
     "--label",

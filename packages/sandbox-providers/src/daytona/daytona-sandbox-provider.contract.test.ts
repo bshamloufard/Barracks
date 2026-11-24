@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { sandboxImageSecretsDirectory } from "../supervisor-secrets.js";
 import { describeSandboxProviderContract } from "../test-support/sandbox-provider-contract.js";
 import type { DaytonaApi } from "./daytona-api.js";
 import { DaytonaSandboxProvider, sandboxNameFor } from "./daytona-sandbox-provider.js";
@@ -93,6 +94,15 @@ async function runInSandbox(daytona: DaytonaApi, sandboxId: string, command: str
   return result.output;
 }
 
+/**
+ * Daytona's command interface runs a command as the image's user (the
+ * supervisor's) unless told otherwise, and the secrets directory is the
+ * supervisor's alone; root could read it too.
+ */
+function readSecretCommand(secretName: string): string {
+  return `cat ${sandboxImageSecretsDirectory}/${secretName}`;
+}
+
 describeSandboxProviderContract({
   providerName: "Daytona",
   unavailableReason: describeWhyDaytonaCannotBeTested(),
@@ -107,7 +117,6 @@ describeSandboxProviderContract({
       supervisorEnvironmentFor: (threadId) => ({
         BARRACK_CONTROL_PLANE_URL: "ws://127.0.0.1:9",
         BARRACK_THREAD_ID: threadId,
-        BARRACK_SUPERVISOR_TOKEN: randomBytes(32).toString("hex"),
         BARRACK_AGENT_HARNESS: "fake",
       }),
       async waitForSupervisorLaunches(threadId) {
@@ -118,6 +127,23 @@ describeSandboxProviderContract({
         await runInSandbox(daytona, sandboxId, asAgent(`echo ${encoded} | base64 -d > ${path}`));
       },
       readFile: (sandboxId, path) => runInSandbox(daytona, sandboxId, asAgent(`cat ${path}`)),
+      readSecretAsSupervisor: (sandboxId, secretName) =>
+        runInSandbox(daytona, sandboxId, readSecretCommand(secretName)),
+      // Daytona's own record of the sandbox, environment and labels included.
+      async describeSandboxAsProviderReportsIt(sandboxId) {
+        return JSON.stringify(await daytona.findSandbox(sandboxId));
+      },
+      agentCommands: {
+        run: async (sandboxId, shellCommand) => {
+          const result = await daytona.executeCommand(
+            sandboxId,
+            asAgent(shellCommand),
+            undefined,
+            commandTimeoutInSeconds,
+          );
+          return { exitCode: result.exitCode, output: result.output };
+        },
+      },
       async dispose() {},
     };
   },

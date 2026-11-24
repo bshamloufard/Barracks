@@ -78,40 +78,32 @@ export function findSandboxIdOf(threadId: string): string {
 }
 
 /**
- * The supervisor token the control plane gave a sandbox, read from its
- * container's configuration. The control plane never reveals a token, so a
- * test that must look for one gets it the way only someone in charge of the
- * Docker daemon can, which on this machine is as good as root anyway.
+ * The supervisor token the control plane gave a sandbox, read from the file
+ * the provider put it in, as the supervisor's user. The control plane never
+ * reveals a token, so a test that must look for one gets it the way only
+ * someone in charge of the Docker daemon can, which on this machine is as
+ * good as root anyway.
  */
 export function readSupervisorTokenOf(sandboxId: string): string {
-  const variables: unknown = JSON.parse(
-    execFileSync(
-      "docker",
-      ["container", "inspect", "--format", "{{json .Config.Env}}", sandboxId],
-      {
-        encoding: "utf8",
-        timeout: 30_000,
-      },
-    ),
+  const token = execFileSync(
+    "docker",
+    [
+      "exec",
+      ...["--user", "barrack-supervisor"],
+      sandboxId,
+      ...["sh", "-c", 'cat "$BARRACK_SUPERVISOR_SECRETS_DIRECTORY/BARRACK_SUPERVISOR_TOKEN"'],
+    ],
+    { encoding: "utf8", timeout: 30_000 },
   );
-  const prefix = "BARRACK_SUPERVISOR_TOKEN=";
-  const variable = Array.isArray(variables)
-    ? variables.find((entry) => typeof entry === "string" && entry.startsWith(prefix))
-    : undefined;
-  if (typeof variable !== "string" || variable.length === prefix.length) {
-    throw new Error(`Sandbox ${sandboxId} has no supervisor token in its configuration.`);
+  if (token.length === 0) {
+    throw new Error(`Sandbox ${sandboxId} has no supervisor token.`);
   }
-  return variable.slice(prefix.length);
+  return token;
 }
 
 /**
  * Writes a file into a sandbox as the agent's user, who owns the agent's
  * directories; `docker exec` would otherwise run as the supervisor's.
- *
- * Like every process `docker exec` starts, this one has the container's
- * environment, supervisor token included, which the agent could read while
- * it runs. That is acceptable for a test's set-up, which ends before the
- * agent runs anything; see sandbox-image/README.md.
  */
 export function writeFileInSandboxAsAgent(
   sandboxId: string,

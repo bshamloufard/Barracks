@@ -4,9 +4,12 @@ import { threadIdSchema } from "@barrack/protocol";
 import { z } from "zod";
 
 /**
- * The supervisor is configured entirely through environment variables, so a
- * sandbox provider only has to set variables to start one. Everything is
- * checked once at startup, and every problem is reported together.
+ * The supervisor is configured through environment variables, except for
+ * its secrets, which the sandbox provider hands over as files in the
+ * directory `BARRACK_SUPERVISOR_SECRETS_DIRECTORY` names
+ * (`supervisor-secrets.ts`): a sandbox's environment reaches every process
+ * started in it, the agent's included. Everything is checked once at
+ * startup, and every problem is reported together.
  */
 
 const absolutePathSchema = z
@@ -19,7 +22,7 @@ const sharedVariablesSchema = z.object({
     .url({ protocol: /^wss?$/, error: "must be a ws:// or wss:// URL" })
     .transform((url) => url.replace(/\/+$/, "")),
   BARRACK_THREAD_ID: threadIdSchema,
-  BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
+  BARRACK_SUPERVISOR_SECRETS_DIRECTORY: absolutePathSchema,
   BARRACK_SUPERVISOR_STATE_DIRECTORY: absolutePathSchema,
   BARRACK_WORKSPACE_DIRECTORY: absolutePathSchema.optional(),
   BARRACK_GIT_HELPER_SOCKET: absolutePathSchema.optional(),
@@ -59,6 +62,13 @@ const fakeVariablesSchema = sharedVariablesSchema.extend({
 });
 
 type Variables = z.infer<typeof fakeVariablesSchema> | z.infer<typeof piVariablesSchema>;
+
+/**
+ * An older provider, or an operator, passing the token the old way would put
+ * it back where the agent can read it, so the supervisor refuses to start.
+ */
+const tokenInEnvironmentProblem =
+  "BARRACK_SUPERVISOR_TOKEN: must not be set: an environment variable reaches every process started in the sandbox, the agent's included. The sandbox provider hands the token over as a file in BARRACK_SUPERVISOR_SECRETS_DIRECTORY instead";
 
 export type LogLevel = z.infer<typeof sharedVariablesSchema>["BARRACK_LOG_LEVEL"];
 
@@ -130,18 +140,31 @@ export type SupervisorConfiguration = SharedConfiguration & {
   agentHarness: AgentHarnessConfiguration;
 };
 
+/**
+ * What the environment configures: everything but the secrets, and where
+ * they are. `readSupervisorSecrets` reads them.
+ */
+export type ConfigurationFromEnvironment = Omit<SupervisorConfiguration, "supervisorToken"> & {
+  supervisorSecretsDirectory: string;
+};
+
 export type ConfigurationResult =
-  | { ok: true; configuration: SupervisorConfiguration }
+  | { ok: true; configuration: ConfigurationFromEnvironment }
   | { ok: false; problems: string[] };
 
 export function readConfiguration(environment: NodeJS.ProcessEnv): ConfigurationResult {
-  const { BARRACK_AGENT_HARNESS: harnessName } = environment;
+  const { BARRACK_AGENT_HARNESS: harnessName, BARRACK_SUPERVISOR_TOKEN: tokenInEnvironment } =
+    environment;
   // Validating against the schema of the chosen harness alone keeps the error
   // list to the variables that harness actually needs.
   const schema = harnessName === "fake" ? fakeVariablesSchema : piVariablesSchema;
   const validation = schema.safeParse(environment);
-  if (!validation.success) {
-    return { ok: false, problems: describeProblems(validation.error, harnessName) };
+  const problems = [
+    ...(tokenInEnvironment === undefined ? [] : [tokenInEnvironmentProblem]),
+    ...(validation.success ? [] : describeProblems(validation.error, harnessName)),
+  ];
+  if (!validation.success || problems.length > 0) {
+    return { ok: false, problems };
   }
   const { BARRACK_DESKTOP_COMMAND: desktopCommand, DISPLAY: display } = validation.data;
   if (desktopCommand !== undefined && display === undefined) {
@@ -155,11 +178,11 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
   return { ok: true, configuration: toConfiguration(validation.data) };
 }
 
-function toConfiguration(variables: Variables): SupervisorConfiguration {
+function toConfiguration(variables: Variables): ConfigurationFromEnvironment {
   return {
     controlPlaneUrl: variables.BARRACK_CONTROL_PLANE_URL,
     threadId: variables.BARRACK_THREAD_ID,
-    supervisorToken: variables.BARRACK_SUPERVISOR_TOKEN,
+    supervisorSecretsDirectory: variables.BARRACK_SUPERVISOR_SECRETS_DIRECTORY,
     supervisorStateDirectory: variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
     workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
     gitCredentialSocketPath:

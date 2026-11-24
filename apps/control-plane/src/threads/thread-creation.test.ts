@@ -83,7 +83,7 @@ describe("creating a thread", () => {
     expect((await fetchThread(created.threadId)).sandbox).toEqual({ state: "running" });
   });
 
-  it("asks the provider once for a sandbox whose supervisor is told the thread, the control plane and a token of its own", async () => {
+  it("asks the provider once for a sandbox whose supervisor is told the thread and the control plane, and handed a token of its own as a secret", async () => {
     await start();
 
     const { threadId, supervisorToken } = await controlPlane.createThread();
@@ -99,9 +99,9 @@ describe("creating a thread", () => {
           supervisorEnvironment: {
             BARRACK_CONTROL_PLANE_URL: "ws://control-plane.test:8787",
             BARRACK_THREAD_ID: threadId,
-            BARRACK_SUPERVISOR_TOKEN: supervisorToken,
             BARRACK_AGENT_HARNESS: "fake",
           },
+          supervisorSecrets: { BARRACK_SUPERVISOR_TOKEN: supervisorToken },
         },
       },
     ]);
@@ -226,7 +226,7 @@ describe("a sandbox that cannot be created", () => {
     expect(controlPlane.sandboxProvider.sandboxIds()).toHaveLength(1);
   });
 
-  it("takes the sandbox an earlier, apparently failed, attempt created after all, and makes sure it runs", async () => {
+  it("takes the sandbox an earlier, apparently failed, attempt created after all, and starts it with this attempt's token", async () => {
     const sandboxProvider = new FakeSandboxProvider();
     vi.spyOn(sandboxProvider, "create")
       .mockRejectedValueOnce(
@@ -245,7 +245,9 @@ describe("a sandbox that cannot be created", () => {
       sandboxId: "sandbox-from-attempt-1",
       problem: undefined,
     });
-    expect(startSandbox).toHaveBeenCalledWith("sandbox-from-attempt-1");
+    expect(startSandbox).toHaveBeenCalledWith("sandbox-from-attempt-1", {
+      replacementSecrets: { BARRACK_SUPERVISOR_TOKEN: expect.any(String) },
+    });
   });
 
   it("is taken as the thread's when a creation whose outcome could not be recorded is taken over", async () => {

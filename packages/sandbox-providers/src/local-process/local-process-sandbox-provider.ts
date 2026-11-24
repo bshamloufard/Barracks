@@ -1,7 +1,7 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -10,11 +10,13 @@ import {
   describeServiceAddressLookup,
   validateCreationRequest,
   validateServiceAddressRequest,
+  validateStartOptions,
 } from "../request-validation.js";
 import type {
   CreatedSandbox,
   SandboxCreationRequest,
   SandboxProvider,
+  SandboxStartOptions,
   SandboxStatus,
   ServiceAddress,
   ServiceAddressRequest,
@@ -24,6 +26,7 @@ import {
   SandboxNotFoundError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
+import { supervisorSecretsDirectoryVariable } from "../supervisor-secrets.js";
 import {
   isLocalSandboxId,
   isProcessAlive,
@@ -158,9 +161,15 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
     }
   }
 
-  async start(sandboxId: string): Promise<void> {
+  async start(sandboxId: string, options?: SandboxStartOptions): Promise<void> {
     const attemptedOperation = `start sandbox "${sandboxId}"`;
+    validateStartOptions(options, attemptedOperation);
     const record = await this.#requireRecord(attemptedOperation, sandboxId);
+    try {
+      await writeSecrets(this.#directoryOf(sandboxId), options?.replacementSecrets ?? {});
+    } catch (error) {
+      throw new SandboxRefusedError(attemptedOperation, describeFailure(error));
+    }
     if ((await this.getStatus(sandboxId)).state === "running") {
       return;
     }
@@ -259,6 +268,7 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
     const directory = this.#directoryOf(record.sandboxId);
     try {
       await prepareDirectories(directory);
+      await writeSecrets(directory, request.supervisorSecrets);
       await writeSandboxRecord(directory, record);
       await this.#launchSupervisor(record);
     } catch (error) {
@@ -392,6 +402,7 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
       // already required declaring development use.
       BARRACK_AGENT_SHARES_SUPERVISOR_USER: "development-only",
       ...supervisorEnvironment,
+      [supervisorSecretsDirectoryVariable]: secretsDirectoryIn(sandboxDirectory),
     };
   }
 
@@ -419,6 +430,31 @@ function stateDirectoryIn(sandboxDirectory: string): string {
   return path.join(sandboxDirectory, "state");
 }
 
+/**
+ * The supervisor's secrets, one file each (`supervisor-secrets.ts`), in a
+ * directory only this user may enter. That keeps them out of the
+ * supervisor's environment, and from other users of the machine, but not
+ * from the agent, which runs as this same user.
+ */
+function secretsDirectoryIn(sandboxDirectory: string): string {
+  return path.join(sandboxDirectory, "secrets");
+}
+
+async function writeSecrets(
+  sandboxDirectory: string,
+  secrets: Readonly<Record<string, string>>,
+): Promise<void> {
+  const directory = secretsDirectoryIn(sandboxDirectory);
+  for (const [name, value] of Object.entries(secrets)) {
+    const filePath = path.join(directory, name);
+    // A file replaced is written beside it and renamed over it, so the
+    // supervisor never reads one half-written.
+    const temporaryPath = `${filePath}.${randomUUID()}`;
+    await writeFile(temporaryPath, value, { mode: 0o600, flag: "wx" });
+    await rename(temporaryPath, filePath);
+  }
+}
+
 /** What the supervisor keeps for itself across its own restarts; see the supervisor's README. */
 function supervisorStateDirectoryIn(sandboxDirectory: string): string {
   return path.join(sandboxDirectory, "supervisor");
@@ -435,6 +471,7 @@ async function prepareDirectories(sandboxDirectory: string): Promise<void> {
   await mkdir(workspaceDirectory, { recursive: true });
   await mkdir(stateDirectoryIn(sandboxDirectory), { recursive: true });
   await mkdir(supervisorStateDirectoryIn(sandboxDirectory), { recursive: true });
+  await mkdir(secretsDirectoryIn(sandboxDirectory), { mode: 0o700 });
   await promisify(execFile)("git", ["init", "--quiet"], { cwd: workspaceDirectory });
 }
 

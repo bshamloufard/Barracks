@@ -1,6 +1,6 @@
 export { createSandboxProvider } from "./create-sandbox-provider.js";
 export type { DaytonaProviderSettings } from "./daytona/daytona-sandbox-provider.js";
-export type { DockerProviderSettings } from "./docker/docker-run-arguments.js";
+export type { DockerProviderSettings } from "./docker/docker-create-arguments.js";
 export {
   type FakeSandboxLaunch,
   type FakeSandboxOperation,
@@ -24,6 +24,7 @@ export type {
   CreatedSandbox,
   SandboxCreationRequest,
   SandboxProvider,
+  SandboxStartOptions,
   SandboxState,
   SandboxStatus,
   ServiceAddress,

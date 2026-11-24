@@ -368,14 +368,14 @@ export class TestControlPlane {
     return fetch(`${this.httpBaseUrl}${path}`, { headers });
   }
 
-  /** The token in the environment the provider was last asked to give the thread's supervisor. */
+  /** The token the provider was last asked to give the thread's supervisor when creating its sandbox. */
   supervisorTokenGivenFor(threadId: string): string {
-    const environments = this.sandboxProvider.calls.flatMap((call) =>
+    const secrets = this.sandboxProvider.calls.flatMap((call) =>
       call.operation === "create" && call.request.threadId === threadId
-        ? [call.request.supervisorEnvironment]
+        ? [call.request.supervisorSecrets]
         : [],
     );
-    const { BARRACK_SUPERVISOR_TOKEN: token } = environments.at(-1) ?? {};
+    const { BARRACK_SUPERVISOR_TOKEN: token } = secrets.at(-1) ?? {};
     if (token === undefined) {
       throw new Error(`The provider was never given a supervisor token for ${threadId}.`);
     }

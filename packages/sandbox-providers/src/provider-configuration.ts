@@ -1,7 +1,7 @@
 import path from "node:path";
 import { z } from "zod";
 import type { DaytonaProviderSettings } from "./daytona/daytona-sandbox-provider.js";
-import type { DockerProviderSettings } from "./docker/docker-run-arguments.js";
+import type { DockerProviderSettings } from "./docker/docker-create-arguments.js";
 import type { LocalProcessProviderSettings } from "./local-process/local-process-sandbox-provider.js";
 
 /**

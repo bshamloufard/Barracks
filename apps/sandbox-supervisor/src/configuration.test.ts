@@ -5,7 +5,7 @@ import { readConfiguration } from "./configuration.js";
 const sharedVariables = {
   BARRACK_CONTROL_PLANE_URL: "ws://127.0.0.1:8787/",
   BARRACK_THREAD_ID: "thread-1",
-  BARRACK_SUPERVISOR_TOKEN: "secret-token-value",
+  BARRACK_SUPERVISOR_SECRETS_DIRECTORY: "/var/lib/barrack/secrets",
   BARRACK_SUPERVISOR_STATE_DIRECTORY: "/var/lib/barrack/supervisor",
 };
 
@@ -18,7 +18,7 @@ describe("readConfiguration", () => {
       configuration: {
         controlPlaneUrl: "ws://127.0.0.1:8787",
         threadId: "thread-1",
-        supervisorToken: "secret-token-value",
+        supervisorSecretsDirectory: "/var/lib/barrack/secrets",
         supervisorStateDirectory: "/var/lib/barrack/supervisor",
         workspaceDirectory: undefined,
         gitCredentialSocketPath: "/var/lib/barrack/supervisor/git-credential.sock",
@@ -158,11 +158,27 @@ describe("readConfiguration", () => {
 
   it("never repeats a variable's value in its problems", () => {
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: "x",
+      BARRACK_SUPERVISOR_TOKEN: "secret-token-value",
       BARRACK_CONTROL_PLANE_URL: "not a url",
     });
 
     expect(JSON.stringify(result)).not.toContain("not a url");
+    expect(JSON.stringify(result)).not.toContain("secret-token-value");
+  });
+
+  it("refuses a token in the environment, where every process in the sandbox would see it", () => {
+    const result = readConfiguration({
+      ...sharedVariables,
+      BARRACK_AGENT_HARNESS: "fake",
+      BARRACK_SUPERVISOR_TOKEN: "secret-token-value",
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(result.ok ? [] : result.problems).toEqual([
+      expect.stringMatching(
+        /^BARRACK_SUPERVISOR_TOKEN: must not be set: .* as a file in BARRACK_SUPERVISOR_SECRETS_DIRECTORY/,
+      ),
+    ]);
   });
 
   it("has no desktop unless the sandbox names a command that runs one, whatever DISPLAY says", () => {

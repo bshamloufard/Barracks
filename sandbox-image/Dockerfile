@@ -45,9 +45,9 @@ FROM ${NODE_IMAGE} AS node-runtime
 FROM ${BASE_IMAGE} AS sandbox-base
 
 # Two users, so that the agent cannot read the supervisor's secrets. The
-# supervisor's token lives only in its environment, which /proc shows to its
-# own user alone, and Linux lets a process signal or trace only processes of
-# its own user. The supervisor is a member of the agent's group, for the
+# supervisor's token is in a file only its user can read, and then in its
+# memory, which /proc shows to its own user alone; and Linux lets a process
+# signal or trace only processes of its own user. The supervisor is a member of the agent's group, for the
 # access to the agent's directories described below; the agent is in no group
 # but its own.
 RUN groupadd --gid 10001 barrack-supervisor \
@@ -158,12 +158,18 @@ RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 # The supervisor writes who holds the desktop's input to a file in
 # /run/barrack-desktop, which the agent's computer tool reads and the agent
 # cannot change.
+#
+# The sandbox provider puts the supervisor's secrets (its token) in
+# /var/lib/barrack/secrets, one file each, owned by the supervisor and mode
+# 0400, in the container's own layer, never in an image layer or the
+# environment; the directory is the supervisor's alone (0700).
 RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
       /workspace /var/lib/barrack/state \
       /var/lib/barrack/state/pi /var/lib/barrack/state/pi/agent /var/lib/barrack/state/pi/sessions \
  && chmod 0700 /home/barrack-agent \
  && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 \
       /run/barrack /var/log/barrack /var/lib/barrack/supervisor \
+ && install -d -o barrack-supervisor -g barrack-supervisor -m 0700 /var/lib/barrack/secrets \
  && install -d -o barrack-supervisor -g barrack-agent -m 0750 /run/barrack-git \
  && install -d -o barrack-supervisor -g barrack-supervisor -m 0755 /run/barrack-desktop \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /run/barrack/ensure-supervisor.lock \
@@ -180,6 +186,7 @@ COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ens
 ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_STATE_DIRECTORY=/var/lib/barrack/state \
     BARRACK_SUPERVISOR_STATE_DIRECTORY=/var/lib/barrack/supervisor \
+    BARRACK_SUPERVISOR_SECRETS_DIRECTORY=/var/lib/barrack/secrets \
     BARRACK_GIT_HELPER_SOCKET=/run/barrack-git/credential.sock \
     BARRACK_SUPERVISOR_USER=barrack-supervisor \
     BARRACK_AGENT_USER=barrack-agent \

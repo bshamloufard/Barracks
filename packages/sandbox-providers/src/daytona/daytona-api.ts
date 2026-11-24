@@ -24,6 +24,19 @@ export interface DaytonaApi {
     environment: Readonly<Record<string, string>> | undefined,
     timeoutInSeconds: number,
   ): Promise<DaytonaCommandResult>;
+  /** Writes `content` to `path` in the sandbox, replacing any file there. */
+  uploadFile(
+    sandboxId: string,
+    path: string,
+    content: Buffer,
+    timeoutInSeconds: number,
+  ): Promise<void>;
+  /** Sets a file's owner, group and mode (octal digits, such as "400"). */
+  setFilePermissions(
+    sandboxId: string,
+    path: string,
+    permissions: { owner: string; group: string; mode: string },
+  ): Promise<void>;
   createSignedPreviewUrl(
     sandboxId: string,
     port: number,

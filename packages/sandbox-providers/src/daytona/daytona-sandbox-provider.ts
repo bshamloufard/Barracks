@@ -3,11 +3,13 @@ import {
   describeServiceAddressLookup,
   validateCreationRequest,
   validateServiceAddressRequest,
+  validateStartOptions,
 } from "../request-validation.js";
 import type {
   CreatedSandbox,
   SandboxCreationRequest,
   SandboxProvider,
+  SandboxStartOptions,
   SandboxStatus,
   ServiceAddress,
   ServiceAddressRequest,
@@ -20,6 +22,11 @@ import {
   SandboxProviderUnavailableError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
+import {
+  sandboxImageSecretsDirectory,
+  sandboxImageSupervisorUser,
+  supervisorSecretsDirectoryVariable,
+} from "../supervisor-secrets.js";
 import type { DaytonaApi, DaytonaCreationParameters, DaytonaSandboxRecord } from "./daytona-api.js";
 import { isConflict, toSandboxProviderError } from "./daytona-failures.js";
 import { toSandboxStatus } from "./daytona-states.js";
@@ -63,6 +70,7 @@ const createTimeoutInSeconds = 300;
 const stopTimeoutInSeconds = 120;
 const deleteTimeoutInSeconds = 120;
 const launchSupervisorTimeoutInSeconds = 60;
+const uploadTimeoutInSeconds = 60;
 
 /**
  * Starts the supervisor unless it is already running; it is in the sandbox
@@ -114,7 +122,11 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       }
       throw toSandboxProviderError(failure, attemptedOperation);
     }
-    const launchFailure = await this.#tryToLaunchSupervisor(created, attemptedOperation);
+    const launchFailure = await this.#tryToLaunchSupervisor(
+      created,
+      request.supervisorSecrets,
+      attemptedOperation,
+    );
     if (launchFailure !== undefined) {
       // Auto-stop and auto-delete are off, so nothing else would ever remove
       // it: it would run, and be billed, with no supervisor, and a retry
@@ -129,8 +141,9 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     return { sandboxId: created.id };
   }
 
-  async start(sandboxId: string): Promise<void> {
+  async start(sandboxId: string, options?: SandboxStartOptions): Promise<void> {
     const attemptedOperation = `start sandbox "${sandboxId}"`;
+    validateStartOptions(options, attemptedOperation);
     const sandbox = await this.#requireSandbox(sandboxId, attemptedOperation);
     const { state } = toSandboxStatus(sandbox);
     if (state === "stopping") {
@@ -145,7 +158,11 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     });
     // Even a sandbox that was already running gets this, so a start repairs
     // a sandbox whose supervisor could not be launched before.
-    const launchFailure = await this.#tryToLaunchSupervisor(sandbox, attemptedOperation);
+    const launchFailure = await this.#tryToLaunchSupervisor(
+      sandbox,
+      options?.replacementSecrets ?? {},
+      attemptedOperation,
+    );
     if (launchFailure !== undefined) {
       // A running sandbox is one whose supervisor runs, so one without it is
       // stopped again rather than reported as running, and billed, while it
@@ -221,7 +238,11 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     return {
       name: sandboxNameFor(request.threadId),
       snapshot: this.#settings.snapshot,
-      envVars: { ...sandboxImageAgentUser, ...request.supervisorEnvironment },
+      envVars: {
+        ...sandboxImageAgentUser,
+        ...request.supervisorEnvironment,
+        [supervisorSecretsDirectoryVariable]: sandboxImageSecretsDirectory,
+      },
       labels: { [sandboxLabel]: "true", [threadIdLabel]: request.threadId },
       // Preview URLs of a public sandbox need no token at all.
       public: false,
@@ -239,13 +260,18 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     }
   }
 
-  /** Why the supervisor could not be launched, or `undefined` once it has been. */
+  /**
+   * Hands the supervisor its secrets, then launches it; says why either
+   * failed, or returns `undefined` once the supervisor has been launched.
+   */
   async #tryToLaunchSupervisor(
     sandbox: DaytonaSandboxRecord,
+    secrets: Readonly<Record<string, string>>,
     attemptedOperation: string,
   ): Promise<SandboxProviderError | undefined> {
     let exitCode: number;
     try {
+      await this.#handOverSecrets(sandbox.id, secrets);
       // The command gets the sandbox's environment explicitly as well, in case
       // Daytona does not pass the sandbox's variables to commands it runs.
       const result = await this.#daytona.executeCommand(
@@ -263,8 +289,39 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     }
     return new SandboxRefusedError(
       attemptedOperation,
-      `the sandbox could not launch its supervisor (exit code ${exitCode}); check that the snapshot was made from Barrack's sandbox image`,
+      `the sandbox could not launch its supervisor (exit code ${exitCode}); check that the snapshot was made from Barrack's sandbox image, and see /var/log/barrack/supervisor.log in the sandbox`,
     );
+  }
+
+  /**
+   * Uploads each secret into the image's secrets directory and makes it the
+   * supervisor's alone (0400). The directory is the supervisor's, mode 0700,
+   * so whatever mode Daytona's daemon first gives the file, nobody else can
+   * open it before its mode is set. Which user that daemon writes as has
+   * not been confirmed against Daytona (see docs/deployment.md); if it can
+   * write there neither as root nor as the supervisor, the upload fails and
+   * so does the launch, saying so, rather than leave a secret anywhere else.
+   * https://www.daytona.io/docs/en/typescript-sdk/file-system
+   */
+  async #handOverSecrets(
+    sandboxId: string,
+    secrets: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    const supervisor = sandboxImageSupervisorUser.name;
+    for (const [name, value] of Object.entries(secrets)) {
+      const path = `${sandboxImageSecretsDirectory}/${name}`;
+      await this.#daytona.uploadFile(
+        sandboxId,
+        path,
+        Buffer.from(value, "utf8"),
+        uploadTimeoutInSeconds,
+      );
+      await this.#daytona.setFilePermissions(sandboxId, path, {
+        owner: supervisor,
+        group: supervisor,
+        mode: "400",
+      });
+    }
   }
 
   /**

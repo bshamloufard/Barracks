@@ -3,11 +3,13 @@ import {
   describeServiceAddressLookup,
   validateCreationRequest,
   validateServiceAddressRequest,
+  validateStartOptions,
 } from "../request-validation.js";
 import type {
   CreatedSandbox,
   SandboxCreationRequest,
   SandboxProvider,
+  SandboxStartOptions,
   SandboxStatus,
   ServiceAddress,
   ServiceAddressRequest,
@@ -19,6 +21,11 @@ import {
   SandboxProviderError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
+import {
+  buildSecretsArchive,
+  sandboxImageSecretsDirectory,
+  sandboxImageSupervisorUser,
+} from "../supervisor-secrets.js";
 import { createDockerCommandRunner, type DockerCommandRunner } from "./docker-cli.js";
 import {
   type InspectedContainer,
@@ -28,23 +35,24 @@ import {
   toSandboxStatus,
 } from "./docker-container.js";
 import {
+  buildContainerEnvironment,
+  buildCreateArguments,
+  containerNameFor,
+  type DockerProviderSettings,
+  isReservedForDockerCli,
+} from "./docker-create-arguments.js";
+import {
   isContainerNameConflict,
   isMissingContainer,
   toSandboxProviderError,
 } from "./docker-failures.js";
-import {
-  buildRunArguments,
-  containerNameFor,
-  type DockerProviderSettings,
-  isReservedForDockerCli,
-} from "./docker-run-arguments.js";
 
 /**
  * One Docker container per thread, on a machine Barrack controls. The
  * container's main process is the supervisor (the image's default command),
  * so whenever the container runs, the supervisor runs, with the environment
- * the container was created with; stopping the container keeps its files and
- * starting it runs the supervisor again.
+ * the container was created with and the secrets put in its files; stopping
+ * the container keeps its files and starting it runs the supervisor again.
  *
  * A sandbox's identifier is its container's full 64-character ID, which is
  * never reused, so a stored identifier cannot come to mean a container made
@@ -66,6 +74,13 @@ export class DockerSandboxProvider implements SandboxProvider {
     this.#docker = docker ?? createDockerCommandRunner(settings.dockerExecutable);
   }
 
+  /**
+   * Creates the container, puts the supervisor's secrets in it, and only
+   * then starts it, so the supervisor finds them at its first start, as at
+   * every later one: they are files in the container's own writable layer,
+   * kept across a stop and a start, never in an image layer, in its
+   * environment or in `docker inspect`.
+   */
   async create(request: SandboxCreationRequest): Promise<CreatedSandbox> {
     validateCreationRequest(request);
     const attemptedOperation = describeSandboxCreation(request.threadId);
@@ -77,11 +92,16 @@ export class DockerSandboxProvider implements SandboxProvider {
       );
     }
     try {
-      const output = await this.#docker(buildRunArguments(this.#settings, request), {
-        extraEnvironment: request.supervisorEnvironment,
+      const output = await this.#docker(buildCreateArguments(this.#settings, request), {
+        extraEnvironment: buildContainerEnvironment(request),
         timeoutInMilliseconds: createTimeoutInMilliseconds,
       });
-      return { sandboxId: output.trim() };
+      const sandboxId = output.trim();
+      await this.#copySecrets(sandboxId, request.supervisorSecrets);
+      await this.#docker(["container", "start", sandboxId], {
+        timeoutInMilliseconds: quickCommandTimeoutInMilliseconds,
+      });
+      return { sandboxId };
     } catch (failure) {
       if (isContainerNameConflict(failure)) {
         throw await this.#describeExistingSandbox(request.threadId, attemptedOperation);
@@ -93,9 +113,15 @@ export class DockerSandboxProvider implements SandboxProvider {
     }
   }
 
-  async start(sandboxId: string): Promise<void> {
+  async start(sandboxId: string, options?: SandboxStartOptions): Promise<void> {
     const attemptedOperation = `start sandbox "${sandboxId}"`;
+    validateStartOptions(options, attemptedOperation);
     await this.#requireSandbox(sandboxId, attemptedOperation);
+    try {
+      await this.#copySecrets(sandboxId, options?.replacementSecrets ?? {});
+    } catch (failure) {
+      throw toSandboxProviderError(failure, attemptedOperation, sandboxId);
+    }
     // Starting a running container succeeds without doing anything.
     await this.#runOnSandbox(["container", "start", sandboxId], attemptedOperation, sandboxId);
   }
@@ -159,6 +185,25 @@ export class DockerSandboxProvider implements SandboxProvider {
     };
   }
 
+  /**
+   * Unpacks the secrets into the container's secrets directory, as files
+   * owned by the supervisor's user and readable by it alone. The archive
+   * travels on the CLI's standard input, never in its arguments, and is
+   * unpacked by the daemon with the ownership the archive gives, since
+   * `--archive` is not passed (it would give the container's own user,
+   * group included, instead); the directory is the supervisor's, mode 0700,
+   * so nobody else could open a file there even while it was being written.
+   */
+  async #copySecrets(sandboxId: string, secrets: Readonly<Record<string, string>>): Promise<void> {
+    if (Object.keys(secrets).length === 0) {
+      return;
+    }
+    await this.#docker(["container", "cp", "-", `${sandboxId}:${sandboxImageSecretsDirectory}`], {
+      standardInput: buildSecretsArchive(secrets, sandboxImageSupervisorUser.id),
+      timeoutInMilliseconds: quickCommandTimeoutInMilliseconds,
+    });
+  }
+
   async #describeExistingSandbox(
     threadId: string,
     attemptedOperation: string,
@@ -174,9 +219,9 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   /**
-   * `docker run` creates the container before starting it, so a run that
-   * fails to start (an impossible resource limit, say) leaves a container
-   * behind that would make every retry for the thread fail as a duplicate.
+   * A container that was created but could not be given its secrets or
+   * started (an impossible resource limit, say) would make every retry for
+   * the thread fail as a duplicate.
    * Returns the error to throw: the create's own failure, or, if removing the
    * container failed too, both failures and the container left behind.
    */

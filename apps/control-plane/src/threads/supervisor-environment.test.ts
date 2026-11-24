@@ -11,8 +11,8 @@ const developerEnvironment = {
 };
 
 describe("a new sandbox's supervisor environment", () => {
-  it("tells a Pi supervisor its thread, token and the forwarded Pi settings, and no model or key", () => {
-    const environment = buildSupervisorEnvironment(
+  it("tells a Pi supervisor its thread and the forwarded Pi settings, hands it its token as a secret, and no model or key", () => {
+    const { supervisorEnvironment, supervisorSecrets } = buildSupervisorEnvironment(
       {
         controlPlaneUrlForSandboxes: "wss://barrack.example",
         agent: { harness: "pi" },
@@ -22,17 +22,17 @@ describe("a new sandbox's supervisor environment", () => {
       "token-1",
     );
 
-    expect(environment).toEqual({
+    expect(supervisorEnvironment).toEqual({
       PI_OFFLINE: "1",
       BARRACK_CONTROL_PLANE_URL: "wss://barrack.example",
       BARRACK_THREAD_ID: "thread-1",
-      BARRACK_SUPERVISOR_TOKEN: "token-1",
       BARRACK_AGENT_HARNESS: "pi",
     });
+    expect(supervisorSecrets).toEqual({ BARRACK_SUPERVISOR_TOKEN: "token-1" });
   });
 
   it("gives a fake agent's supervisor no Pi settings", () => {
-    const environment = buildSupervisorEnvironment(
+    const { supervisorEnvironment: environment } = buildSupervisorEnvironment(
       {
         controlPlaneUrlForSandboxes: "ws://127.0.0.1:8787",
         agent: { harness: "fake" },

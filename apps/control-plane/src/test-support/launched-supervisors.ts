@@ -63,7 +63,7 @@ export class LaunchedSupervisors {
 
   async #launch(launch: FakeSandboxLaunch): Promise<LaunchedSupervisor> {
     const baseUrl = this.#controlPlaneBaseUrl;
-    const { BARRACK_SUPERVISOR_TOKEN: token } = launch.supervisorEnvironment;
+    const { BARRACK_SUPERVISOR_TOKEN: token } = launch.supervisorSecrets;
     if (baseUrl === undefined || token === undefined) {
       throw new Error("A sandbox started before the control plane was known, or without a token.");
     }
