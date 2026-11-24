@@ -419,6 +419,44 @@ describe("the model proxy", () => {
     expect(modelServer.receivedRequests).toHaveLength(1);
   });
 
+  it("lets only the thread's own token spend its allowance, so nobody else can lock its agent out", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const wellFormedButWrong = "A".repeat(43);
+
+    const strangers: number[] = [];
+    for (const token of [...Array(25).fill(""), ...Array(25).fill(wellFormedButWrong)]) {
+      const refused = await callModelProxy(controlPlane, { ...access, token }, anthropic, "Hi");
+      await refused.arrayBuffer();
+      strangers.push(refused.status);
+    }
+    const agents = await callModelProxy(controlPlane, access, anthropic, "Say hello");
+    await readWholeAnswer(agents);
+
+    expect(new Set(strangers)).toEqual(new Set([403]));
+    expect(agents.status).toBe(200);
+  });
+
+  it("bounds how many token lookups callers not yet authenticated cause, whatever thread they name", async () => {
+    await start({ modelProxyLimits: { authenticationBurst: 5, authenticationsPerSecond: 1 } });
+    const statuses: number[] = [];
+
+    for (let index = 0; index < 20; index += 1) {
+      const madeUpThreadId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const response = await fetch(
+        `${controlPlane.httpBaseUrl}/threads/${madeUpThreadId}/model-proxy/anthropic/v1/messages`,
+        { method: "POST", headers: { "x-api-key": "A".repeat(43) }, body: "{}" },
+      );
+      await response.arrayBuffer();
+      statuses.push(response.status);
+    }
+
+    expect(statuses.filter((status) => status === 403).length).toBeLessThanOrEqual(6);
+    expect(statuses.filter((status) => status === 503).length).toBeGreaterThanOrEqual(14);
+  });
+
   it("refuses a second request at once from a thread allowed one", async () => {
     await start({ modelProxyLimits: { concurrentRequestsPerThread: 1 } });
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);

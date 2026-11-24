@@ -4,7 +4,12 @@ import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
 import { describeAnswerUsage } from "./answer-usage.js";
 import type { ModelProxyAuthorization } from "./model-proxy-authorization.js";
-import { ModelProxyAdmissions, type ModelProxyLimits } from "./model-proxy-limits.js";
+import {
+  AuthenticationAllowance,
+  ModelProxyAdmissions,
+  type ModelProxyLimits,
+} from "./model-proxy-limits.js";
+import { ModelProxyTokens } from "./model-proxy-tokens.js";
 import { readPresentedToken } from "./proxy-headers.js";
 import { proxyRefusals, sendRefusal } from "./proxy-refusals.js";
 import { type RelayOutcome, relayRequest } from "./relay-request.js";
@@ -26,9 +31,11 @@ export type ModelProxyOptions = {
  * the caller is a sandbox, proven by its token, not a signed-in user.
  *
  * In order, before anything is forwarded: the path must be one the
- * provider's API is relayed at (`relayed-routes.ts`); the thread must be
- * under its limits (`model-proxy-limits.ts`), which costs nothing to ask;
- * and the records must allow it (`ModelProxyAuthorization`). Then the
+ * provider's API is relayed at (`relayed-routes.ts`); the caller must
+ * present the thread's token for the provider, looked up within the
+ * instance's bound on callers not yet authenticated; the thread must be
+ * under its own limits (`model-proxy-limits.ts`); and the records must
+ * allow it (`ModelProxyAuthorization`). Then the
  * request is rebuilt for the provider's own address with its owner's key
  * (`relay-request.ts`), and the answer streamed back, its usage counted.
  *
@@ -36,12 +43,14 @@ export type ModelProxyOptions = {
  */
 export class ModelProxy {
   readonly #options: ModelProxyOptions;
+  readonly #authentications: AuthenticationAllowance;
   readonly #admissions: ModelProxyAdmissions;
   /** Each thread's requests in flight here, to end at once when the thread stops. */
   readonly #inFlight = new Map<string, Set<AbortController>>();
 
   constructor(options: ModelProxyOptions) {
     this.#options = options;
+    this.#authentications = new AuthenticationAllowance(options.limits);
     this.#admissions = new ModelProxyAdmissions(options.limits);
   }
 
@@ -85,6 +94,9 @@ export class ModelProxy {
   ): Promise<void> {
     const { threadId, providerId } = target;
     const logger = this.#options.logger.child({ threadId, providerId });
+    if (!(await this.#authenticate(request, response, target, route, logger))) {
+      return;
+    }
     const admission = this.#admissions.admit(threadId);
     if (admission.kind !== "admitted") {
       logger.warn({ limit: admission.kind }, "Refused a model request over the proxy's limits");
@@ -110,6 +122,48 @@ export class ModelProxy {
     }
   }
 
+  /**
+   * Whether the request presents its thread's token for this provider,
+   * refusing it if not. Nothing else is spent on a request before this: a
+   * token that could not be one is refused without a lookup, and lookups for
+   * callers not yet authenticated are bounded for the whole instance, so
+   * nobody who lacks the token can use up a thread's allowance or make the
+   * database work without limit. The refusal is the same whether the thread
+   * exists or not.
+   */
+  async #authenticate(
+    request: IncomingMessage,
+    response: ServerResponse,
+    target: ModelProxyRequestTarget,
+    route: RelayedRoute,
+    logger: Logger,
+  ): Promise<boolean> {
+    const presentedToken = readPresentedToken(request.headers);
+    if (presentedToken === undefined || !ModelProxyTokens.isWellFormed(presentedToken)) {
+      sendRefusal(response, route.format, proxyRefusals.tokenRefused);
+      return false;
+    }
+    const lookup = this.#authentications.enter();
+    if (lookup.kind === "busy") {
+      logger.warn("Refused a model request: too many token lookups at once on this instance");
+      sendRefusal(response, route.format, proxyRefusals.proxyBusy);
+      return false;
+    }
+    try {
+      if (await this.#options.authorization.authenticate(target, presentedToken)) {
+        return true;
+      }
+      sendRefusal(response, route.format, proxyRefusals.tokenRefused);
+      return false;
+    } catch (error) {
+      logger.error({ err: error }, "Could not check a model request's token");
+      sendRefusal(response, route.format, proxyRefusals.cannotDecide);
+      return false;
+    } finally {
+      lookup.leave();
+    }
+  }
+
   async #authorizeAndRelay(
     request: IncomingMessage,
     response: ServerResponse,
@@ -120,11 +174,7 @@ export class ModelProxy {
   ): Promise<void> {
     let authorization: Awaited<ReturnType<ModelProxyAuthorization["decide"]>>;
     try {
-      authorization = await this.#options.authorization.decide({
-        threadId: target.threadId,
-        providerId: target.providerId,
-        presentedToken: readPresentedToken(request.headers),
-      });
+      authorization = await this.#options.authorization.decide(target);
     } catch (error) {
       logger.error({ err: error }, "Could not decide whether to relay a model request");
       sendRefusal(response, route.format, proxyRefusals.cannotDecide);

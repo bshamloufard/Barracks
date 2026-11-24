@@ -3,7 +3,11 @@ import { buffer } from "node:stream/consumers";
 import { describe, expect, it } from "vitest";
 import { digestConfirmedEmailAddress, OwnerAdmission } from "../authentication/owner-admission.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
-import { defaultModelProxyLimits, ModelProxyAdmissions } from "./model-proxy-limits.js";
+import {
+  AuthenticationAllowance,
+  defaultModelProxyLimits,
+  ModelProxyAdmissions,
+} from "./model-proxy-limits.js";
 import {
   buildDownstreamHeaders,
   buildUpstreamHeaders,
@@ -178,6 +182,68 @@ describe("the proxy's limits on one thread", () => {
     now = 1_000;
     expect(startAndFinish()).toBe("admitted");
     expect(startAndFinish()).toBe("thread_busy");
+  });
+
+  it("never forgets a thread whose allowance is still part-spent, however many others it remembers", () => {
+    const now = 0;
+    const admissions = new ModelProxyAdmissions(
+      { ...defaultModelProxyLimits, requestBurstPerThread: 2, requestsPerSecondPerThread: 1 },
+      () => now,
+      3,
+    );
+    const startAndFinish = (threadId: string) => {
+      const admission = admissions.admit(threadId);
+      if (admission.kind === "admitted") {
+        admission.release();
+      }
+      return admission.kind;
+    };
+    startAndFinish("thread-a");
+    startAndFinish("thread-a");
+
+    for (let index = 0; index < 10; index += 1) {
+      startAndFinish(`thread-${index}`);
+    }
+
+    expect(startAndFinish("thread-a")).toBe("thread_busy");
+  });
+});
+
+describe("the proxy's bound on callers not yet authenticated", () => {
+  it("lets only so many token lookups run at once, and so many a second, for the whole instance", () => {
+    let now = 0;
+    const allowance = new AuthenticationAllowance(
+      {
+        ...defaultModelProxyLimits,
+        authenticationsInFlight: 2,
+        authenticationBurst: 3,
+        authenticationsPerSecond: 1,
+      },
+      () => now,
+    );
+
+    const first = allowance.enter();
+    const second = allowance.enter();
+    const third = allowance.enter();
+    if (first.kind === "entered") {
+      first.leave();
+    }
+    const fourth = allowance.enter();
+    const fifth = allowance.enter();
+    now = 1_000;
+    if (second.kind === "entered") {
+      second.leave();
+    }
+    const sixth = allowance.enter();
+
+    expect([first.kind, second.kind, third.kind, fourth.kind, fifth.kind, sixth.kind]).toEqual([
+      "entered",
+      "entered",
+      "busy",
+      "entered",
+      "busy",
+      "entered",
+    ]);
   });
 });
 
