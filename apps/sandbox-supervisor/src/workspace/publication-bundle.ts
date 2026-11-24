@@ -135,7 +135,9 @@ function finished(file: WriteStream): Promise<void> {
  * Passes bytes on until there are more than the limit, then discards the
  * rest, noting that it did. Git's output must still be read to its end, or
  * Git would wait for ever to write it; the caller refuses the bundle as too
- * large once Git is done.
+ * large once Git is done. The control plane's `FailPastSizeLimit` does the
+ * opposite with the upload it receives: it fails at once, because what it
+ * stops reading is a sandbox it does not trust, not its own Git.
  */
 class DiscardPastSizeLimit extends Transform {
   readonly #maximumSizeInBytes: number;
