@@ -63,6 +63,23 @@ async function waitUntilSupervisorRuns(daytona: DaytonaApi, sandboxId: string): 
   throw new Error(`No supervisor is running in sandbox ${sandboxId}.`);
 }
 
+/**
+ * The workspace belongs to the agent's user, and the image's default user,
+ * the supervisor's, may not create files in it. Whether Daytona runs a
+ * command as root or as the image's user has not been checked, so the
+ * command becomes the agent either way: root through `setpriv`, the
+ * supervisor's user through `run-as-agent`, the copy of it only that user may
+ * run. The script travels base64-encoded so that no quoting is nested.
+ */
+function asAgent(shellCommand: string): string {
+  const script = [
+    'if [ "$(id -u)" = 0 ]; then become=setpriv; else become=/opt/barrack/bin/run-as-agent; fi',
+    `exec "$become" --reuid=barrack-agent --regid=barrack-agent --init-groups -- sh -c '${shellCommand}'`,
+  ].join("\n");
+  const encodedScript = Buffer.from(script).toString("base64");
+  return `sh -c 'echo ${encodedScript} | base64 -d | sh'`;
+}
+
 async function runInSandbox(daytona: DaytonaApi, sandboxId: string, command: string) {
   const result = await daytona.executeCommand(
     sandboxId,
@@ -99,9 +116,9 @@ describeSandboxProviderContract({
       },
       async writeFile(sandboxId, path, content) {
         const encoded = Buffer.from(content).toString("base64");
-        await runInSandbox(daytona, sandboxId, `sh -c 'echo ${encoded} | base64 -d > ${path}'`);
+        await runInSandbox(daytona, sandboxId, asAgent(`echo ${encoded} | base64 -d > ${path}`));
       },
-      readFile: (sandboxId, path) => runInSandbox(daytona, sandboxId, `cat ${path}`),
+      readFile: (sandboxId, path) => runInSandbox(daytona, sandboxId, asAgent(`cat ${path}`)),
       async dispose() {},
     };
   },
