@@ -335,12 +335,16 @@ describe("user messages the supervisor never acknowledged", () => {
     relay.attachClient(client, 0);
     await allPendingWorkSettled();
 
-    await threadEventLog.append(threadId, {
+    await threadEventLog.appendUserMessage(threadId, {
       type: "user_message",
       messageId: "recorded-elsewhere",
       text: "From another instance",
     });
-    relay.receiveFromClient(client, { type: "send_user_message", text: "From this one" });
+    relay.receiveFromClient(client, {
+      type: "send_user_message",
+      messageId: "sent-to-this-relay-01",
+      text: "From this one",
+    });
     await allPendingWorkSettled();
 
     expect(

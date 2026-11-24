@@ -131,7 +131,7 @@ describe("a thread whose control plane is killed in the middle of a run", () => 
       const message = `${fakeAgentToolTrigger} ${longMessage}`;
       const firstControlPlane = await startTestControlPlane();
       const { threadId, client: clientBeforeKill } = await startThread(firstControlPlane);
-      clientBeforeKill.send({ type: "send_user_message", text: message });
+      clientBeforeKill.sendUserMessage(message);
       await waitUntilStreaming(clientBeforeKill, 1);
 
       await firstControlPlane.kill();
@@ -169,7 +169,7 @@ describe("a thread whose supervisor is killed in the middle of a run", () => {
   it("has the run closed in its history once a new supervisor starts, and answers the next message", async () => {
     const controlPlane = await startTestControlPlane();
     const { threadId, client } = await startThread(controlPlane);
-    client.send({ type: "send_user_message", text: longMessage });
+    client.sendUserMessage(longMessage);
     await waitUntilStreaming(client, 5);
 
     await supervisors.kill(threadId);
@@ -180,7 +180,7 @@ describe("a thread whose supervisor is killed in the middle of a run", () => {
     await client.waitUntil("the abandoned run is closed", () =>
       eventsOf(client).some((event) => event.type === "agent_failed"),
     );
-    client.send({ type: "send_user_message", text: "Are you back?" });
+    client.sendUserMessage("Are you back?");
     await client.waitUntilRunsHaveSettled(1);
 
     const events = eventsOf(client);
@@ -212,7 +212,7 @@ describe("a message sent while the thread's supervisor is down", () => {
       messages.some(isSupervisorConnected(false)),
     );
 
-    client.send({ type: "send_user_message", text: "Anyone there?" });
+    client.sendUserMessage("Anyone there?");
     await client.waitUntil("the message is recorded", () => eventsOf(client).length === 1);
     const deliveryWhileDown = client.messages.findLast(
       (message) => message.type === "user_message_delivery_status",

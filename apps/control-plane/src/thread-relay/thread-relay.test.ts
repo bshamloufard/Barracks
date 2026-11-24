@@ -666,6 +666,51 @@ describe("user messages from a client", () => {
   });
 });
 
+describe("a user message sent again", () => {
+  it("is recorded and handed to the agent once, when the first attempt was saved but reported as not", async () => {
+    const supervisor = await controlPlane.connectSupervisor(thread);
+    const client = await controlPlane.connectClient(threadId);
+    await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
+    controlPlane.threadEventLog.failNextAppendAfterRecording(
+      new Error("The database's answer was lost"),
+    );
+
+    const messageId = client.sendUserMessage("Please say hello");
+    const rejection = await client.inbox.waitFor(
+      "the rejection",
+      (message) => message.type === "client_message_rejected",
+    );
+    client.sendUserMessage("Please say hello", messageId);
+    await client.waitForSequence(1);
+    await supervisor.inbox.waitFor(
+      "the delivery",
+      (message) => message.type === "deliver_user_message",
+    );
+    client.sendUserMessage("And once more", messageId);
+    const second = client.sendUserMessage("A new message");
+    await client.waitForSequence(2);
+    await supervisor.inbox.waitUntil("both deliveries", () =>
+      supervisor.deliveredUserMessages.some((delivery) => delivery.sequence === 2),
+    );
+
+    expect(rejection).toEqual({
+      type: "client_message_rejected",
+      reason: expect.stringContaining("could not be saved"),
+      messageId,
+    });
+    expect(client.threadEvents.map(({ event }) => event)).toEqual([
+      { type: "user_message", messageId, text: "Please say hello" },
+      { type: "user_message", messageId: second, text: "A new message" },
+    ]);
+    expect(
+      supervisor.deliveredUserMessages.map((delivery) => [delivery.sequence, delivery.messageId]),
+    ).toEqual([
+      [1, messageId],
+      [2, second],
+    ]);
+  });
+});
+
 describe("interrupts from a client", () => {
   it("are forwarded to the supervisor", async () => {
     const supervisor = await controlPlane.connectSupervisor(thread);

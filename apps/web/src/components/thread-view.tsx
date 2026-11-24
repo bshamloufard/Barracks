@@ -6,6 +6,7 @@ import { Conversation } from "./conversation";
 import { MessageComposer } from "./message-composer";
 import { SandboxControls } from "./sandbox-controls";
 import { StatusLine } from "./status-line";
+import { UnconfirmedUserMessages } from "./unconfirmed-user-messages";
 
 export function ThreadView({ threadId }: { threadId: string }) {
   const controls = useThread(threadId);
@@ -49,6 +50,12 @@ export function ThreadView({ threadId }: { threadId: string }) {
         <Conversation
           entries={state.entries}
           userMessagesDeliveredThroughSequence={state.userMessagesDeliveredThroughSequence}
+        />
+        <UnconfirmedUserMessages
+          messages={state.unconfirmedUserMessages}
+          canSend={state.connection.name === "connected"}
+          onSendAgain={controls.sendUserMessageAgain}
+          onDiscard={controls.discardUserMessage}
         />
       </main>
       <footer className="page-footer">

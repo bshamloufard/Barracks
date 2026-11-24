@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   buildClientEndpointPath,
   type ClientToControlPlaneMessage,
@@ -58,6 +59,11 @@ export class TestClient {
 
   send(message: ClientToControlPlaneMessage): void {
     this.#socket.send(JSON.stringify(message));
+  }
+
+  /** Sends a user message with a fresh identifier, as the web client does for each message composed. */
+  sendUserMessage(text: string): void {
+    this.send({ type: "send_user_message", messageId: randomUUID(), text });
   }
 
   threadEvents(): ThreadEventMessage[] {

@@ -94,7 +94,7 @@ async function startAnsweredThread(running: RunningControlPlane) {
   const { threadId } = await createThread(running);
   const client = await connectClient(running, threadId);
   await client.waitUntil("the supervisor has connected", supervisorIs(true));
-  client.send({ type: "send_user_message", text: "First task" });
+  client.sendUserMessage("First task");
   await client.waitUntilRunsHaveSettled(1);
   return { threadId, client };
 }
@@ -110,7 +110,7 @@ describe("stopping and resuming a thread", () => {
     expect((await resumeThread(running, threadId)).status).toBe(202);
     await waitUntilSandboxIs(running, threadId, "running");
     await client.waitUntil("the supervisor is back", supervisorIs(true));
-    client.send({ type: "send_user_message", text: "Second task" });
+    client.sendUserMessage("Second task");
     await client.waitUntilRunsHaveSettled(2);
 
     expect(repliesIn(client)).toEqual(['You said: "First task"', 'You said: "Second task"']);
@@ -124,7 +124,7 @@ describe("a message to a thread whose sandbox is stopped", () => {
     await stopThread(running, threadId);
     await waitUntilSandboxIs(running, threadId, "stopped");
 
-    client.send({ type: "send_user_message", text: "Wake up" });
+    client.sendUserMessage("Wake up");
     await waitUntilSandboxIs(running, threadId, "running");
     await client.waitUntilRunsHaveSettled(2);
 
@@ -162,7 +162,7 @@ describe("idle shutdown", () => {
     const { threadId, client } = await startAnsweredThread(running);
 
     await waitUntilSandboxIs(running, threadId, "stopped");
-    client.send({ type: "send_user_message", text: "Back again" });
+    client.sendUserMessage("Back again");
     await client.waitUntilRunsHaveSettled(2);
 
     expect(repliesIn(client).at(-1)).toBe('You said: "Back again"');
@@ -184,7 +184,7 @@ describe("a control plane killed in the middle of", () => {
       await waitUntilSandboxIs(second, threadId, "running");
       const client = await connectClient(second, threadId);
       await client.waitUntil("the supervisor is back", supervisorIs(true));
-      client.send({ type: "send_user_message", text: "After the restart" });
+      client.sendUserMessage("After the restart");
       await client.waitUntilRunsHaveSettled(2);
 
       expect(repliesIn(client).at(-1)).toBe('You said: "After the restart"');
@@ -205,7 +205,7 @@ describe("a control plane killed in the middle of", () => {
       await waitUntilSandboxIs(second, threadId, "running");
       const client = await connectClient(second, threadId);
       await client.waitUntil("the supervisor is back", supervisorIs(true));
-      client.send({ type: "send_user_message", text: "After the restart" });
+      client.sendUserMessage("After the restart");
       await client.waitUntilRunsHaveSettled(2);
 
       expect(repliesIn(client).at(-1)).toBe('You said: "After the restart"');

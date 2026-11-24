@@ -53,20 +53,22 @@ export class ThreadConnection {
     this.#advance({ type: "stop_requested" });
   }
 
-  sendUserMessage(text: string): void {
-    this.#send({ type: "send_user_message", text });
+  /** Returns whether the message went out; it does not while the connection is not open. */
+  sendUserMessage(messageId: string, text: string): boolean {
+    return this.#send({ type: "send_user_message", messageId, text });
   }
 
   interruptAgent(): void {
     this.#send({ type: "interrupt_agent" });
   }
 
-  #send(message: ClientToControlPlaneMessage): void {
+  #send(message: ClientToControlPlaneMessage): boolean {
     if (this.#socket?.readyState !== WebSocket.OPEN || this.#machine.phase !== "live") {
       console.error(`Could not send ${message.type}: the connection is not open.`);
-      return;
+      return false;
     }
     this.#socket.send(JSON.stringify(message));
+    return true;
   }
 
   /**

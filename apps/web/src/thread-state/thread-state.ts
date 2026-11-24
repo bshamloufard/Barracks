@@ -90,6 +90,22 @@ export type ThreadRecordState =
   | { name: "not_found" }
   | { name: "found"; thread: ThreadSummary };
 
+/**
+ * A message the user sent that the control plane has not yet confirmed
+ * recording. It keeps the identifier minted when it was composed, so that
+ * sending it again can never give the agent the same message twice: the
+ * control plane recognises one it already recorded.
+ *
+ * - `sending`: sent, and waiting for its thread event.
+ * - `not_sent`: refused, or sent on a connection that dropped before it was
+ *   confirmed; the user can send it again or discard it.
+ */
+export type UnconfirmedUserMessage = {
+  messageId: string;
+  text: string;
+  status: "sending" | "not_sent";
+};
+
 export type LifecycleAction = "stop" | "resume" | "delete";
 
 /**
@@ -122,6 +138,8 @@ export type ThreadState = {
    */
   hasSeenSupervisorConnected: boolean;
   connection: ConnectionState;
+  /** The user's messages not yet confirmed recorded, oldest first. */
+  unconfirmedUserMessages: UnconfirmedUserMessage[];
   /** Why the control plane refused the last thing this page sent, until the user dismisses it. */
   rejectionReason: string | undefined;
   lifecycleRequest: LifecycleRequestState;
@@ -133,6 +151,9 @@ export type ThreadAction =
   | { type: "message_received"; message: ControlPlaneToClientMessage }
   | { type: "connection_changed"; connection: ConnectionState }
   | { type: "rejection_dismissed" }
+  | { type: "user_message_sent"; messageId: string; text: string }
+  | { type: "user_message_not_sent"; messageId: string; reason: string }
+  | { type: "user_message_discarded"; messageId: string }
   | { type: "delete_confirmation_requested" }
   | { type: "delete_confirmation_cancelled" }
   | { type: "lifecycle_request_sent"; action: LifecycleAction }
@@ -148,6 +169,7 @@ export const initialThreadState: ThreadState = {
   userMessagesDeliveredThroughSequence: undefined,
   hasSeenSupervisorConnected: false,
   connection: { name: "connecting" },
+  unconfirmedUserMessages: [],
   rejectionReason: undefined,
   lifecycleRequest: { name: "none" },
 };
@@ -164,6 +186,15 @@ export function reduceThreadState(state: ThreadState, action: ThreadAction): Thr
       return applyConnectionChange(state, action.connection);
     case "rejection_dismissed":
       return { ...state, rejectionReason: undefined };
+    case "user_message_sent":
+      return applyUserMessageSent(state, action.messageId, action.text);
+    case "user_message_not_sent":
+      return {
+        ...markNotSent(state, (message) => message.messageId === action.messageId),
+        rejectionReason: action.reason,
+      };
+    case "user_message_discarded":
+      return forgetUnconfirmed(state, action.messageId);
     case "delete_confirmation_requested":
       return { ...state, lifecycleRequest: { name: "confirming_delete" } };
     case "delete_confirmation_cancelled":
@@ -213,7 +244,10 @@ export function applyControlPlaneMessage(
     case "user_message_delivery_status":
       return { ...state, userMessagesDeliveredThroughSequence: message.deliveredThroughSequence };
     case "client_message_rejected":
-      return { ...state, rejectionReason: message.reason };
+      return {
+        ...markNotSent(state, (unconfirmed) => unconfirmed.messageId === message.messageId),
+        rejectionReason: message.reason,
+      };
   }
 }
 
@@ -274,7 +308,7 @@ function applyThreadEvent(
 ): ThreadState {
   switch (event.type) {
     case "user_message":
-      return appendEntry(state, {
+      return appendEntry(forgetUnconfirmed(state, event.messageId), {
         kind: "user_message",
         key: `user:${event.messageId}`,
         sequence,
@@ -409,11 +443,47 @@ function appendFragmentToBlocks(
 /**
  * While disconnected the page cannot know whether the supervisor is still
  * there, so it stops claiming it is; the status arrives again after the
- * replay on reconnect.
+ * replay on reconnect. A message still waiting for its confirmation may or
+ * may not have been recorded: it is offered to be sent again, which is safe,
+ * and it disappears from the offer if the replay shows it recorded after all.
  */
 function applyConnectionChange(state: ThreadState, connection: ConnectionState): ThreadState {
-  const isSupervisorConnected = connection.name === "connected" && state.isSupervisorConnected;
-  return { ...state, connection, isSupervisorConnected };
+  const isConnected = connection.name === "connected";
+  const isSupervisorConnected = isConnected && state.isSupervisorConnected;
+  const changed = { ...state, connection, isSupervisorConnected };
+  return isConnected ? changed : markNotSent(changed, (message) => message.status === "sending");
+}
+
+/** Sending again keeps the message's place among the others not yet confirmed. */
+function applyUserMessageSent(state: ThreadState, messageId: string, text: string): ThreadState {
+  const sent: UnconfirmedUserMessage = { messageId, text, status: "sending" };
+  const isSentAgain = state.unconfirmedUserMessages.some(
+    (message) => message.messageId === messageId,
+  );
+  const unconfirmedUserMessages = isSentAgain
+    ? state.unconfirmedUserMessages.map((message) =>
+        message.messageId === messageId ? sent : message,
+      )
+    : [...state.unconfirmedUserMessages, sent];
+  return { ...state, unconfirmedUserMessages };
+}
+
+function markNotSent(
+  state: ThreadState,
+  isAffected: (message: UnconfirmedUserMessage) => boolean,
+): ThreadState {
+  const unconfirmedUserMessages = state.unconfirmedUserMessages.map(
+    (message): UnconfirmedUserMessage =>
+      isAffected(message) ? { ...message, status: "not_sent" } : message,
+  );
+  return { ...state, unconfirmedUserMessages };
+}
+
+function forgetUnconfirmed(state: ThreadState, messageId: string): ThreadState {
+  const unconfirmedUserMessages = state.unconfirmedUserMessages.filter(
+    (message) => message.messageId !== messageId,
+  );
+  return { ...state, unconfirmedUserMessages };
 }
 
 function appendEntry(state: ThreadState, entry: ConversationEntry): ThreadState {

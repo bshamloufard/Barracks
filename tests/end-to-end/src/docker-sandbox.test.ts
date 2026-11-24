@@ -87,7 +87,7 @@ if (unavailableReason !== undefined) {
       client = await TestClient.connect(controlPlane, threadId, 0);
 
       await client.waitUntil("the sandbox's supervisor has connected", supervisorIs(true));
-      client.send({ type: "send_user_message", text: "Hello from the host" });
+      client.sendUserMessage("Hello from the host");
       await client.waitUntilRunsHaveSettled(1);
 
       expect((await stopThread(controlPlane, threadId)).status).toBe(202);
@@ -97,7 +97,7 @@ if (unavailableReason !== undefined) {
       expect((await resumeThread(controlPlane, threadId)).status).toBe(202);
       await waitUntilSandboxIs(controlPlane, threadId, "running");
       await client.waitUntil("the restarted supervisor has reconnected", supervisorIs(true));
-      client.send({ type: "send_user_message", text: "Hello again" });
+      client.sendUserMessage("Hello again");
       await client.waitUntilRunsHaveSettled(2);
 
       const replies = client

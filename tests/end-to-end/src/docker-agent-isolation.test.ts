@@ -169,10 +169,7 @@ if (unavailableReason !== undefined) {
         supervisorToken.slice(0, tokenMiddle),
         supervisorToken.slice(tokenMiddle),
       ].join(" ");
-      client.send({
-        type: "send_user_message",
-        text: `${mockModelTriggers.command}${probeCommand}`,
-      });
+      client.sendUserMessage(`${mockModelTriggers.command}${probeCommand}`);
       await client.waitUntilRunsHaveSettled(1);
 
       const findings = JSON.parse(toolOutputs(client)[0] ?? "null");
@@ -235,10 +232,9 @@ if (unavailableReason !== undefined) {
       await resumeThread(controlPlane, threadId);
       await waitUntilSandboxIs(controlPlane, threadId, "running");
       await client.waitUntil("the restarted supervisor has reconnected", supervisorIs(true));
-      client.send({
-        type: "send_user_message",
-        text: `${mockModelTriggers.command}cat /workspace/written-by-the-agent.txt && id -un`,
-      });
+      client.sendUserMessage(
+        `${mockModelTriggers.command}cat /workspace/written-by-the-agent.txt && id -un`,
+      );
       await client.waitUntilRunsHaveSettled(2);
 
       expect(toolOutputs(client)[1]).toBe("written by the agent\nbarrack-agent\n");
@@ -254,7 +250,7 @@ if (unavailableReason !== undefined) {
       // even the end of its input.
       const freezePi =
         "setsid sh -c 'trap \"\" TERM; sleep 600' > /dev/null 2>&1 < /dev/null & kill -STOP $PPID";
-      client.send({ type: "send_user_message", text: `${mockModelTriggers.command}${freezePi}` });
+      client.sendUserMessage(`${mockModelTriggers.command}${freezePi}`);
       await client.waitUntil("the agent has started its command", (messages) =>
         messages.some(
           (message) =>

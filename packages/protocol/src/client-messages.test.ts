@@ -46,6 +46,11 @@ describe("control plane to client messages", () => {
     },
     { type: "supervisor_connection_status", isSupervisorConnected: false },
     { type: "client_message_rejected", reason: "The thread's supervisor is not connected." },
+    {
+      type: "client_message_rejected",
+      reason: "The message could not be saved.",
+      messageId: "0123456789abcdef0123456789abcdef",
+    },
   ];
 
   it.each(everyMessage)("carry $type unchanged", (message) => {
@@ -115,9 +120,11 @@ describe("control plane to client messages", () => {
 });
 
 describe("client to control plane messages", () => {
+  const exampleMessageId = "0123456789abcdef0123456789abcdef";
+
   const everyMessage: ClientToControlPlaneMessage[] = [
     { type: "authenticate", accessToken: "header.payload.signature" },
-    { type: "send_user_message", text: "Please say hello" },
+    { type: "send_user_message", messageId: "0123456789abcdef0123456789abcdef", text: "Hi" },
     { type: "interrupt_agent" },
   ];
 
@@ -128,23 +135,32 @@ describe("client to control plane messages", () => {
     });
   });
 
-  it("reject a user message that tries to choose its own identifier", () => {
-    const message = { type: "send_user_message", messageId: "user-1", text: "Hello" };
+  it.each([
+    ["none", undefined],
+    ["a short one", "user-1"],
+    ["a long one", "x".repeat(65)],
+    ["one with characters unsafe in a log line", "0123456789abcdef\n0123456789abcdef"],
+  ])("reject a user message with %s as its identifier", (_description, messageId) => {
+    const message = { type: "send_user_message", messageId, text: "Hello" };
 
     expect(parseClientToControlPlaneMessage(frameOf(message))).toEqual({
       ok: false,
-      errorMessage: expect.stringContaining('Unrecognized key: "messageId"'),
+      errorMessage: expect.stringContaining("messageId"),
     });
   });
 
   it("reject an empty user message", () => {
-    const message = { type: "send_user_message", text: "" };
+    const message = { type: "send_user_message", messageId: exampleMessageId, text: "" };
 
     expect(parseClientToControlPlaneMessage(frameOf(message)).ok).toBe(false);
   });
 
   it("reject a user message longer than the limit", () => {
-    const message = { type: "send_user_message", text: "x".repeat(maximumUserMessageLength + 1) };
+    const message = {
+      type: "send_user_message",
+      messageId: exampleMessageId,
+      text: "x".repeat(maximumUserMessageLength + 1),
+    };
 
     expect(parseClientToControlPlaneMessage(frameOf(message))).toEqual({
       ok: false,

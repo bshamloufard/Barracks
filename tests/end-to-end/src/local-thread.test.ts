@@ -66,7 +66,7 @@ describe("one thread, run by the real control plane and supervisor", () => {
   it("records the user's message, the run starting, the reply and the run settling, in order and without gaps", async () => {
     const { client } = await startThread();
 
-    client.send({ type: "send_user_message", text: "Hello, agent" });
+    client.sendUserMessage("Hello, agent");
     await client.waitUntilRunsHaveSettled(1);
 
     const threadEvents = client.threadEvents();
@@ -84,7 +84,7 @@ describe("one thread, run by the real control plane and supervisor", () => {
   it("streams the reply's text before recording the completed reply", async () => {
     const { client } = await startThread();
 
-    client.send({ type: "send_user_message", text: "Hello, agent" });
+    client.sendUserMessage("Hello, agent");
     await client.waitUntilRunsHaveSettled(1);
 
     const completedReplyIndex = client.messages.findIndex(
@@ -106,7 +106,7 @@ describe("one thread, run by the real control plane and supervisor", () => {
 
   it("replays the identical history to a client that connects later having seen nothing", async () => {
     const { threadId, client: firstClient } = await startThread();
-    firstClient.send({ type: "send_user_message", text: "Please use a [tool]" });
+    firstClient.sendUserMessage("Please use a [tool]");
     await firstClient.waitUntilRunsHaveSettled(1);
     const history = firstClient.threadEvents();
 
@@ -125,7 +125,7 @@ describe("one thread, run by the real control plane and supervisor", () => {
     const droppingClient = await connectClient(threadId, 0);
     await droppingClient.waitUntilSupervisorIsConnected();
 
-    watchingClient.send({ type: "send_user_message", text: longMessage });
+    watchingClient.sendUserMessage(longMessage);
     await droppingClient.waitUntil(
       "the reply has started streaming",
       (messages) => messages.filter(isStreamFragment).length >= 3,
@@ -154,7 +154,7 @@ describe("one thread, run by the real control plane and supervisor", () => {
   it("ends a run as interrupted when the user interrupts it", async () => {
     const { client } = await startThread();
 
-    client.send({ type: "send_user_message", text: longMessage });
+    client.sendUserMessage(longMessage);
     await client.waitUntil("the reply has started streaming", (messages) =>
       messages.some(isStreamFragment),
     );
@@ -177,8 +177,8 @@ describe("two threads created at once", () => {
   it("each get a supervisor of their own, which answers only its own thread", async () => {
     const [first, second] = await Promise.all([startThread(), startThread()]);
 
-    first.client.send({ type: "send_user_message", text: "First thread here" });
-    second.client.send({ type: "send_user_message", text: "Second thread here" });
+    first.client.sendUserMessage("First thread here");
+    second.client.sendUserMessage("Second thread here");
     await Promise.all([
       first.client.waitUntilRunsHaveSettled(1),
       second.client.waitUntilRunsHaveSettled(1),

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type {
   AgentEventMessage,
   AssistantTextFragment,
@@ -6,6 +5,7 @@ import type {
   ClientMessageRejected,
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
+  SendUserMessage,
   StreamFragmentMessage,
   SupervisorConnectionStatus,
   SupervisorHello,
@@ -270,7 +270,7 @@ export class ThreadRelay {
   receiveFromClient(connection: ClientConnection, message: ClientCommand): void {
     this.#enqueue(`handle ${message.type} from a client`, async () => {
       if (message.type === "send_user_message") {
-        await this.#acceptUserMessage(connection, message.text);
+        await this.#acceptUserMessage(connection, message);
         return;
       }
       this.#forwardInterrupt(connection);
@@ -708,21 +708,39 @@ export class ThreadRelay {
    * attaches and is handed it. The sandbox lifecycle is asked first, and
    * wakes a stopped sandbox for it; it refuses only a message no agent
    * could receive, such as one to a thread being deleted.
+   *
+   * A message sent again with an identifier already recorded (its client
+   * was told it was not saved, but it was) is not recorded again. The
+   * event recorded the first time is broadcast instead, which shows it to
+   * clients that were never sent it and is skipped by those that were, and
+   * hands it to the supervisor if it was never handed over.
    */
-  async #acceptUserMessage(client: ClientConnection, text: string): Promise<void> {
-    const messageId = randomUUID();
+  async #acceptUserMessage(client: ClientConnection, message: SendUserMessage): Promise<void> {
+    const { messageId, text } = message;
     try {
       const admission = await this.#threadActivity.admitUserMessage(this.threadId, text);
       if (!admission.isAccepted) {
-        this.#rejectClientMessage(client, admission.reason);
+        this.#rejectClientMessage(client, admission.reason, messageId);
         return;
       }
-      await this.#recordAndBroadcast({ type: "user_message", messageId, text });
+      const outcome = await this.#threadEventLog.appendUserMessage(this.threadId, {
+        type: "user_message",
+        messageId,
+        text,
+      });
+      if (outcome.isAlreadyRecorded) {
+        this.#logger.info(
+          { messageId, sequence: outcome.recordedEvent.sequence },
+          "A user message sent again was already recorded",
+        );
+      }
+      await this.#broadcastRecordedEvent(outcome.recordedEvent);
     } catch (error) {
-      this.#logger.error({ err: error }, "Could not record a user message");
+      this.#logger.error({ err: error, messageId }, "Could not record a user message");
       this.#rejectClientMessage(
         client,
         "The message could not be saved, so it was not sent. Please try again.",
+        messageId,
       );
       return;
     }
@@ -868,9 +886,14 @@ export class ThreadRelay {
     this.#broadcast({ type: "stream_fragment", fragment });
   }
 
-  #rejectClientMessage(client: ClientConnection, reason: string): void {
-    this.#logger.info({ reason }, "Rejected a client message");
-    this.#sendToClient(client, { type: "client_message_rejected", reason });
+  /** `messageId` names the user message refused; an interrupt has none. */
+  #rejectClientMessage(client: ClientConnection, reason: string, messageId?: string): void {
+    this.#logger.info({ reason, messageId }, "Rejected a client message");
+    this.#sendToClient(client, {
+      type: "client_message_rejected",
+      reason,
+      ...(messageId === undefined ? {} : { messageId }),
+    });
   }
 
   #broadcastSupervisorConnectionStatus(): void {

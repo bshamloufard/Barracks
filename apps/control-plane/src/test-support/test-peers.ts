@@ -123,8 +123,13 @@ export class TestClient {
     );
   }
 
-  sendUserMessage(text: string): void {
-    this.#socket.sendMessage({ type: "send_user_message", text });
+  /**
+   * Sends a user message, with a fresh identifier unless given the one of
+   * a message to send again, as the web client retries. Returns the identifier.
+   */
+  sendUserMessage(text: string, messageId: string = randomUUID()): string {
+    this.#socket.sendMessage({ type: "send_user_message", messageId, text });
+    return messageId;
   }
 
   interruptAgent(): void {

@@ -8,6 +8,7 @@ import { streamFragmentMessageSchema } from "./stream-fragments.js";
 import {
   recordedThreadEventSchema,
   type ThreadEvent,
+  userMessageIdSchema,
   userMessageTextSchema,
 } from "./thread-events.js";
 import { userMessageDeliveryStatusSchema } from "./user-message-delivery-status.js";
@@ -98,10 +99,15 @@ export const supervisorConnectionStatusSchema = z.strictObject({
   isSupervisorConnected: z.boolean(),
 });
 
-/** The control plane refused a message from this client, and says why. */
+/**
+ * The control plane refused a message from this client, and says why. A
+ * refused user message is named by its identifier, so the client can offer
+ * to send it again; an interrupt has none.
+ */
 export const clientMessageRejectedSchema = z.strictObject({
   type: z.literal("client_message_rejected"),
   reason: z.string().min(1).max(maximumErrorMessageLength),
+  messageId: userMessageIdSchema.optional(),
 });
 
 export const controlPlaneToClientMessageSchema = z.discriminatedUnion("type", [
@@ -114,13 +120,21 @@ export const controlPlaneToClientMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 /**
- * Something the user typed for the agent. The control plane mints the message
- * identifier, records a `user_message` thread event and delivers it to the
- * supervisor, at once if one is connected and otherwise once one connects
- * (see `UserMessageDeliveryStatus`). It is accepted either way.
+ * Something the user typed for the agent. The control plane records a
+ * `user_message` thread event with the client's `messageId` and delivers it
+ * to the supervisor, at once if one is connected and otherwise once one
+ * connects (see `UserMessageDeliveryStatus`). It is accepted either way.
+ *
+ * The client mints `messageId` once for each message the user composes and
+ * sends it again, unchanged, with every retry of that message. A thread
+ * records each identifier once: a retry of a message already recorded (one
+ * whose answer was lost, or that was reported unsaved but was saved after
+ * all) records nothing, and the client is sent the recorded event, so the
+ * agent never receives one message twice. The text recorded first wins.
  */
 export const sendUserMessageSchema = z.strictObject({
   type: z.literal("send_user_message"),
+  messageId: userMessageIdSchema,
   text: userMessageTextSchema,
 });
 

@@ -1,4 +1,9 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  RecordedThreadEvent,
+  ThreadEvent,
+  UserMessageEvent,
+} from "@barrack/protocol";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import type {
   AgentWork,
@@ -7,6 +12,7 @@ import type {
   SupervisorResumePoint,
   ThreadEventLog,
   ThreadEventPage,
+  UserMessageAppendOutcome,
 } from "../thread-event-log/thread-event-log.js";
 
 /** A pause that the test ends by calling `release`. */
@@ -90,6 +96,10 @@ export class ControllableThreadEventLog implements ThreadEventLog {
 
   append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
     return this.#controlAppend(() => this.#log.append(threadId, event));
+  }
+
+  appendUserMessage(threadId: string, event: UserMessageEvent): Promise<UserMessageAppendOutcome> {
+    return this.#controlAppend(() => this.#log.appendUserMessage(threadId, event));
   }
 
   appendSupervisorEvent(

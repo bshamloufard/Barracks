@@ -1,4 +1,9 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  RecordedThreadEvent,
+  ThreadEvent,
+  UserMessageEvent,
+} from "@barrack/protocol";
 import { DatabaseError, escapeIdentifier, type Pool } from "pg";
 import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
 import type {
@@ -8,6 +13,7 @@ import type {
   SupervisorResumePoint,
   ThreadEventLog,
   ThreadEventPage,
+  UserMessageAppendOutcome,
 } from "./thread-event-log.js";
 
 /** The schema the control plane's tables live in; see the first migration for why it is not `public`. */
@@ -15,6 +21,9 @@ export const databaseSchema = "barrack";
 
 /** The index that stops a supervisor's event being recorded twice; see migration 0010. */
 const oneRowPerSupervisorEventIndex = "thread_events_one_per_supervisor_event";
+
+/** The index that stops a user message being recorded twice; see migration 0060. */
+const oneRowPerUserMessageIndex = "thread_events_one_per_user_message";
 
 /** https://www.postgresql.org/docs/current/errcodes-appendix.html */
 const uniqueViolationCode = "23505";
@@ -36,11 +45,11 @@ type ResumePointRow = {
 
 /**
  * Keeps every thread's history in Postgres, in the tables created by the
- * migrations `0001_create_thread_event_log.sql` and
- * `0010_acknowledge_supervisor_delivery.sql`. Safe to share one database
- * between several control plane instances: appends from all of them to one
- * thread still get gapless sequences that commit in order, and each
- * supervisor event is recorded once however many of them append it.
+ * migrations `0001_create_thread_event_log.sql` and extended since. Safe to
+ * share one database between several control plane instances: appends from
+ * all of them to one thread still get gapless sequences that commit in
+ * order, and each supervisor event and user message is recorded once
+ * however many of them append it.
  */
 export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #pool: Pool;
@@ -50,6 +59,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #readEventsStatement: string;
   readonly #readResumePointStatement: string;
   readonly #readUserMessagesDeliveredStatement: string;
+  readonly #readUserMessageStatement: string;
   readonly #recordUserMessagesDeliveredStatement: string;
 
   constructor(pool: Pool, schema: string = databaseSchema) {
@@ -63,6 +73,8 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       order by sequence
       limit $4`;
     this.#readResumePointStatement = resumePointStatementFor(qualifiedSchema);
+    this.#readUserMessageStatement = `select sequence, recorded_at, event from ${qualifiedSchema}.thread_events
+      where thread_id = $1 and user_message_id = $2`;
     this.#readUserMessagesDeliveredStatement = `select user_messages_delivered_through from ${qualifiedSchema}.thread_sequence_counters where thread_id = $1`;
     // Only a thread with history has a counter row, and only a thread with
     // a user message has anything to deliver, so there is no row to create.
@@ -72,7 +84,31 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   }
 
   async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    return this.#insert(threadId, event, undefined);
+    return this.#insert(threadId, event, {});
+  }
+
+  /** Lets the unique index decide, as `appendSupervisorEvent` does, then reads the message it kept. */
+  async appendUserMessage(
+    threadId: string,
+    event: UserMessageEvent,
+  ): Promise<UserMessageAppendOutcome> {
+    try {
+      const recordedEvent = await this.#insert(threadId, event, { userMessageId: event.messageId });
+      return { isAlreadyRecorded: false, recordedEvent };
+    } catch (error) {
+      if (!isDuplicate(error, oneRowPerUserMessageIndex)) {
+        throw error;
+      }
+    }
+    const result = await this.#pool.query<StoredEventRow>(this.#readUserMessageStatement, [
+      threadId,
+      event.messageId,
+    ]);
+    const row = result.rows[0];
+    if (row === undefined) {
+      throw new Error("A user message reported as already recorded could not be read");
+    }
+    return { isAlreadyRecorded: true, recordedEvent: toRecordedEvent(row) };
   }
 
   /**
@@ -86,10 +122,10 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     try {
-      const recordedEvent = await this.#insert(threadId, event, origin);
+      const recordedEvent = await this.#insert(threadId, event, { origin });
       return { isAlreadyRecorded: false, recordedEvent };
     } catch (error) {
-      if (isDuplicateSupervisorEvent(error)) {
+      if (isDuplicate(error, oneRowPerSupervisorEventIndex)) {
         return { isAlreadyRecorded: true };
       }
       throw error;
@@ -115,11 +151,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       page.throughSequence,
       page.limit,
     ]);
-    return result.rows.map((row) => ({
-      sequence: Number(row.sequence),
-      recordedAt: row.recorded_at.toISOString(),
-      event: row.event,
-    }));
+    return result.rows.map(toRecordedEvent);
   }
 
   async readSupervisorResumePoint(
@@ -195,8 +227,9 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   async #insert(
     threadId: string,
     event: ThreadEvent,
-    origin: SupervisorEventOrigin | undefined,
+    key: { origin?: SupervisorEventOrigin; userMessageId?: string },
   ): Promise<RecordedThreadEvent> {
+    const { origin } = key;
     const boundary: RunBoundary = runBoundaryOf(event);
     const result = await this.#pool.query<AppendedEventRow>(this.#appendStatement, [
       threadId,
@@ -205,6 +238,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       origin?.eventNumber ?? null,
       boundary,
       event.type === "user_message",
+      key.userMessageId ?? null,
     ]);
     const row = result.rows[0];
     if (row === undefined) {
@@ -214,12 +248,20 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   }
 }
 
-function isDuplicateSupervisorEvent(error: unknown): boolean {
+function isDuplicate(error: unknown, uniqueIndex: string): boolean {
   return (
     error instanceof DatabaseError &&
     error.code === uniqueViolationCode &&
-    error.constraint === oneRowPerSupervisorEventIndex
+    error.constraint === uniqueIndex
   );
+}
+
+function toRecordedEvent(row: StoredEventRow): RecordedThreadEvent {
+  return {
+    sequence: Number(row.sequence),
+    recordedAt: row.recorded_at.toISOString(),
+    event: row.event,
+  };
 }
 
 /**
@@ -237,7 +279,8 @@ function isDuplicateSupervisorEvent(error: unknown): boolean {
  * ($5 is its run boundary): a run start records the supervisor that sent
  * it, and a run end clears it. It also remembers the newest user message
  * ($6 says whether this is one), so whether one waits to be delivered is
- * known without reading events.
+ * known without reading events. $7 is the identifier of a user message,
+ * which its unique index checks.
  */
 function appendStatementFor(qualifiedSchema: string): string {
   return `with assigned as (
@@ -263,8 +306,9 @@ function appendStatementFor(qualifiedSchema: string): string {
       returning counter.last_sequence as sequence
     )
     insert into ${qualifiedSchema}.thread_events
-      (thread_id, sequence, recorded_at, event, supervisor_instance_id, supervisor_event_number)
-    select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint
+      (thread_id, sequence, recorded_at, event, supervisor_instance_id, supervisor_event_number,
+        user_message_id)
+    select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint, $7::text
     from assigned
     returning sequence, recorded_at`;
 }

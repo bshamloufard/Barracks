@@ -3,13 +3,18 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useSession } from "./authentication/session-context";
 import { ThreadConnection } from "./connection/thread-connection";
 import { ThreadRecordPoller } from "./connection/thread-record-poller";
+import { mintUserMessageId } from "./connection/user-message-id";
 import { threadListAddress } from "./page-address";
 import type { LifecycleAction, ThreadState } from "./thread-state/thread-state";
 import { ThreadStore } from "./thread-state/thread-store";
 
 export type ThreadControls = {
   state: ThreadState;
+  /** Sends a newly composed message. */
   sendUserMessage: (text: string) => void;
+  /** Sends a message not yet confirmed again, under the identifier it was first sent with. */
+  sendUserMessageAgain: (messageId: string) => void;
+  discardUserMessage: (messageId: string) => void;
   interruptAgent: () => void;
   dismissRejection: () => void;
   stopThread: () => void;
@@ -46,9 +51,39 @@ export function useThread(threadId: string): ThreadControls {
     };
   }, [threadId, store, session]);
 
-  const sendUserMessage = useCallback((text: string) => {
-    connectionReference.current?.sendUserMessage(text);
-  }, []);
+  const sendUnderIdentifier = useCallback(
+    (messageId: string, text: string) => {
+      store.dispatch({ type: "user_message_sent", messageId, text });
+      if (connectionReference.current?.sendUserMessage(messageId, text) !== true) {
+        store.dispatch({
+          type: "user_message_not_sent",
+          messageId,
+          reason:
+            "The message was not sent, because the connection is not open. Send it again once it is.",
+        });
+      }
+    },
+    [store],
+  );
+  const sendUserMessage = useCallback(
+    (text: string) => sendUnderIdentifier(mintUserMessageId(), text),
+    [sendUnderIdentifier],
+  );
+  const sendUserMessageAgain = useCallback(
+    (messageId: string) => {
+      const unconfirmed = store
+        .getState()
+        .unconfirmedUserMessages.find((message) => message.messageId === messageId);
+      if (unconfirmed !== undefined) {
+        sendUnderIdentifier(messageId, unconfirmed.text);
+      }
+    },
+    [store, sendUnderIdentifier],
+  );
+  const discardUserMessage = useCallback(
+    (messageId: string) => store.dispatch({ type: "user_message_discarded", messageId }),
+    [store],
+  );
   const interruptAgent = useCallback(() => {
     connectionReference.current?.interruptAgent();
   }, []);
@@ -98,6 +133,8 @@ export function useThread(threadId: string): ThreadControls {
   return {
     state,
     sendUserMessage,
+    sendUserMessageAgain,
+    discardUserMessage,
     interruptAgent,
     dismissRejection,
     stopThread,

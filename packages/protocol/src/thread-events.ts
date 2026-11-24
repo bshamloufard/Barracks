@@ -7,6 +7,16 @@ import { sequenceSchema } from "./sequence.js";
 export const userMessageTextSchema = z.string().min(1).max(maximumUserMessageLength);
 
 /**
+ * The identifier a client mints for a message the user sends (see
+ * `sendUserMessageSchema`). It comes from a browser, so its shape is fixed:
+ * long enough to be random (the web client uses 128 random bits), short
+ * enough to store and index, and made of characters safe in a log line.
+ * Messages recorded before clients minted them have the control plane's
+ * UUIDs, which fit it too.
+ */
+export const userMessageIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+
+/**
  * A message the user sent to the agent. The control plane records it as soon
  * as it accepts the user's input, rather than waiting for the agent to echo
  * it back, so the user's own words are never lost when the agent is not

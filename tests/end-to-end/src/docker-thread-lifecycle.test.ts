@@ -171,7 +171,7 @@ if (unavailableReason !== undefined) {
 
       const fourth = await requestCreation(controlPlane);
       threads.forEach(({ client }, index) => {
-        client.send({ type: "send_user_message", text: taskFor(projects[index] ?? "") });
+        client.sendUserMessage(taskFor(projects[index] ?? ""));
       });
       await Promise.all(threads.map(({ client }) => client.waitUntilRunsHaveSettled(1)));
 
@@ -222,20 +222,20 @@ if (unavailableReason !== undefined) {
           conversation.some((message) => textOf(message).includes(codeword)),
         );
 
-      client.send({ type: "send_user_message", text: "Remember the codeword PAPAYA." });
+      client.sendUserMessage("Remember the codeword PAPAYA.");
       await client.waitUntilRunsHaveSettled(1);
       expect((await stopThread(controlPlane, threadId)).status).toBe(202);
       await waitUntilSandboxIs(controlPlane, threadId, "stopped");
       await client.waitUntil("the stopped sandbox's supervisor has gone", supervisorIs(false));
       expect((await resumeThread(controlPlane, threadId)).status).toBe(202);
       await waitUntilSandboxIs(controlPlane, threadId, "running");
-      client.send({ type: "send_user_message", text: "What was the codeword? KIWI" });
+      client.sendUserMessage("What was the codeword? KIWI");
       await client.waitUntilRunsHaveSettled(2);
       const afterResume = conversationsAbout("KIWI").at(-1) ?? [];
 
       await stopThread(controlPlane, threadId);
       await waitUntilSandboxIs(controlPlane, threadId, "stopped");
-      client.send({ type: "send_user_message", text: "And once more, please. MANGO" });
+      client.sendUserMessage("And once more, please. MANGO");
       await client.waitUntilRunsHaveSettled(3);
       const afterWaking = conversationsAbout("MANGO").at(-1) ?? [];
 

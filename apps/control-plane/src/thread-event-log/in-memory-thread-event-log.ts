@@ -1,4 +1,9 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  RecordedThreadEvent,
+  ThreadEvent,
+  UserMessageEvent,
+} from "@barrack/protocol";
 import { runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
@@ -7,10 +12,13 @@ import type {
   SupervisorResumePoint,
   ThreadEventLog,
   ThreadEventPage,
+  UserMessageAppendOutcome,
 } from "./thread-event-log.js";
 
 type ThreadHistory = {
   events: RecordedThreadEvent[];
+  /** Each user message recorded, by its identifier. */
+  userMessagesById: Map<string, RecordedThreadEvent>;
   /** The event numbers recorded from each supervisor instance. */
   recordedEventNumbersByInstance: Map<string, Set<number>>;
   openRunSupervisorInstanceId: string | undefined;
@@ -32,6 +40,20 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
 
   async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
     return this.#store(this.#historyOf(threadId), event, undefined);
+  }
+
+  async appendUserMessage(
+    threadId: string,
+    event: UserMessageEvent,
+  ): Promise<UserMessageAppendOutcome> {
+    const history = this.#historyOf(threadId);
+    const recordedBefore = history.userMessagesById.get(event.messageId);
+    if (recordedBefore !== undefined) {
+      return { isAlreadyRecorded: true, recordedEvent: recordedBefore };
+    }
+    const recordedEvent = this.#store(history, event, undefined);
+    history.userMessagesById.set(event.messageId, recordedEvent);
+    return { isAlreadyRecorded: false, recordedEvent };
   }
 
   async appendSupervisorEvent(
@@ -121,6 +143,7 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     }
     const history: ThreadHistory = {
       events: [],
+      userMessagesById: new Map(),
       recordedEventNumbersByInstance: new Map(),
       openRunSupervisorInstanceId: undefined,
       userMessagesDeliveredThrough: 0,

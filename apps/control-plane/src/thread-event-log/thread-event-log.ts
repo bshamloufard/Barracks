@@ -1,4 +1,9 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  RecordedThreadEvent,
+  ThreadEvent,
+  UserMessageEvent,
+} from "@barrack/protocol";
 
 /**
  * The durable, ordered history of every thread. It is the only place that
@@ -18,14 +23,22 @@ import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/prot
  */
 export interface ThreadEventLog {
   /**
-   * Stores an event the control plane itself originates (a user's message,
-   * or the end of a run nobody else can end) as the thread's next one. The
+   * Stores an event as the thread's next one, with nothing to recognise it
+   * by if it is appended again (the end of a run nobody else can end). The
    * log assigns its sequence (1 for a thread's first event, then one more
    * each time, with no gaps) and the time it was recorded. Concurrent
    * appends to one thread each get a distinct sequence; the order between
    * them is whichever the log processes first.
    */
   append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent>;
+
+  /**
+   * Stores a user's message, exactly once: a message with the same
+   * identifier in the same thread is never stored twice, however often it
+   * is appended, even by two control planes at once. The second and later
+   * appends store nothing and report the event recorded the first time.
+   */
+  appendUserMessage(threadId: string, event: UserMessageEvent): Promise<UserMessageAppendOutcome>;
 
   /**
    * Stores an agent event a supervisor sent, exactly once: an event with the
@@ -105,6 +118,12 @@ export type SupervisorEventOrigin = { supervisorInstanceId: string; eventNumber:
 export type SupervisorEventAppendOutcome =
   | { isAlreadyRecorded: false; recordedEvent: RecordedThreadEvent }
   | { isAlreadyRecorded: true };
+
+/** `recordedEvent` is the message as it was first recorded, whether or not by this append. */
+export type UserMessageAppendOutcome = {
+  isAlreadyRecorded: boolean;
+  recordedEvent: RecordedThreadEvent;
+};
 
 export type SupervisorResumePoint = {
   /** As `readNewestSequence`. */

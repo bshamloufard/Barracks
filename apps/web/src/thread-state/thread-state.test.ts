@@ -529,3 +529,79 @@ describe("rejections", () => {
     expect(dismissed.rejectionReason).toBeUndefined();
   });
 });
+
+describe("messages the user sent that are not yet confirmed", () => {
+  const sent: ThreadAction = { type: "user_message_sent", messageId: "message-a", text: "Hello" };
+  const connected: ThreadAction = { type: "connection_changed", connection: { name: "connected" } };
+  const dropped: ThreadAction = {
+    type: "connection_changed",
+    connection: { name: "reconnecting" },
+  };
+  const userMessage: ThreadEvent = { type: "user_message", messageId: "message-a", text: "Hello" };
+
+  it("are shown as sending until their thread event arrives, which takes their place", () => {
+    const sending = stateAfter(connected, sent);
+    const confirmed = reduceThreadState(sending, recorded(1, userMessage));
+
+    expect(sending.unconfirmedUserMessages).toEqual([
+      { messageId: "message-a", text: "Hello", status: "sending" },
+    ]);
+    expect(confirmed.unconfirmedUserMessages).toEqual([]);
+    expect(confirmed.entries).toHaveLength(1);
+  });
+
+  it("are offered to be sent again under the same identifier when the control plane refuses them", () => {
+    const refused = stateAfter(
+      connected,
+      sent,
+      received({
+        type: "client_message_rejected",
+        reason: "The message could not be saved.",
+        messageId: "message-a",
+      }),
+    );
+    const sentAgain = reduceThreadState(refused, sent);
+
+    expect(refused.unconfirmedUserMessages).toEqual([
+      { messageId: "message-a", text: "Hello", status: "not_sent" },
+    ]);
+    expect(refused.rejectionReason).toBe("The message could not be saved.");
+    expect(sentAgain.unconfirmedUserMessages).toEqual([
+      { messageId: "message-a", text: "Hello", status: "sending" },
+    ]);
+  });
+
+  it("are not touched by the refusal of something else, such as an interrupt", () => {
+    const state = stateAfter(
+      connected,
+      sent,
+      received({ type: "client_message_rejected", reason: "No agent is connected." }),
+    );
+
+    expect(state.unconfirmedUserMessages[0]?.status).toBe("sending");
+  });
+
+  it("are offered to be sent again when the connection drops, and forgotten if the replay shows them recorded", () => {
+    const afterDrop = stateAfter(connected, sent, dropped);
+    const afterReplay = stateAfter(
+      connected,
+      sent,
+      dropped,
+      connected,
+      announcement(1, 1),
+      recorded(1, userMessage),
+    );
+
+    expect(afterDrop.unconfirmedUserMessages[0]?.status).toBe("not_sent");
+    expect(afterReplay.unconfirmedUserMessages).toEqual([]);
+  });
+
+  it("are forgotten when the user discards them", () => {
+    const discarded = stateAfter(connected, sent, {
+      type: "user_message_discarded",
+      messageId: "message-a",
+    });
+
+    expect(discarded.unconfirmedUserMessages).toEqual([]);
+  });
+});

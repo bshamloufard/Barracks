@@ -1,4 +1,4 @@
-import type { AgentEvent, ThreadEvent } from "@barrack/protocol";
+import type { AgentEvent, ThreadEvent, UserMessageEvent } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { readWholeThread } from "./read-whole-thread.js";
@@ -66,6 +66,46 @@ export function describeThreadEventLogContract(
       expect(recorded.recordedAt).toMatch(/Z$/);
       expect(Date.parse(recorded.recordedAt)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(recorded.recordedAt)).toBeLessThanOrEqual(Date.now() + 1000);
+    });
+
+    it("records a user message once however often it is appended, answering with the one recorded first", async () => {
+      const log = await createEmptyLog();
+      const message = userMessageNumbered(1);
+
+      const first = await log.appendUserMessage("thread-a", message);
+      const again = await log.appendUserMessage("thread-a", { ...message, text: "Edited" });
+      const next = await log.appendUserMessage("thread-a", userMessageNumbered(2));
+
+      expect(first.isAlreadyRecorded).toBe(false);
+      expect(again).toEqual({ isAlreadyRecorded: true, recordedEvent: first.recordedEvent });
+      expect(next.recordedEvent.sequence).toBe(2);
+      expect(await readWholeThread(log, "thread-a")).toEqual([
+        first.recordedEvent,
+        next.recordedEvent,
+      ]);
+    });
+
+    it("records one of a user message appended concurrently, and tells the others it was", async () => {
+      const log = await createEmptyLog();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () => log.appendUserMessage("thread-a", userMessageNumbered(1))),
+      );
+
+      expect(outcomes.filter((outcome) => !outcome.isAlreadyRecorded)).toHaveLength(1);
+      expect(new Set(outcomes.map((outcome) => outcome.recordedEvent.sequence))).toEqual(
+        new Set([1]),
+      );
+      expect(await log.readNewestSequence("thread-a")).toBe(1);
+    });
+
+    it("tells apart user messages with the same identifier in different threads", async () => {
+      const log = await createEmptyLog();
+
+      await log.appendUserMessage("thread-a", userMessageNumbered(1));
+      const otherThread = await log.appendUserMessage("thread-b", userMessageNumbered(1));
+
+      expect(otherThread.isAlreadyRecorded).toBe(false);
     });
 
     it("reads back the events exactly as they were appended", async () => {
@@ -358,6 +398,6 @@ async function appendUserMessages(
   }
 }
 
-function userMessageNumbered(number: number): ThreadEvent {
+function userMessageNumbered(number: number): UserMessageEvent {
   return { type: "user_message", messageId: `message-${number}`, text: `Message ${number}` };
 }
