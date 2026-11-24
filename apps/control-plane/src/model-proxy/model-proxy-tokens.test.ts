@@ -78,6 +78,16 @@ describe("tokens accepted moments ago", () => {
     expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("not_remembered");
   });
 
+  it("are remembered by a lookup that finished after another thread's tokens were revoked", async () => {
+    const { tokens, token } = await tokensWithOneMinted();
+
+    const lookup = tokens.isAccepted("thread-a", "anthropic", token);
+    const revocation = tokens.revokeThread("thread-b");
+    await Promise.all([lookup, revocation]);
+
+    expect(tokens.recallAcceptance("thread-a", "anthropic", token)).toBe("fresh");
+  });
+
   it("are due to be looked up again 15 seconds after their last lookup, and renewed by a lookup that accepts them", async () => {
     const { clock, tokens, token } = await tokensWithOneMinted();
     await tokens.isAccepted("thread-a", "anthropic", token);

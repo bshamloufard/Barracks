@@ -55,13 +55,20 @@ const maximumRemembered = 10_000;
 
 type RememberedDigest = { digest: Buffer; lookedUpAt: number; usedAt: number };
 
+/** A lookup under way, marked when a revocation of its thread begins or ends meanwhile. */
+type LookupUnderWay = { overlapsRevocation: boolean };
+
 export class ModelProxyTokens {
   readonly #store: ModelProxyTokenStore;
   readonly #clock: () => Date;
   /** Digests accepted lately, by thread and provider, newest last. */
   readonly #recentlyAccepted = new Map<string, RememberedDigest[]>();
-  /** Moves on with each revocation on this instance, so a lookup under way then is not remembered. */
-  #revocations = 0;
+  /**
+   * The lookups under way, by thread, so a revocation of a thread on this
+   * instance keeps a lookup of its tokens under way then from being
+   * remembered, and no other thread's.
+   */
+  readonly #lookupsUnderWay = new Map<string, Set<LookupUnderWay>>();
 
   constructor(store: ModelProxyTokenStore, clock: () => Date = () => new Date()) {
     this.#store = store;
@@ -91,17 +98,27 @@ export class ModelProxyTokens {
   /**
    * Whether `presentedToken` was minted for this thread and provider and not
    * revoked since, as the store says. One it accepts is remembered for
-   * `recallAcceptance`, unless a revocation on this instance began or ended
+   * `recallAcceptance`, unless a revocation of its thread on this instance began or ended
    * while it was looked up; one it refuses is forgotten.
    */
   async isAccepted(threadId: string, providerId: string, presentedToken: string): Promise<boolean> {
     const presentedDigest = digestToken(presentedToken);
-    const revocationsBefore = this.#revocations;
-    const storedDigests = await this.#store.listDigests(threadId, providerId);
+    const lookup: LookupUnderWay = { overlapsRevocation: false };
+    const lookups = this.#lookupsUnderWay.get(threadId) ?? new Set();
+    this.#lookupsUnderWay.set(threadId, lookups.add(lookup));
+    let storedDigests: Buffer[];
+    try {
+      storedDigests = await this.#store.listDigests(threadId, providerId);
+    } finally {
+      lookups.delete(lookup);
+      if (lookups.size === 0 && this.#lookupsUnderWay.get(threadId) === lookups) {
+        this.#lookupsUnderWay.delete(threadId);
+      }
+    }
     const isFound = isAmong(presentedDigest, storedDigests);
     if (!isFound) {
       this.#forgetDigest(threadId, providerId, presentedDigest);
-    } else if (this.#revocations === revocationsBefore) {
+    } else if (!lookup.overlapsRevocation) {
       this.#remember(threadId, providerId, presentedDigest);
     }
     return isFound;
@@ -219,7 +236,9 @@ export class ModelProxyTokens {
   }
 
   #forget(threadId: string, isForgotten: (providerId: string) => boolean): void {
-    this.#revocations += 1;
+    for (const lookup of this.#lookupsUnderWay.get(threadId) ?? []) {
+      lookup.overlapsRevocation = true;
+    }
     for (const key of this.#recentlyAccepted.keys()) {
       const [keyThreadId, providerId] = key.split("\n");
       if (keyThreadId === threadId && isForgotten(providerId ?? "")) {
