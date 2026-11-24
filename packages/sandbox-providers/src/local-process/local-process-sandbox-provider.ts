@@ -1,7 +1,9 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   describeSandboxCreation,
@@ -22,6 +24,17 @@ import {
   SandboxNotFoundError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
+import {
+  isLocalSandboxId,
+  isProcessAlive,
+  type LocalSandboxRecord,
+  readEverySandboxRecord,
+  readSandboxRecord,
+  readSupervisorProcessId,
+  removeSupervisorProcessId,
+  writeSandboxRecord,
+  writeSupervisorProcessId,
+} from "./local-sandbox-records.js";
 import { stopSupervisorsWhenThisProcessExits } from "./supervisors-on-exit.js";
 
 /**
@@ -37,11 +50,15 @@ import { stopSupervisorsWhenThisProcessExits } from "./supervisors-on-exit.js";
  * the supervisor's state, and the supervisor runs with that workspace as
  * its working directory. What "stop keeps the files" means here: stopping
  * ends the supervisor (and with it the agent) and leaves the directory on
- * disk, and starting launches the supervisor again in it. The provider's
- * record of its sandboxes lives in this process's memory, though, so when
- * the control plane exits it ends every supervisor it started, and after a
- * restart it reports every earlier sandbox as missing, leaving their
- * directories behind until someone deletes them.
+ * disk, and starting launches the supervisor again in it.
+ *
+ * What the provider knows of a sandbox is kept in the sandbox's directory
+ * (`local-sandbox-records.ts`), so a control plane started again finds the
+ * sandboxes an earlier one made: a supervisor that outlived it (one killed
+ * outright runs no exit handler) is reported running and can be stopped,
+ * and one that was stopped can be started again. A control plane that exits
+ * normally still ends every supervisor it started, which then report as
+ * failed, having exited without being stopped.
  */
 
 export type LocalProcessProviderSettings = {
@@ -80,19 +97,19 @@ const hostVariableNames = [
   "NODE_EXTRA_CA_CERTS",
 ];
 
-type LocalSandbox = {
-  sandboxId: string;
-  threadId: string;
-  directory: string;
-  supervisorEnvironment: Readonly<Record<string, string>>;
-  status: SandboxStatus;
-  supervisor: ChildProcess | undefined;
-};
+const exitPollIntervalInMilliseconds = 50;
 
 export class LocalProcessSandboxProvider implements SandboxProvider {
   readonly #settings: LocalProcessProviderSettings;
   readonly #hostEnvironment: NodeJS.ProcessEnv;
-  readonly #sandboxes = new Map<string, LocalSandbox>();
+  /** Supervisors this process launched, by process identifier, until they exit. */
+  readonly #launchedSupervisors = new Map<number, ChildProcess>();
+  /** How each supervisor that exited without being stopped ended, while this process remembers. */
+  readonly #exitDescriptions = new Map<string, string>();
+  /** Sandboxes whose supervisor is being launched right now. */
+  readonly #launchingSandboxIds = new Set<string>();
+  /** Threads whose sandbox is being created right now, so two creations cannot both pass the check. */
+  readonly #threadsBeingCreated = new Set<string>();
 
   constructor(settings: LocalProcessProviderSettings, hostEnvironment = process.env) {
     this.#settings = settings;
@@ -101,64 +118,73 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
 
   async create(request: SandboxCreationRequest): Promise<CreatedSandbox> {
     validateCreationRequest(request);
-    const attemptedOperation = describeSandboxCreation(request.threadId);
-    const existing = [...this.#sandboxes.values()].find(
-      (sandbox) => sandbox.threadId === request.threadId,
-    );
-    if (existing !== undefined) {
-      throw new SandboxAlreadyExistsError(request.threadId, existing.sandboxId);
+    const { threadId } = request;
+    if (this.#threadsBeingCreated.has(threadId)) {
+      throw new SandboxRefusedError(
+        describeSandboxCreation(threadId),
+        "a sandbox is already being created for this thread",
+      );
     }
-    const sandboxId = `local-${randomUUID()}`;
-    const sandbox: LocalSandbox = {
-      sandboxId,
-      threadId: request.threadId,
-      directory: path.join(this.#settings.sandboxesDirectory, sandboxId),
-      supervisorEnvironment: { ...request.supervisorEnvironment },
-      status: { state: "starting" },
-      supervisor: undefined,
-    };
-    this.#sandboxes.set(sandboxId, sandbox);
+    this.#threadsBeingCreated.add(threadId);
     try {
-      await prepareDirectories(sandbox.directory);
-      await this.#launchSupervisor(sandbox);
-    } catch (error) {
-      this.#sandboxes.delete(sandboxId);
-      await rm(sandbox.directory, { recursive: true, force: true });
-      throw new SandboxRefusedError(attemptedOperation, describeFailure(error));
+      return await this.#createSandbox(request);
+    } finally {
+      this.#threadsBeingCreated.delete(threadId);
     }
-    return { sandboxId };
   }
 
   async start(sandboxId: string): Promise<void> {
     const attemptedOperation = `start sandbox "${sandboxId}"`;
-    const sandbox = this.#require(attemptedOperation, sandboxId);
-    if (sandbox.supervisor !== undefined) {
+    const record = await this.#requireRecord(attemptedOperation, sandboxId);
+    if ((await this.getStatus(sandboxId)).state === "running") {
       return;
     }
     try {
-      await this.#launchSupervisor(sandbox);
+      await this.#launchSupervisor(record);
     } catch (error) {
       throw new SandboxRefusedError(attemptedOperation, describeFailure(error));
     }
   }
 
   async stop(sandboxId: string): Promise<void> {
-    const sandbox = this.#require(`stop sandbox "${sandboxId}"`, sandboxId);
-    await this.#stopSupervisor(sandbox);
+    await this.#requireRecord(`stop sandbox "${sandboxId}"`, sandboxId);
+    await this.#stopSupervisor(sandboxId);
   }
 
   async destroy(sandboxId: string): Promise<void> {
-    const sandbox = this.#sandboxes.get(sandboxId);
-    if (sandbox === undefined) {
+    if (!isLocalSandboxId(sandboxId)) {
       return;
     }
-    await this.#stopSupervisor(sandbox);
-    this.#sandboxes.delete(sandboxId);
-    await rm(sandbox.directory, { recursive: true, force: true });
+    await this.#stopSupervisor(sandboxId);
+    await rm(this.#directoryOf(sandboxId), { recursive: true, force: true });
   }
 
+  /**
+   * Read from the sandbox's directory, not this process's memory, so that a
+   * control plane started again reports what an earlier one left running.
+   */
   async getStatus(sandboxId: string): Promise<SandboxStatus> {
-    return this.#sandboxes.get(sandboxId)?.status ?? { state: "missing" };
+    if (!isLocalSandboxId(sandboxId)) {
+      return { state: "missing" };
+    }
+    if (this.#launchingSandboxIds.has(sandboxId)) {
+      return { state: "starting" };
+    }
+    const directory = this.#directoryOf(sandboxId);
+    if ((await readSandboxRecord(directory)) === undefined) {
+      return { state: "missing" };
+    }
+    const processId = await readSupervisorProcessId(directory);
+    if (processId === undefined) {
+      return { state: "stopped" };
+    }
+    if (this.#isSupervisorRunning(processId)) {
+      return { state: "running" };
+    }
+    return {
+      state: "failed",
+      reason: this.#exitDescriptions.get(sandboxId) ?? "its supervisor exited by itself",
+    };
   }
 
   /**
@@ -169,8 +195,8 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
   async getServiceAddress(request: ServiceAddressRequest): Promise<ServiceAddress> {
     validateServiceAddressRequest(request);
     const attemptedOperation = describeServiceAddressLookup(request);
-    const sandbox = this.#require(attemptedOperation, request.sandboxId);
-    if (sandbox.status.state !== "running") {
+    await this.#requireRecord(attemptedOperation, request.sandboxId);
+    if ((await this.getStatus(request.sandboxId)).state !== "running") {
       throw new SandboxRefusedError(attemptedOperation, "the sandbox is not running");
     }
     return {
@@ -182,22 +208,77 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
 
   /** The agent's workspace in a sandbox, or undefined if there is no such sandbox. */
   workspaceDirectoryOf(sandboxId: string): string | undefined {
-    const sandbox = this.#sandboxes.get(sandboxId);
-    return sandbox === undefined ? undefined : workspaceDirectoryIn(sandbox.directory);
+    if (!isLocalSandboxId(sandboxId)) {
+      return undefined;
+    }
+    const directory = this.#directoryOf(sandboxId);
+    return existsSync(directory) ? workspaceDirectoryIn(directory) : undefined;
+  }
+
+  async #createSandbox(request: SandboxCreationRequest): Promise<CreatedSandbox> {
+    const attemptedOperation = describeSandboxCreation(request.threadId);
+    const records = await readEverySandboxRecord(this.#settings.sandboxesDirectory);
+    const existing = records.find((record) => record.threadId === request.threadId);
+    if (existing !== undefined) {
+      throw new SandboxAlreadyExistsError(request.threadId, existing.sandboxId);
+    }
+    const record: LocalSandboxRecord = {
+      sandboxId: `local-${randomUUID()}`,
+      threadId: request.threadId,
+      supervisorEnvironment: { ...request.supervisorEnvironment },
+    };
+    const directory = this.#directoryOf(record.sandboxId);
+    try {
+      await prepareDirectories(directory);
+      await writeSandboxRecord(directory, record);
+      await this.#launchSupervisor(record);
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true });
+      throw new SandboxRefusedError(attemptedOperation, describeFailure(error));
+    }
+    return { sandboxId: record.sandboxId };
   }
 
   /**
-   * Resolves once the supervisor process has started, or rejects if it could
-   * not be (its executable does not exist, say). From then on, a supervisor
-   * that exits by itself leaves the sandbox `failed`, as a crashed computer
-   * would; one ended by `stop` leaves it `stopped`.
+   * Resolves once the supervisor process has started and its identifier is
+   * on disk, or rejects if it could not be started (its executable does not
+   * exist, say).
    */
-  async #launchSupervisor(sandbox: LocalSandbox): Promise<void> {
-    sandbox.status = { state: "starting" };
+  async #launchSupervisor(record: LocalSandboxRecord): Promise<void> {
+    const { sandboxId } = record;
+    const directory = this.#directoryOf(sandboxId);
+    this.#launchingSandboxIds.add(sandboxId);
+    this.#exitDescriptions.delete(sandboxId);
+    try {
+      await removeSupervisorProcessId(directory);
+      const supervisor = await this.#spawnSupervisor(directory, record.supervisorEnvironment);
+      const processId = supervisor.pid;
+      if (processId === undefined) {
+        throw new Error("the supervisor started without a process identifier");
+      }
+      stopSupervisorsWhenThisProcessExits(supervisor);
+      this.#launchedSupervisors.set(processId, supervisor);
+      supervisor.once("exit", (exitCode, signal) => {
+        this.#launchedSupervisors.delete(processId);
+        this.#exitDescriptions.set(
+          sandboxId,
+          `its supervisor exited by itself (${signal ?? `exit code ${exitCode}`})`,
+        );
+      });
+      await writeSupervisorProcessId(directory, processId);
+    } finally {
+      this.#launchingSandboxIds.delete(sandboxId);
+    }
+  }
+
+  async #spawnSupervisor(
+    sandboxDirectory: string,
+    supervisorEnvironment: Readonly<Record<string, string>>,
+  ): Promise<ChildProcess> {
     const [executable, ...commandArguments] = this.#settings.supervisorCommand;
     const supervisor = spawn(executable, commandArguments, {
-      cwd: workspaceDirectoryIn(sandbox.directory),
-      env: this.#supervisorProcessEnvironment(sandbox),
+      cwd: workspaceDirectoryIn(sandboxDirectory),
+      env: this.#supervisorProcessEnvironment(sandboxDirectory, supervisorEnvironment),
       // The supervisor's JSON log lines join the control plane's own output.
       stdio: ["ignore", "inherit", "inherit"],
     });
@@ -205,43 +286,54 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
       supervisor.once("spawn", resolve);
       supervisor.once("error", reject);
     });
-    stopSupervisorsWhenThisProcessExits(supervisor);
-    sandbox.supervisor = supervisor;
-    sandbox.status = { state: "running" };
-    supervisor.once("exit", (exitCode, signal) => {
-      if (sandbox.supervisor !== supervisor) {
-        return;
-      }
-      sandbox.supervisor = undefined;
-      sandbox.status = {
-        state: "failed",
-        reason: `its supervisor exited by itself (${signal ?? `exit code ${exitCode}`})`,
-      };
-    });
+    return supervisor;
   }
 
-  async #stopSupervisor(sandbox: LocalSandbox): Promise<void> {
-    const supervisor = sandbox.supervisor;
-    sandbox.supervisor = undefined;
-    sandbox.status = { state: "stopped" };
-    if (supervisor === undefined || hasExited(supervisor)) {
+  /**
+   * The supervisor's identifier is removed from disk before it is signalled,
+   * so a supervisor found gone while its identifier is still there exited by
+   * itself. Waits until it has exited, killing it after the grace period.
+   */
+  async #stopSupervisor(sandboxId: string): Promise<void> {
+    const directory = this.#directoryOf(sandboxId);
+    const processId = await readSupervisorProcessId(directory);
+    await removeSupervisorProcessId(directory);
+    this.#exitDescriptions.delete(sandboxId);
+    if (processId === undefined || !this.#isSupervisorRunning(processId)) {
       return;
     }
-    const exited = new Promise<void>((resolve) => supervisor.once("exit", () => resolve()));
-    supervisor.kill("SIGTERM");
+    signalUnlessGone(processId, "SIGTERM");
     const killTimer = setTimeout(
-      () => supervisor.kill("SIGKILL"),
+      () => signalUnlessGone(processId, "SIGKILL"),
       this.#settings.stopTimeoutInMilliseconds,
     );
-    await exited;
+    while (this.#isSupervisorRunning(processId)) {
+      await sleep(exitPollIntervalInMilliseconds);
+    }
     clearTimeout(killTimer);
+  }
+
+  /**
+   * A supervisor this process launched is asked through its handle, since an
+   * exited child can linger as a zombie for a moment; any other (one an
+   * earlier control plane launched) through the operating system.
+   */
+  #isSupervisorRunning(processId: number): boolean {
+    const launched = this.#launchedSupervisors.get(processId);
+    if (launched !== undefined) {
+      return !hasExited(launched);
+    }
+    return isProcessAlive(processId);
   }
 
   /**
    * The request's environment is applied last, so it can override the
    * directories, as a container's environment overrides its image's.
    */
-  #supervisorProcessEnvironment(sandbox: LocalSandbox): NodeJS.ProcessEnv {
+  #supervisorProcessEnvironment(
+    sandboxDirectory: string,
+    supervisorEnvironment: Readonly<Record<string, string>>,
+  ): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {};
     for (const name of hostVariableNames) {
       const value = this.#hostEnvironment[name];
@@ -251,19 +343,26 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
     }
     return {
       ...environment,
-      BARRACK_WORKSPACE_DIRECTORY: workspaceDirectoryIn(sandbox.directory),
-      BARRACK_STATE_DIRECTORY: stateDirectoryIn(sandbox.directory),
-      BARRACK_SUPERVISOR_STATE_DIRECTORY: supervisorStateDirectoryIn(sandbox.directory),
-      ...sandbox.supervisorEnvironment,
+      BARRACK_WORKSPACE_DIRECTORY: workspaceDirectoryIn(sandboxDirectory),
+      BARRACK_STATE_DIRECTORY: stateDirectoryIn(sandboxDirectory),
+      BARRACK_SUPERVISOR_STATE_DIRECTORY: supervisorStateDirectoryIn(sandboxDirectory),
+      ...supervisorEnvironment,
     };
   }
 
-  #require(attemptedOperation: string, sandboxId: string): LocalSandbox {
-    const sandbox = this.#sandboxes.get(sandboxId);
-    if (sandbox === undefined) {
+  async #requireRecord(attemptedOperation: string, sandboxId: string): Promise<LocalSandboxRecord> {
+    const record = isLocalSandboxId(sandboxId)
+      ? await readSandboxRecord(this.#directoryOf(sandboxId))
+      : undefined;
+    if (record === undefined) {
       throw new SandboxNotFoundError(attemptedOperation, sandboxId);
     }
-    return sandbox;
+    return record;
+  }
+
+  /** Only for identifiers `isLocalSandboxId` accepts, which cannot leave the sandboxes directory. */
+  #directoryOf(sandboxId: string): string {
+    return path.join(this.#settings.sandboxesDirectory, sandboxId);
   }
 }
 
@@ -296,6 +395,14 @@ async function prepareDirectories(sandboxDirectory: string): Promise<void> {
 
 function hasExited(childProcess: ChildProcess): boolean {
   return childProcess.exitCode !== null || childProcess.signalCode !== null;
+}
+
+function signalUnlessGone(processId: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(processId, signal);
+  } catch {
+    // It exited between the check and the signal, which is what was wanted.
+  }
 }
 
 function describeFailure(error: unknown): string {

@@ -98,12 +98,11 @@ describeSandboxProviderContract({
   unavailableReason: describeWhyDaytonaCannotBeTested(),
   async setUp() {
     const daytona = createDaytonaSdkApi(apiKey ?? "");
-    const provider = new DaytonaSandboxProvider(
-      { snapshot: snapshot ?? "", target, autoArchiveIntervalInMinutes: 60 },
-      daytona,
-    );
+    const settings = { snapshot: snapshot ?? "", target, autoArchiveIntervalInMinutes: 60 };
+    const provider = new DaytonaSandboxProvider(settings, daytona);
     return {
       provider,
+      reopenProvider: () => new DaytonaSandboxProvider(settings, daytona),
       unknownSandboxId: randomUUID(),
       supervisorEnvironmentFor: (threadId) => ({
         BARRACK_CONTROL_PLANE_URL: "ws://127.0.0.1:9",

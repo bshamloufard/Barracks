@@ -23,6 +23,7 @@ describeSandboxProviderContract({
       provider,
       unknownSandboxId: "fake-sandbox-that-was-never-created",
       supervisorEnvironmentFor: (threadId) => ({ BARRACK_THREAD_ID: threadId }),
+      reopenProvider: () => provider.reopen(),
       async waitForSupervisorLaunches(threadId, launchCount) {
         if ((launchCounts.get(threadId) ?? 0) < launchCount) {
           throw new Error(`The supervisor of ${threadId} was not launched ${launchCount} times.`);

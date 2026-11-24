@@ -24,6 +24,11 @@ export type ContractSubject = {
    * times in all, so that a second launch proves a start ran it again.
    */
   waitForSupervisorLaunches(threadId: string, launchCount: number): Promise<void>;
+  /**
+   * Another provider object of the same kind and settings, standing in for
+   * the one a control plane started again would make.
+   */
+  reopenProvider(): SandboxProvider;
   writeFile(sandboxId: string, path: string, content: string): Promise<void>;
   readFile(sandboxId: string, path: string): Promise<string>;
   /** Releases whatever the subject set up, such as servers. */
@@ -98,6 +103,30 @@ export function describeSandboxProviderContract(target: ContractTarget): void {
       expect(await subject.provider.getStatus(sandboxId)).toEqual({ state: "running" });
       await subject.waitForSupervisorLaunches(threadId, 2);
       expect(await subject.readFile(sandboxId, markerFilePath)).toBe("kept across a stop");
+    });
+
+    it("lets a provider opened afresh, as after a control plane restart, find, stop and start a sandbox an earlier one created", async () => {
+      const { threadId, sandboxId } = await createSandbox();
+      await subject.waitForSupervisorLaunches(threadId, 1);
+      await subject.writeFile(sandboxId, markerFilePath, "kept across a restart");
+      const reopened = subject.reopenProvider();
+
+      const statusOnceReopened = await reopened.getStatus(sandboxId);
+      await reopened.stop(sandboxId);
+      const statusWhileStopped = await subject.provider.getStatus(sandboxId);
+      await reopened.start(sandboxId);
+
+      expect(statusOnceReopened).toEqual({ state: "running" });
+      expect(statusWhileStopped).toEqual({ state: "stopped" });
+      expect(await subject.provider.getStatus(sandboxId)).toEqual({ state: "running" });
+      await subject.waitForSupervisorLaunches(threadId, 2);
+      expect(await subject.readFile(sandboxId, markerFilePath)).toBe("kept across a restart");
+      await expect(
+        reopened.create({
+          threadId,
+          supervisorEnvironment: subject.supervisorEnvironmentFor(threadId),
+        }),
+      ).rejects.toMatchObject({ existingSandboxId: sandboxId });
     });
 
     it("does nothing when asked to stop a stopped sandbox or start a running one", async () => {

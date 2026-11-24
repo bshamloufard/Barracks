@@ -64,31 +64,50 @@ type FakeSandbox = FakeSandboxLaunch & {
 
 type PlannedFailure = { error: SandboxProviderError; operation: FakeSandboxOperation | undefined };
 
+/** The sandboxes themselves, which outlive any one provider object, as a real provider's do. */
+type FakeSandboxWorld = { sandboxes: Map<string, FakeSandbox>; createdCount: number };
+
 export class FakeSandboxProvider implements SandboxProvider {
   /** Every call made to the provider, in order, including ones made to fail. */
   readonly calls: FakeSandboxProviderCall[] = [];
-  readonly #sandboxes = new Map<string, FakeSandbox>();
+  readonly #options: FakeSandboxProviderOptions;
+  readonly #world: FakeSandboxWorld;
+  readonly #sandboxes: Map<string, FakeSandbox>;
   readonly #supervisorLauncher: SupervisorLauncher | undefined;
   readonly #now: () => Date;
   #plannedFailure: PlannedFailure | undefined;
-  #createdCount = 0;
+  readonly #heldOperations = new Map<FakeSandboxOperation, Promise<void>>();
 
-  constructor(options: FakeSandboxProviderOptions = {}) {
+  constructor(
+    options: FakeSandboxProviderOptions = {},
+    world: FakeSandboxWorld = { sandboxes: new Map(), createdCount: 0 },
+  ) {
+    this.#options = options;
+    this.#world = world;
+    this.#sandboxes = world.sandboxes;
     this.#supervisorLauncher = options.supervisorLauncher;
     this.#now = options.now ?? (() => new Date());
   }
 
+  /**
+   * A second provider object over the same sandboxes, as a control plane
+   * started again gets: it sees, stops and starts what this one created.
+   */
+  reopen(): FakeSandboxProvider {
+    return new FakeSandboxProvider(this.#options, this.#world);
+  }
+
   async create(request: SandboxCreationRequest): Promise<CreatedSandbox> {
     this.calls.push({ operation: "create", request });
-    this.#failIfPlanned("create");
+    await this.#beforeOperation("create");
     validateCreationRequest(request);
     const existing = this.#findByThread(request.threadId);
     if (existing !== undefined) {
       throw new SandboxAlreadyExistsError(request.threadId, existing.sandboxId);
     }
-    this.#createdCount += 1;
+    this.#world.createdCount += 1;
     const sandbox: FakeSandbox = {
-      sandboxId: `fake-sandbox-${this.#createdCount}`,
+      sandboxId: `fake-sandbox-${this.#world.createdCount}`,
       threadId: request.threadId,
       supervisorEnvironment: { ...request.supervisorEnvironment },
       files: new Map(),
@@ -102,7 +121,7 @@ export class FakeSandboxProvider implements SandboxProvider {
 
   async start(sandboxId: string): Promise<void> {
     this.calls.push({ operation: "start", sandboxId });
-    this.#failIfPlanned("start");
+    await this.#beforeOperation("start");
     const sandbox = this.#require(`start sandbox "${sandboxId}"`, sandboxId);
     if (sandbox.status.state === "running") {
       return;
@@ -112,14 +131,14 @@ export class FakeSandboxProvider implements SandboxProvider {
 
   async stop(sandboxId: string): Promise<void> {
     this.calls.push({ operation: "stop", sandboxId });
-    this.#failIfPlanned("stop");
+    await this.#beforeOperation("stop");
     const sandbox = this.#require(`stop sandbox "${sandboxId}"`, sandboxId);
     await this.#halt(sandbox, { state: "stopped" });
   }
 
   async destroy(sandboxId: string): Promise<void> {
     this.calls.push({ operation: "destroy", sandboxId });
-    this.#failIfPlanned("destroy");
+    await this.#beforeOperation("destroy");
     const sandbox = this.#sandboxes.get(sandboxId);
     if (sandbox === undefined) {
       return;
@@ -130,13 +149,13 @@ export class FakeSandboxProvider implements SandboxProvider {
 
   async getStatus(sandboxId: string): Promise<SandboxStatus> {
     this.calls.push({ operation: "getStatus", sandboxId });
-    this.#failIfPlanned("getStatus");
+    await this.#beforeOperation("getStatus");
     return this.#sandboxes.get(sandboxId)?.status ?? { state: "missing" };
   }
 
   async getServiceAddress(request: ServiceAddressRequest): Promise<ServiceAddress> {
     this.calls.push({ operation: "getServiceAddress", request });
-    this.#failIfPlanned("getServiceAddress");
+    await this.#beforeOperation("getServiceAddress");
     validateServiceAddressRequest(request);
     this.#require(describeServiceAddressLookup(request), request.sandboxId);
     const expiresAt = new Date(this.#now().getTime() + request.validForSeconds * 1000);
@@ -154,6 +173,17 @@ export class FakeSandboxProvider implements SandboxProvider {
    */
   failNextOperation(error: SandboxProviderError, operation?: FakeSandboxOperation): void {
     this.#plannedFailure = { error, operation };
+  }
+
+  /**
+   * Holds the next call of `operation` (recorded, but not yet carried out)
+   * until the returned function is called, so a test can act while a slow
+   * provider is still working.
+   */
+  holdNextOperation(operation: FakeSandboxOperation): () => void {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#heldOperations.set(operation, promise);
+    return resolve;
   }
 
   /** Stops a sandbox as if the provider had (its supervisor is stopped too). */
@@ -213,7 +243,12 @@ export class FakeSandboxProvider implements SandboxProvider {
     return [...this.#sandboxes.values()].find((sandbox) => sandbox.threadId === threadId);
   }
 
-  #failIfPlanned(operation: FakeSandboxOperation): void {
+  async #beforeOperation(operation: FakeSandboxOperation): Promise<void> {
+    const held = this.#heldOperations.get(operation);
+    if (held !== undefined) {
+      this.#heldOperations.delete(operation);
+      await held;
+    }
     const planned = this.#plannedFailure;
     if (planned === undefined || (planned.operation ?? operation) !== operation) {
       return;

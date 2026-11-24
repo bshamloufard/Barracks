@@ -24,11 +24,12 @@ describeSandboxProviderContract({
   async setUp() {
     const sandboxesDirectory = await mkdtemp(path.join(tmpdir(), "barrack-local-sandboxes-"));
     const recorder = await SupervisorConnectionRecorder.listen("127.0.0.1");
-    const provider = new LocalProcessSandboxProvider({
+    const settings = {
       supervisorCommand: standInSupervisorCommand,
       sandboxesDirectory,
       stopTimeoutInMilliseconds: 5_000,
-    });
+    };
+    const provider = new LocalProcessSandboxProvider(settings);
     const localPathOf = (sandboxId: string, imagePath: string): string => {
       const workspaceDirectory = provider.workspaceDirectoryOf(sandboxId);
       if (workspaceDirectory === undefined || !imagePath.startsWith(imageWorkspacePrefix)) {
@@ -43,6 +44,7 @@ describeSandboxProviderContract({
         BARRACK_THREAD_ID: threadId,
         STAND_IN_CONNECT_URL: `ws://127.0.0.1:${recorder.port}${buildSupervisorEndpointPath({ threadId })}`,
       }),
+      reopenProvider: () => new LocalProcessSandboxProvider(settings),
       waitForSupervisorLaunches: (threadId, launchCount) =>
         recorder.waitForConnections(
           threadId,
