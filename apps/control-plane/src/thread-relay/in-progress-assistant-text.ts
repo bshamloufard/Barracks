@@ -36,9 +36,14 @@ const maximumContentBlocksPerMessage = 1_000;
  *
  * Only the current message is kept, because the supervisor is untrusted and
  * must not be able to make the control plane hold text for many messages; an
- * agent produces its messages one after another anyway. A fragment for a
- * different message therefore replaces the current one, and the completed
- * message, once recorded, supersedes its streamed text.
+ * agent produces its messages one after another anyway. The completed
+ * message, once recorded, supersedes its streamed text, and text that was
+ * never completed is discarded when another message starts streaming and
+ * when the run settles or fails (the relay calls `discardCurrentMessage`).
+ * The web client's reducer applies the same rule to what a page that is
+ * watching shows (`applyAssistantTextFragment` in
+ * apps/web/src/thread-state/thread-state.ts), so a page that reconnects shows
+ * the same as a page that watched all along.
  *
  * A message that goes past a limit is remembered as such, and none of its
  * text is kept until a different message starts: picking it up again from

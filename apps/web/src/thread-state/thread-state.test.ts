@@ -144,6 +144,34 @@ describe("stream fragments", () => {
     expect(afterLateFragment).toBe(completed);
   });
 
+  it("of a message that was never completed are discarded when the run settles", () => {
+    const state = stateAfter(
+      recorded(1, { type: "agent_run_started" }),
+      fragment("assistant-1", "Half a sen"),
+      recorded(2, { type: "agent_run_settled", wasInterrupted: false }),
+    );
+
+    expect(state.entries).toEqual([]);
+  });
+
+  it("of a message that was never completed are discarded when the agent fails", () => {
+    const state = stateAfter(
+      recorded(1, { type: "agent_run_started" }),
+      fragment("assistant-1", "Half a sen"),
+      recorded(2, { type: "agent_failed", errorMessage: "Pi exited with code 1" }),
+    );
+
+    expect(state.entries).toEqual([
+      { kind: "agent_failed", key: "event:2", errorMessage: "Pi exited with code 1" },
+    ]);
+  });
+
+  it("of a message that was never completed are discarded when another message starts streaming", () => {
+    const state = stateAfter(fragment("assistant-1", "Abandoned"), fragment("assistant-2", "Next"));
+
+    expect(state.entries.map((entry) => entry.key)).toEqual(["assistant:assistant-2"]);
+  });
+
   it("are dropped on reconnect, because the control plane resends the text so far", () => {
     const streaming = stateAfter(
       recorded(1, { type: "agent_run_started" }),

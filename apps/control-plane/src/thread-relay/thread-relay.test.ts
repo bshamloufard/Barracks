@@ -468,6 +468,36 @@ describe("stream fragments from the supervisor", () => {
     ]);
   });
 
+  it.each<[string, AgentEvent]>([
+    ["the run settles", agentRunSettled],
+    ["the agent fails", { type: "agent_failed", errorMessage: "Pi exited with code 1" }],
+  ])(
+    "of a message never completed are no longer sent to joining clients once %s",
+    async (_, runEnd) => {
+      const supervisor = await controlPlane.connectSupervisor(threadId);
+      const observer = await controlPlane.connectClient(threadId);
+      supervisor.sendAgentEvent(agentRunStarted);
+      supervisor.sendTextFragment({
+        messageId: "assistant-1",
+        contentBlockIndex: 0,
+        contentBlockType: "text",
+        appendedText: "Half a sen",
+      });
+      supervisor.sendAgentEvent(runEnd);
+      await observer.waitForSequence(2);
+
+      const joiner = await controlPlane.connectClient(threadId);
+      await joiner.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
+
+      expect(messageTypesOf(joiner)).toEqual([
+        "replay_announcement",
+        "thread_event",
+        "thread_event",
+        "supervisor_connection_status",
+      ]);
+    },
+  );
+
   it("are no longer sent to joining clients once the completed message is recorded", async () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const observer = await controlPlane.connectClient(threadId);

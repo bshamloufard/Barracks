@@ -158,10 +158,7 @@ export function applyReplayAnnouncement(
       isAgentWorking: false,
     };
   }
-  return {
-    ...state,
-    entries: state.entries.filter((entry) => entry.kind !== "streaming_assistant_message"),
-  };
+  return discardStreamedText(state);
 }
 
 /** Applies a recorded thread event once; a sequence already seen is ignored. */
@@ -212,17 +209,23 @@ function applyThreadEvent(
     case "tool_execution_finished":
       return applyToolExecutionFinished(state, event);
     case "agent_run_settled": {
-      const settledState = { ...state, isAgentWorking: false };
+      const settledState = endRun(state);
       return event.wasInterrupted
         ? appendEntry(settledState, { kind: "agent_interrupted", key: `event:${sequence}` })
         : settledState;
     }
     case "agent_failed":
-      return appendEntry(
-        { ...state, isAgentWorking: false },
-        { kind: "agent_failed", key: `event:${sequence}`, errorMessage: event.errorMessage },
-      );
+      return appendEntry(endRun(state), {
+        kind: "agent_failed",
+        key: `event:${sequence}`,
+        errorMessage: event.errorMessage,
+      });
   }
+}
+
+/** A run that settles or fails takes with it any streamed text it never completed. */
+function endRun(state: ThreadState): ThreadState {
+  return { ...discardStreamedText(state), isAgentWorking: false };
 }
 
 function applyToolExecutionFinished(
@@ -252,6 +255,14 @@ function applyToolExecutionFinished(
  * Adds streamed text to the message it belongs to. Text for a message whose
  * completed event has already been applied is ignored: the recorded message
  * is the authority and has replaced its fragments.
+ *
+ * Streamed text is shown only for the message currently being produced, by
+ * the same rule the control plane uses for the text it sends to clients that
+ * join mid-message (`InProgressAssistantText` in
+ * apps/control-plane/src/thread-relay/in-progress-assistant-text.ts), so a
+ * page that watched all along shows what a page that reconnects shows: text
+ * that was never completed is discarded when another message starts
+ * streaming and when the run settles or fails.
  */
 export function applyAssistantTextFragment(
   state: ThreadState,
@@ -263,12 +274,20 @@ export function applyAssistantTextFragment(
     return state;
   }
   const blocks = appendFragmentToBlocks(existingEntry?.blocks ?? [], fragment);
-  return replaceOrAppendEntry(state, {
+  return replaceOrAppendEntry(discardStreamedText(state, key), {
     kind: "streaming_assistant_message",
     key,
     messageId: fragment.messageId,
     blocks,
   });
+}
+
+/** Drops every streaming entry, except the one with `keptKey` if given. */
+function discardStreamedText(state: ThreadState, keptKey?: string): ThreadState {
+  const entries = state.entries.filter(
+    (entry) => entry.kind !== "streaming_assistant_message" || entry.key === keptKey,
+  );
+  return { ...state, entries };
 }
 
 function appendFragmentToBlocks(
