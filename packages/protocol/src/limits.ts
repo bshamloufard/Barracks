@@ -61,3 +61,10 @@ export const maximumToolOutputLength = 64 * 1024;
  * provider's JSON response body, which is a few kilobytes at most.
  */
 export const maximumErrorMessageLength = 16 * 1024;
+
+/**
+ * A Supabase access token is a JWT of about a kilobyte, which metadata the
+ * user sets can enlarge. 16 Ki characters is ample, and bounds what an
+ * unauthenticated connection can make the control plane parse.
+ */
+export const maximumAccessTokenLength = 16 * 1024;

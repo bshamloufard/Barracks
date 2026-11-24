@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { interruptAgentMessageSchema } from "./interrupt-agent-message.js";
-import { maximumErrorMessageLength } from "./limits.js";
+import { maximumAccessTokenLength, maximumErrorMessageLength } from "./limits.js";
 import { parseFrame } from "./parse-frame.js";
 import type { ParseResult } from "./parse-result.js";
 import { sequenceSchema } from "./sequence.js";
@@ -17,7 +17,13 @@ import {
  * last sequence it has already seen in the connection's URL (see
  * `buildClientEndpointPath`).
  *
- * The control plane's first message on every connection is a
+ * The client's first message must be `authenticate`, and it sends nothing
+ * else until the replay announcement arrives. Until the control plane has
+ * checked the token and that the thread is the user's own, it sends nothing
+ * about the thread; a connection that sends anything else first, or nothing
+ * in time, is closed (see `closeCodes`).
+ *
+ * After successful authentication, the control plane's first message is a
  * `replay_announcement`. Exactly the announced thread events follow, in
  * sequence order, and only then does anything else arrive. A client can
  * therefore tell catching up from watching live.
@@ -107,7 +113,31 @@ export const sendUserMessageSchema = z.strictObject({
   text: userMessageTextSchema,
 });
 
+/**
+ * Proves who the user is, with an access token from the sign-in service (a
+ * Supabase Auth access token, or the token a control plane in development
+ * mode hands out). It is the first message on every connection, and is sent
+ * again with each newer token the client receives while the connection is
+ * open, which must be for the same user. When the newest token sent expires
+ * without a newer one, the control plane closes the connection with
+ * `closeCodes.accessTokenExpired`.
+ *
+ * A token never goes in the connection's URL, where it would end up in logs;
+ * browsers cannot set headers on a WebSocket.
+ */
+export const authenticateMessageSchema = z.strictObject({
+  type: z.literal("authenticate"),
+  accessToken: z.string().min(1).max(maximumAccessTokenLength),
+});
+
+/** What an authenticated client asks of the thread it is viewing. */
+export const clientCommandSchema = z.discriminatedUnion("type", [
+  sendUserMessageSchema,
+  interruptAgentMessageSchema,
+]);
+
 export const clientToControlPlaneMessageSchema = z.discriminatedUnion("type", [
+  authenticateMessageSchema,
   sendUserMessageSchema,
   interruptAgentMessageSchema,
 ]);
@@ -118,6 +148,8 @@ export type SupervisorConnectionStatus = z.infer<typeof supervisorConnectionStat
 export type ClientMessageRejected = z.infer<typeof clientMessageRejectedSchema>;
 export type ControlPlaneToClientMessage = z.infer<typeof controlPlaneToClientMessageSchema>;
 export type SendUserMessage = z.infer<typeof sendUserMessageSchema>;
+export type AuthenticateMessage = z.infer<typeof authenticateMessageSchema>;
+export type ClientCommand = z.infer<typeof clientCommandSchema>;
 export type ClientToControlPlaneMessage = z.infer<typeof clientToControlPlaneMessageSchema>;
 
 export function parseControlPlaneToClientMessage(

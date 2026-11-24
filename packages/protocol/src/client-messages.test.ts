@@ -8,6 +8,7 @@ import {
   parseControlPlaneToClientMessage,
 } from "./client-messages.js";
 import {
+  maximumAccessTokenLength,
   maximumAgentEventFrameLength,
   maximumErrorMessageLength,
   maximumFrameLength,
@@ -115,6 +116,7 @@ describe("control plane to client messages", () => {
 
 describe("client to control plane messages", () => {
   const everyMessage: ClientToControlPlaneMessage[] = [
+    { type: "authenticate", accessToken: "header.payload.signature" },
     { type: "send_user_message", text: "Please say hello" },
     { type: "interrupt_agent" },
   ];
@@ -152,6 +154,28 @@ describe("client to control plane messages", () => {
 
   it("reject an unknown message type", () => {
     expect(parseClientToControlPlaneMessage(frameOf({ type: "delete_thread" })).ok).toBe(false);
+  });
+
+  it("reject authentication without a token, or with one longer than the limit", () => {
+    const longToken = "x".repeat(maximumAccessTokenLength + 1);
+
+    expect(parseClientToControlPlaneMessage(frameOf({ type: "authenticate" })).ok).toBe(false);
+    expect(
+      parseClientToControlPlaneMessage(frameOf({ type: "authenticate", accessToken: "" })).ok,
+    ).toBe(false);
+    expect(
+      parseClientToControlPlaneMessage(frameOf({ type: "authenticate", accessToken: longToken }))
+        .ok,
+    ).toBe(false);
+  });
+
+  it("do not echo a refused token in the reason", () => {
+    const message = { type: "authenticate", accessToken: "secret-token", extra: true };
+
+    const parsed = parseClientToControlPlaneMessage(frameOf(message));
+
+    expect(parsed.ok).toBe(false);
+    expect(JSON.stringify(parsed)).not.toContain("secret-token");
   });
 });
 

@@ -10,6 +10,10 @@ import { maximumErrorMessageLength } from "./limits.js";
  *
  * Thread identifiers are minted by the control plane when a thread is
  * created; clients never choose them.
+ *
+ * Every request carries `Authorization: Bearer <access token>`, and sees and
+ * changes only the signed-in user's own threads: another user's thread is
+ * answered exactly as one that does not exist.
  */
 
 export const threadsApiPath = "/api/threads";
@@ -56,10 +60,17 @@ export const threadListResponseSchema = z.strictObject({
 /**
  * Every refused or failed request answers with this body. `code` is stable
  * and meant for programs; `message` is meant for people.
+ *
+ * - `unauthorized` (401): no access token, or one that is not valid or has
+ *   expired. Refresh the session, or sign in again.
+ * - `not_allowed` (403): signed in, but this installation does not let the
+ *   user use it. Signing in again as the same user will not help.
  */
 export const apiErrorResponseSchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
+      "unauthorized",
+      "not_allowed",
       "bad_request",
       "forbidden_origin",
       "unsupported_media_type",
