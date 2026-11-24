@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   type MockModelServer,
@@ -11,24 +10,34 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   describeWhyDockerTestCannotRun,
   findDockerBridgeGateway,
+  findSandboxIdOf,
   readSandboxExit,
-  sandboxImage,
+  readSupervisorTokenOf,
+  testDockerSettings,
   writeFileInSandboxAsAgent,
 } from "./support/docker-environment.js";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
+import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js";
 
 /**
- * A thread whose sandbox is a real container from the sandbox image, running
+ * A thread created through the real control plane's API, whose sandbox the
+ * control plane creates as a real container from the sandbox image, running
  * the real Pi against a mock model on the host. The agent is made to run
  * commands, and everything asserted about what it can reach comes from its
  * own tool output: it runs as its own user, it cannot read the supervisor's
- * environment or files or the token anywhere, cannot signal or trace the
- * supervisor, cannot run the helper that changes user, and can write to its
- * workspace. After a stop and start, its conversation carries on. And when
- * the agent stops Pi from answering, stopping the sandbox still ends Pi and
- * the agent's processes in time, through the helper, since the supervisor
- * may not signal them itself.
+ * environment or files or this thread's supervisor token anywhere, cannot
+ * signal or trace the supervisor, cannot run the helper that changes user,
+ * and can write to its workspace. After a stop and start, its conversation
+ * carries on. And when the agent stops Pi from answering, stopping the
+ * sandbox still ends Pi and the agent's processes in time, through the
+ * helper, since the supervisor may not signal them itself.
+ *
+ * The test needs the thread's token to look for it, and the control plane
+ * never reveals one, so the test reads it from the container's
+ * configuration, as only someone in charge of the Docker daemon can. The
+ * control plane cannot stop or start sandboxes yet, so the test does that
+ * through the provider directly.
  *
  * The control plane and the mock model listen on the host's address on
  * Docker's default bridge network, which containers reach as
@@ -41,8 +50,7 @@ const probeInSandbox = "/tmp/agent-isolation-probe.mjs";
 const piAgentDirectory = "/var/lib/barrack/state/pi/agent";
 const agentUserId = 10002;
 const supervisorUserId = 10001;
-/** The Docker provider's default. */
-const stopTimeoutInSeconds = 15;
+const { stopTimeoutInSeconds } = testDockerSettings;
 
 function supervisorIs(isConnected: boolean) {
   return (messages: readonly ControlPlaneToClientMessage[]): boolean => {
@@ -78,60 +86,53 @@ if (unavailableReason !== undefined) {
   });
 } else {
   describe("the agent in a Docker sandbox", { timeout: dockerTestTimeoutInMilliseconds }, () => {
-    const provider = createSandboxProvider({
-      kind: "docker",
-      docker: {
-        image: sandboxImage,
-        cpuLimit: 1,
-        memoryLimitInMebibytes: 1024,
-        processLimit: 256,
-        stopTimeoutInSeconds,
-        servicePorts: [],
-        dockerExecutable: "docker",
-      },
-    });
+    const provider = createSandboxProvider({ kind: "docker", docker: testDockerSettings });
     let controlPlane: RunningControlPlane | undefined;
     let modelServer: MockModelServer | undefined;
-    const sandboxIds: string[] = [];
+    const threadIds: string[] = [];
     const clients: TestClient[] = [];
 
     beforeAll(async () => {
       const hostAddress = findDockerBridgeGateway();
-      controlPlane = await startControlPlane(hostAddress);
       modelServer = await startMockModelServer(hostAddress);
+      controlPlane = await startControlPlane({
+        host: hostAddress,
+        sandboxes: { kind: "docker" },
+        agent: { harness: "pi", model: "mock/mock-1" },
+      });
     }, dockerTestTimeoutInMilliseconds);
 
     // Runs whether or not the test passed, so no container is left behind.
     afterAll(async () => {
       await Promise.all(clients.map((client) => client.close()));
-      await Promise.all(sandboxIds.map((sandboxId) => provider.destroy(sandboxId)));
+      await Promise.all(threadIds.map((threadId) => destroySandboxOf(threadId)));
       await modelServer?.close();
-      await controlPlane?.process.stop();
+      await controlPlane?.stop();
     }, dockerTestTimeoutInMilliseconds);
 
+    async function destroySandboxOf(threadId: string): Promise<void> {
+      try {
+        await provider.destroy(findSandboxIdOf(threadId));
+      } catch (error) {
+        // The thread may never have got a sandbox, if the test failed early.
+        console.warn(`Could not destroy the sandbox of thread ${threadId}:`, error);
+      }
+    }
+
     /**
-     * Creates a thread's sandbox running Pi, and connects a client to the
-     * thread. Pi refuses to start until it knows the model, which is
-     * configured only once the sandbox exists; the supervisor starts Pi
-     * again on the first message, by which time it does.
+     * Creates a thread through the control plane, whose sandbox runs Pi, and
+     * connects a client to it. Pi refuses to start until it knows the model,
+     * which is configured only once the sandbox exists; the supervisor starts
+     * Pi again on the first message, by which time it does.
      */
     async function startThreadOnPi() {
       if (controlPlane === undefined || modelServer === undefined) {
         throw new Error("The control plane or the mock model did not start.");
       }
-      const threadId = `docker-agent-${randomUUID()}`;
-      const controlPlanePort = new URL(controlPlane.webSocketBaseUrl).port;
-      const { sandboxId } = await provider.create({
-        threadId,
-        supervisorEnvironment: {
-          BARRACK_CONTROL_PLANE_URL: `ws://host.docker.internal:${controlPlanePort}`,
-          BARRACK_THREAD_ID: threadId,
-          BARRACK_SUPERVISOR_TOKEN: controlPlane.supervisorToken,
-          BARRACK_MODEL: "mock/mock-1",
-          PI_OFFLINE: "1",
-        },
-      });
-      sandboxIds.push(sandboxId);
+      const { threadId } = await createThread(controlPlane.httpBaseUrl);
+      threadIds.push(threadId);
+      await waitUntilSandboxIsReady(controlPlane.httpBaseUrl, threadId);
+      const sandboxId = findSandboxIdOf(threadId);
       const client = await TestClient.connect(controlPlane.webSocketBaseUrl, threadId, 0);
       clients.push(client);
       await client.waitUntil("the sandbox's supervisor has connected", supervisorIs(true));
@@ -140,13 +141,13 @@ if (unavailableReason !== undefined) {
         `${piAgentDirectory}/models.json`,
         describeMockModel(modelServer),
       );
-      return { sandboxId, client, controlPlanePort, modelServer, controlPlane };
+      const controlPlanePort = new URL(controlPlane.webSocketBaseUrl).port;
+      return { sandboxId, client, controlPlanePort, modelServer };
     }
 
     it("runs Pi as its own user, out of reach of the supervisor's secrets, and resumes its conversation after a stop and start", async () => {
-      const { sandboxId, client, controlPlanePort, modelServer, controlPlane } =
-        await startThreadOnPi();
-      const { supervisorToken } = controlPlane;
+      const { sandboxId, client, controlPlanePort, modelServer } = await startThreadOnPi();
+      const supervisorToken = readSupervisorTokenOf(sandboxId);
       const probe = await readFile(
         new URL("support/agent-isolation-probe.mjs", import.meta.url),
         "utf8",

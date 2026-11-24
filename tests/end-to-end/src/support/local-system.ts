@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { testDockerSettings } from "./docker-environment.js";
 import { repositoryRoot, ServiceProcess, tsxLoaderUrl } from "./service-process.js";
 
 /** Services get only what they need from the test runner's environment. */
@@ -14,13 +15,23 @@ export const testClientOrigin = "http://end-to-end-test.localhost";
  * Where the control plane creates threads' sandboxes:
  * - `local-process`: the real supervisor, run from its sources as a child
  *   of the control plane, with no isolation. Fast, and needs no Docker.
- * - `docker`: containers from the sandbox image, which reach the control
- *   plane on the host as host.docker.internal.
+ * - `docker`: containers from the sandbox image, with `testDockerSettings`,
+ *   which reach the control plane on the host as host.docker.internal.
  */
-export type SandboxChoice = { kind: "local-process" } | { kind: "docker"; image: string };
+export type SandboxChoice = { kind: "local-process" } | { kind: "docker" };
+
+/**
+ * What every sandbox's supervisor runs: the scripted fake agent, or the real
+ * Pi with `model`, which must be one the sandbox's Pi is configured to
+ * reach (such as the mock model). Pi is kept offline (`PI_OFFLINE`), since
+ * a test has no business reaching the internet.
+ */
+export type AgentChoice = { harness: "fake" } | { harness: "pi"; model: string };
 
 export type ControlPlaneOptions = {
   sandboxes: SandboxChoice;
+  /** The fake agent unless said otherwise. */
+  agent?: AgentChoice;
   /** The interface to listen on; loopback unless sandboxes must reach it from elsewhere. */
   host?: string;
 };
@@ -36,9 +47,9 @@ export type RunningControlPlane = {
 };
 
 /**
- * Starts the real control plane from its sources, with the fake agent in
- * every sandbox it creates. Its port is picked before it starts, because
- * sandboxes are told the URL to reach it at when they are created.
+ * Starts the real control plane from its sources. Its port is picked before
+ * it starts, because sandboxes are told the URL to reach it at when they are
+ * created.
  */
 export async function startControlPlane(
   options: ControlPlaneOptions,
@@ -53,7 +64,7 @@ export async function startControlPlane(
     BARRACK_CONTROL_PLANE_HOST: host,
     BARRACK_CONTROL_PLANE_PORT: String(port),
     BARRACK_ALLOWED_CLIENT_ORIGINS: testClientOrigin,
-    BARRACK_AGENT_HARNESS: "fake",
+    ...agentVariables(options.agent ?? { harness: "fake" }),
     ...sandboxes.variables,
   });
   await controlPlane.waitForLogLine(
@@ -71,6 +82,13 @@ export async function startControlPlane(
   };
 }
 
+function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {
+  if (agent.harness === "fake") {
+    return { BARRACK_AGENT_HARNESS: "fake" };
+  }
+  return { BARRACK_AGENT_HARNESS: "pi", BARRACK_MODEL: agent.model, PI_OFFLINE: "1" };
+}
+
 async function sandboxVariables(
   sandboxes: SandboxChoice,
   port: number,
@@ -79,11 +97,11 @@ async function sandboxVariables(
     return {
       variables: {
         BARRACK_SANDBOX_PROVIDER: "docker",
-        BARRACK_DOCKER_IMAGE: sandboxes.image,
-        BARRACK_DOCKER_CPUS: "1",
-        BARRACK_DOCKER_MEMORY_MEBIBYTES: "512",
-        BARRACK_DOCKER_PROCESS_LIMIT: "256",
-        BARRACK_DOCKER_STOP_TIMEOUT_SECONDS: "10",
+        BARRACK_DOCKER_IMAGE: testDockerSettings.image,
+        BARRACK_DOCKER_CPUS: String(testDockerSettings.cpuLimit),
+        BARRACK_DOCKER_MEMORY_MEBIBYTES: String(testDockerSettings.memoryLimitInMebibytes),
+        BARRACK_DOCKER_PROCESS_LIMIT: String(testDockerSettings.processLimit),
+        BARRACK_DOCKER_STOP_TIMEOUT_SECONDS: String(testDockerSettings.stopTimeoutInSeconds),
         BARRACK_SANDBOX_CONTROL_PLANE_URL: `ws://host.docker.internal:${port}`,
       },
       removeLeftovers: async () => undefined,

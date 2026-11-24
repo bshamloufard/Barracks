@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { DockerProviderSettings } from "@barrack/sandbox-providers";
 
 /**
  * Whether the test that runs a thread in a real Docker container can run
@@ -11,6 +12,23 @@ const { BARRACK_DOCKER_TESTS: dockerTestsRequested, BARRACK_DOCKER_TEST_IMAGE: i
   process.env;
 
 export const sandboxImage = imageOverride ?? "barrack-sandbox:dev";
+
+/**
+ * The Docker provider's settings for every test sandbox, whether the control
+ * plane creates it or a test stops and starts it directly. The stop timeout
+ * is the provider's default, which the supervisor's stages of stopping Pi
+ * are designed to fit (apps/sandbox-supervisor/src/pi/pi-stop-timing.ts);
+ * Pi needs more memory than the fake agent.
+ */
+export const testDockerSettings = {
+  image: sandboxImage,
+  cpuLimit: 1,
+  memoryLimitInMebibytes: 1024,
+  processLimit: 256,
+  stopTimeoutInSeconds: 15,
+  servicePorts: [],
+  dockerExecutable: "docker",
+} satisfies DockerProviderSettings;
 
 /** Why the Docker test cannot run, or undefined if it can. */
 export function describeWhyDockerTestCannotRun(): string | undefined {
@@ -33,6 +51,57 @@ export function findDockerBridgeGateway(): string {
     ["network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
     { encoding: "utf8" },
   ).trim();
+}
+
+/** The Docker provider labels each sandbox's container with its thread. */
+export function findSandboxIdOf(threadId: string): string {
+  const containerIds = execFileSync(
+    "docker",
+    [
+      "container",
+      "ls",
+      "--all",
+      "--no-trunc",
+      "--quiet",
+      "--filter",
+      `label=barrack.thread-id=${threadId}`,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  )
+    .split("\n")
+    .filter((line) => line !== "");
+  const [sandboxId] = containerIds;
+  if (sandboxId === undefined || containerIds.length !== 1) {
+    throw new Error(`Expected one sandbox for thread ${threadId}, found ${containerIds.length}.`);
+  }
+  return sandboxId;
+}
+
+/**
+ * The supervisor token the control plane gave a sandbox, read from its
+ * container's configuration. The control plane never reveals a token, so a
+ * test that must look for one gets it the way only someone in charge of the
+ * Docker daemon can, which on this machine is as good as root anyway.
+ */
+export function readSupervisorTokenOf(sandboxId: string): string {
+  const variables: unknown = JSON.parse(
+    execFileSync(
+      "docker",
+      ["container", "inspect", "--format", "{{json .Config.Env}}", sandboxId],
+      {
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    ),
+  );
+  const prefix = "BARRACK_SUPERVISOR_TOKEN=";
+  const variable = Array.isArray(variables)
+    ? variables.find((entry) => typeof entry === "string" && entry.startsWith(prefix))
+    : undefined;
+  if (typeof variable !== "string" || variable.length === prefix.length) {
+    throw new Error(`Sandbox ${sandboxId} has no supervisor token in its configuration.`);
+  }
+  return variable.slice(prefix.length);
 }
 
 /**

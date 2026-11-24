@@ -1,11 +1,11 @@
-import { execFileSync } from "node:child_process";
 import type { ControlPlaneToClientMessage } from "@barrack/protocol";
 import { createSandboxProvider } from "@barrack/sandbox-providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   describeWhyDockerTestCannotRun,
   findDockerBridgeGateway,
-  sandboxImage,
+  findSandboxIdOf,
+  testDockerSettings,
 } from "./support/docker-environment.js";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
@@ -45,48 +45,13 @@ function supervisorIs(isConnected: boolean) {
   };
 }
 
-/** The Docker provider labels each sandbox's container with its thread. */
-function findSandboxIdOf(threadId: string): string {
-  const containerIds = execFileSync(
-    "docker",
-    [
-      "container",
-      "ls",
-      "--all",
-      "--no-trunc",
-      "--quiet",
-      "--filter",
-      `label=barrack.thread-id=${threadId}`,
-    ],
-    { encoding: "utf8" },
-  )
-    .split("\n")
-    .filter((line) => line !== "");
-  const [sandboxId] = containerIds;
-  if (sandboxId === undefined || containerIds.length !== 1) {
-    throw new Error(`Expected one sandbox for thread ${threadId}, found ${containerIds.length}.`);
-  }
-  return sandboxId;
-}
-
 if (unavailableReason !== undefined) {
   describe.skip(`a thread in a Docker sandbox (skipped: ${unavailableReason})`, () => {
     it("is not tested here", () => {});
   });
 } else {
   describe("a thread in a Docker sandbox", { timeout: dockerTestTimeoutInMilliseconds }, () => {
-    const provider = createSandboxProvider({
-      kind: "docker",
-      docker: {
-        image: sandboxImage,
-        cpuLimit: 1,
-        memoryLimitInMebibytes: 512,
-        processLimit: 256,
-        stopTimeoutInSeconds: 10,
-        servicePorts: [],
-        dockerExecutable: "docker",
-      },
-    });
+    const provider = createSandboxProvider({ kind: "docker", docker: testDockerSettings });
     let controlPlane: RunningControlPlane | undefined;
     let sandboxId: string | undefined;
     let client: TestClient | undefined;
@@ -94,7 +59,7 @@ if (unavailableReason !== undefined) {
     beforeAll(async () => {
       controlPlane = await startControlPlane({
         host: findDockerBridgeGateway(),
-        sandboxes: { kind: "docker", image: sandboxImage },
+        sandboxes: { kind: "docker" },
       });
     }, dockerTestTimeoutInMilliseconds);
 
