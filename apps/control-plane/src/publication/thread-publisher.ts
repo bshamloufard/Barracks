@@ -22,6 +22,7 @@ import type {
   ThreadRepositoryRecord,
   ThreadRepositoryStore,
 } from "../repositories/thread-repository-store.js";
+import type { Clock } from "../sandbox-lifecycle/lifecycle-settings.js";
 import type { PublicationOutcomeEvent } from "../thread-event-log/thread-event-log.js";
 import type { ThreadEndingListener } from "../thread-relay/thread-relay-registry.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
@@ -79,6 +80,7 @@ export type ThreadPublisherOptions = {
   api: GithubApi | undefined;
   uploads: PublicationBundleUploads;
   channel: PublicationChannel;
+  clock: Clock;
   logger: Logger;
   maximumBundleSizeInBytes?: number;
   /** What each Git process may use; `defaultGitChildLimits` unless a test needs tighter ones. */
@@ -94,6 +96,13 @@ type Verified = {
   /** Aborted once the thread begins being deleted. */
   abandonment: AbortController;
 };
+
+/**
+ * How often a publication under way notes activity in its thread, so that
+ * idle shutdown does not stop the sandbox while it makes the bundle: well
+ * within any idle period of a minute or more.
+ */
+const activityIntervalInMilliseconds = 30_000;
 
 const stoppingReason =
   "The thread's sandbox is stopping, so it cannot send the branch's commits. Resume the thread, then publish again.";
@@ -154,11 +163,32 @@ export class ThreadPublisher {
       return { kind: "conflict", message: "This thread's branch is already being published." };
     }
     this.#underWay.set(threadId, checked.abandonment);
+    const stopNotingActivity = this.#noteActivityWhileUnderWay(threadId);
     try {
       return await this.#publishAndRecord(checked, request.openPullRequest);
     } finally {
+      stopNotingActivity();
       this.#underWay.delete(threadId);
     }
+  }
+
+  /**
+   * A publication counts as activity in its thread, at once and then
+   * regularly, in the thread's record, where idle shutdown on any control
+   * plane reads it.
+   */
+  #noteActivityWhileUnderWay(threadId: string): () => void {
+    const { threadStore, clock, logger } = this.#options;
+    const noteActivity = () => {
+      threadStore
+        .recordActivity(threadId, clock())
+        .catch((error: unknown) =>
+          logger.error({ err: error, threadId }, "Could not note a publication as activity"),
+        );
+    };
+    noteActivity();
+    const timer = setInterval(noteActivity, activityIntervalInMilliseconds);
+    return () => clearInterval(timer);
   }
 
   async #checkPublishable(

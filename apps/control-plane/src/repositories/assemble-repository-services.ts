@@ -92,6 +92,7 @@ export function assembleRepositoryServices(options: RepositoryServicesOptions): 
         api,
         uploads,
         channel,
+        clock,
         logger,
         ...(options.maximumBundleSizeInBytes === undefined
           ? {}

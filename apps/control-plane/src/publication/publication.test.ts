@@ -23,12 +23,14 @@ import {
 } from "@barrack/protocol";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ControllableClock } from "../test-support/controllable-clock.js";
 import { githubSettingsFor, linkGithub } from "../test-support/github-test-setup.js";
 import { buildDeltaBombPack, wrapPackInBundle } from "../test-support/hostile-packs.js";
 import {
   browserHeaders,
   TestControlPlane,
   type TestControlPlaneOptions,
+  testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor } from "../test-support/test-peers.js";
 import { defaultGitChildLimits, type GitChildLimits } from "./git-child-limits.js";
@@ -681,6 +683,32 @@ describe("publishing while the thread ends", () => {
     expect(await recordedRepositoryEvents(thread.threadId)).toEqual([
       { type: "repository_publication_failed", errorMessage: failure },
     ]);
+  });
+});
+
+describe("a publication under way", () => {
+  it("counts as activity, so a sandbox quiet for nearly the idle period is not stopped while it makes the bundle", async () => {
+    const clock = new ControllableClock();
+    await controlPlane.close();
+    await startControlPlane({ clock: clock.now });
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "agent.txt");
+    clock.advanceBy(testLifecycleSettings.idlePeriodInMilliseconds - 1_000);
+
+    const { answer, request } = await askToPublish(thread, false);
+    clock.advanceBy(2_000);
+    await controlPlane.threadServices.idleShutdown.stopIdleSandboxes();
+    await controlPlane.whenOperationsSettle();
+    const stateWhilePublishing = (await controlPlane.threadStore.find(thread.threadId))?.sandbox
+      .state;
+    await upload(
+      request,
+      await bundleSinceBase(thread),
+      controlPlane.supervisorTokenGivenFor(thread.threadId),
+    );
+
+    expect(stateWhilePublishing).toBe("running");
+    expect((await answer).status).toBe(200);
   });
 });
 
