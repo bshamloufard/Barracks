@@ -1,4 +1,4 @@
-import { isRelayedProvider } from "@barrack/model-catalogue";
+import { findCatalogueProvider, isRelayedProvider } from "@barrack/model-catalogue";
 import {
   buildModelProxyBasePath,
   type ConfigureModelAccess,
@@ -14,6 +14,14 @@ import type {
 } from "../thread-relay/thread-model-access.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { ModelCredentials } from "./model-credentials.js";
+
+/**
+ * Where usage a sandbox reports for a model it could not have been given is
+ * counted, so made-up names add one row per provider and hour at most.
+ * Neither can be a real provider or model identifier.
+ */
+export const unrecognisedProviderId = "unrecognised";
+export const unrecognisedModelId = "(unrecognised model)";
 
 export type OwnerModelAccessOptions = {
   threadStore: ThreadStore;
@@ -103,17 +111,22 @@ export class OwnerModelAccess implements ThreadModelAccess {
 
   /**
    * What a relayed provider's traffic used is measured at the proxy, so the
-   * sandbox's own account of it is not counted twice.
+   * sandbox's own account of it is not counted twice. The sandbox is
+   * untrusted, and each model it names would be a row of its own, so only a
+   * model the catalogue lists for its provider, or the thread's own model,
+   * is kept by name; any other is counted as the provider's unrecognised
+   * model, and a provider the catalogue does not list as an unrecognised
+   * provider. The counts themselves are bounded by the protocol.
    */
   async noteReportedUsage(threadId: string, reported: ReportedModelUsage): Promise<void> {
-    const { providerId, modelId } = parseModelReference(reported.model);
-    if (isRelayedProvider(providerId)) {
+    if (isRelayedProvider(parseModelReference(reported.model).providerId)) {
       return;
     }
     const thread = await this.#options.threadStore.find(threadId);
     if (thread?.ownerUserId === undefined) {
       return;
     }
+    const { providerId, modelId } = recognisedModelOf(reported.model, thread.model);
     await this.#options.usage.record({
       ownerUserId: thread.ownerUserId,
       threadId,
@@ -158,4 +171,21 @@ export class OwnerModelAccess implements ThreadModelAccess {
       baseUrl: `${this.#options.controlPlaneUrlForSandboxes}${buildModelProxyBasePath(threadId, providerId)}`,
     };
   }
+}
+
+/** The reported model as it is counted: by name only if it could be the thread's. */
+function recognisedModelOf(
+  reportedModel: string,
+  threadModel: string | undefined,
+): { providerId: string; modelId: string } {
+  const reference = parseModelReference(reportedModel);
+  if (reportedModel === threadModel) {
+    return reference;
+  }
+  const provider = findCatalogueProvider(reference.providerId);
+  if (provider === undefined) {
+    return { providerId: unrecognisedProviderId, modelId: unrecognisedModelId };
+  }
+  const isListed = provider.models.some((model) => model.modelId === reference.modelId);
+  return isListed ? reference : { providerId: reference.providerId, modelId: unrecognisedModelId };
 }
