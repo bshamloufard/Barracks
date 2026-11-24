@@ -7,6 +7,7 @@ import {
 import { z } from "zod";
 import {
   type AuthenticationConfiguration,
+  authenticationVariableNames,
   readAuthenticationConfiguration,
 } from "./authentication/authentication-configuration.js";
 import {
@@ -78,8 +79,15 @@ const environmentSchema = z
 
 type Settings = z.infer<typeof environmentSchema>;
 
-/** Every variable the control plane itself reads; each provider reads its own as well. */
-export const controlPlaneVariableNames = Object.keys(environmentSchema.shape);
+/**
+ * Every variable the control plane itself reads, from each schema
+ * `readConfiguration` checks; each provider reads its own as well, and model
+ * keys and Pi's settings are forwarded from lists of their own.
+ */
+export const controlPlaneVariableNames = [
+  ...Object.keys(environmentSchema.shape),
+  ...authenticationVariableNames,
+];
 
 export type LogLevel = (typeof logLevels)[number];
 

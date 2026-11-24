@@ -79,6 +79,14 @@ export default defineRailway((context, project) => {
       // domain of your own. https://www.daytona.io/docs/en/network-limits
       BARRACK_SANDBOX_CONTROL_PLANE_URL: `wss://${publicDomain}`,
       BARRACK_ALLOWED_CLIENT_ORIGINS: `https://${publicDomain}`,
+      // Users sign in with Supabase Auth, and the control plane verifies
+      // their tokens itself. Set in the dashboard: the project's URL, its
+      // publishable key (never a secret key) and the email addresses allowed
+      // to use this installation.
+      BARRACK_AUTHENTICATION: "supabase",
+      BARRACK_SUPABASE_URL: preserve(),
+      BARRACK_SUPABASE_PUBLISHABLE_KEY: preserve(),
+      BARRACK_ALLOWED_USER_EMAILS: preserve(),
       // Set in the dashboard: the model in Pi's provider/model form, the
       // Daytona snapshot and key, and Supabase's session pooler URL and
       // certificate authority.

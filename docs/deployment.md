@@ -1,12 +1,12 @@
 # Deploying Barrack
 
 > [!WARNING]
-> **Do not deploy Barrack to a public address until user sign-in exists.** This build has none: anyone who can reach the control plane can create threads, read every thread and command its agent, which runs any command in its sandbox and spends your model keys. The hosted path below is written so that it is ready when sign-in lands; until then, use the single-machine path, which publishes the control plane on `127.0.0.1` only.
+> **Nothing here has been deployed yet.** Sign-in exists: users sign in with Supabase Auth, the control plane verifies every access token itself, admits only the email addresses you list, and shows each user only their own threads. But it has never run against a real Supabase project, Railway or Daytona (see [what the first deployment must confirm](#not-yet-verified)), and some limits remain: sandboxes are never stopped, so an idle one keeps costing until you stop it; the model provider keys you configure reach every sandbox, where any agent can read them; and the gaps listed in the [decision log](decisions.md) under "Security gaps that remain open" are still open. Admit only people you trust with your keys and your sandbox budget.
 
 There are two ways to run Barrack:
 
 - **[Hosted](#hosted-railway-supabase-and-daytona)**: the control plane on Railway, Postgres on Supabase, sandboxes on Daytona. No machine of your own stays on. **Not yet tried against the real services**; see [what the first deployment must confirm](#not-yet-verified).
-- **[On one machine](#on-one-machine-with-docker-compose)**: Postgres, the control plane and every sandbox in Docker on a machine you control, with Docker Compose. **Run end to end** (see [what was verified](#what-was-verified)).
+- **[On one machine](#on-one-machine-with-docker-compose)**: Postgres, the control plane and every sandbox in Docker on a machine you control, with Docker Compose, signing in through a Supabase project. **Run end to end before sign-in existed**, not since (see [what was verified](#what-was-verified)).
 
 Both run the same image, built by the [`Dockerfile`](../Dockerfile) at the repository root: the built control plane with its production dependencies only, and the built web client, which it serves. It runs as an unprivileged user, listens on port 8787, applies database migrations at startup, and on SIGTERM closes its connections, waits for sandbox creations under way and exits. It is configured entirely by environment variables. Its `control-plane-with-docker-cli` stage adds the Docker CLI, which only the Docker sandbox provider needs.
 
@@ -34,6 +34,18 @@ Model usage is billed by your model provider and is likely the largest cost.
 
 The control plane creates its tables in a schema of its own, `barrack`, with row level security on and no policies, so Supabase's Data API serves nothing from them. More in the [control plane's README](../apps/control-plane/README.md#supabase).
 
+### 1b. Supabase: sign-in
+
+The same project signs users in. The web client asks for a six-digit code by email and hands the control plane the access token Supabase gives it; the control plane checks it against the project's published public keys, so it never needs a secret key. In the project's dashboard:
+
+1. **Asymmetric signing keys.** Under **Project Settings → JWT Keys**, the current key must be asymmetric (ECC P-256 is recommended). New projects have one; a project still on the legacy HS256 secret must rotate to one. The control plane fetches the public keys at startup and refuses to start, saying so, if there are none.
+2. **The code in the email.** Under **Authentication → Email Templates**, edit the **Magic Link** template to include `{{ .Token }}`, the code, for example `<p>Your Barrack code: {{ .Token }}</p>`. No redirect URLs are needed.
+3. **Mail for everyone else.** Supabase's built-in sender delivers only to the project's team members, about twice an hour. For anyone outside the team to sign in, set up custom SMTP under **Authentication → SMTP Settings**.
+4. **Sign-ups off.** Supabase lets anyone sign up by default. List the addresses that may use Barrack in `BARRACK_ALLOWED_USER_EMAILS` (the control plane refuses everyone else, once Supabase confirms they own their address), and once each of them has signed in once, turn off **Allow new users to sign up** under **Authentication → Sign In / Providers**. Leave "Confirm email" on and anonymous sign-ins off, as they are by default.
+5. **The publishable key only.** Under **Project Settings → API Keys**, copy the project URL (`BARRACK_SUPABASE_URL`) and the **publishable** key, `sb_publishable_…` (`BARRACK_SUPABASE_PUBLISHABLE_KEY`). It is handed to every browser. Never use the secret key or the legacy `service_role` key: the control plane refuses to start with one.
+
+More in the [control plane's README](../apps/control-plane/README.md#signing-users-in).
+
 ### 2. Daytona: the sandbox image
 
 1. Create a Daytona account and an API key (`DAYTONA_API_KEY`).
@@ -42,6 +54,8 @@ The control plane creates its tables in a schema of its own, `barrack`, with row
    ```sh
    docker build --platform linux/amd64 --file sandbox-image/Dockerfile --tag barrack-sandbox:$(git rev-parse --short HEAD) .
    ```
+
+   Build it from the same revision as the control plane. A supervisor speaks one protocol version, and the control plane refuses any other, so a snapshot from an older build cannot connect: its supervisor exits saying which version was expected. The image also gives the supervisor a state directory of its own, `/var/lib/barrack/supervisor` (`BARRACK_SUPERVISOR_STATE_DIRECTORY`), where it records how far the agent has been handed user messages; a custom image must provide one that only the supervisor's user can write.
 
 3. Push it as a snapshot with Daytona's CLI, choosing a new name for each build. Its name is `BARRACK_DAYTONA_SNAPSHOT`. A snapshot carries the size of the sandboxes made from it; see the command's `--help` for CPU, memory and disk (2 vCPU, 4 GiB and 8 GiB suit an agent).
 
@@ -75,7 +89,7 @@ The service is described as code in [`.railway/railway.ts`](../.railway/railway.
 
 3. In the service's settings, connect your GitHub repository (the root directory is the repository root). Railway finds the root `Dockerfile` and builds its last stage.
 4. Under **Networking**, generate a domain for port 8787. The variables refer to it as `${{RAILWAY_PUBLIC_DOMAIN}}`, so generate it before the first deploy.
-5. Under **Variables**, set the secrets marked "dashboard" below (the raw editor accepts the multi-line certificate). Sealing them hides them from the dashboard and API afterwards. For every model provider key you set, add a `preserve()` line to `.railway/railway.ts`, or a later apply may delete it.
+5. Under **Variables**, set the values marked "dashboard" below (the raw editor accepts the multi-line certificate). Sealing them hides them from the dashboard and API afterwards. For every model provider key you set, add a `preserve()` line to `.railway/railway.ts`, or a later apply may delete it.
 6. Deploy.
 
 #### Variables
@@ -91,6 +105,11 @@ Every variable the control plane reads in this deployment. A test ([`deployment-
 | `BARRACK_SANDBOX_CONTROL_PLANE_URL`      | set by `.railway/railway.ts` | `wss://${{RAILWAY_PUBLIC_DOMAIN}}`                                                        | Where sandboxes' supervisors connect.                                                                                                                                                                      |
 | `BARRACK_ALLOWED_CLIENT_ORIGINS`         | set by `.railway/railway.ts` | `https://${{RAILWAY_PUBLIC_DOMAIN}}`                                                      | Browser origins allowed to open threads and create them.                                                                                                                                                   |
 | `BARRACK_AGENT_HARNESS`                  | set by `.railway/railway.ts` | `pi`                                                                                      | What runs in sandboxes: Pi, or `fake` for a smoke test without a model.                                                                                                                                    |
+| `BARRACK_AUTHENTICATION`                 | set by `.railway/railway.ts` | `supabase`                                                                                | Users sign in with Supabase Auth. The other value, `development-single-user`, is refused anywhere but a loopback address.                                                                                  |
+| `BARRACK_SUPABASE_URL`                   | yes, dashboard               | `https://<project-ref>.supabase.co`                                                       | The Supabase project users sign in with ([step 1b](#1b-supabase-sign-in)).                                                                                                                                 |
+| `BARRACK_SUPABASE_PUBLISHABLE_KEY`       | yes, dashboard               | `sb_publishable_…`                                                                        | The project's publishable key, handed to every browser. A secret key is refused.                                                                                                                           |
+| `BARRACK_ALLOWED_USER_EMAILS`            | yes, dashboard               | `you@example.com,friend@example.com`                                                      | Who may use this installation, or `anyone-who-can-sign-in`. An address counts once Supabase confirms the user owns it.                                                                                     |
+| `BARRACK_SUPABASE_JWT_ISSUER`            | no (`<URL>/auth/v1`)         | `https://auth.example.com/auth/v1`                                                        | The `iss` the project's tokens carry, only if a custom domain changes it.                                                                                                                                  |
 | `BARRACK_MODEL`                          | yes, dashboard               | `anthropic/<model-id>`                                                                    | Pi's model, as `provider/model`.                                                                                                                                                                           |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … | one, dashboard (secret)      | `sk-…`                                                                                    | The key for `BARRACK_MODEL`'s provider, forwarded to every sandbox until each user brings their own. The full list is in [`model-credentials.ts`](../apps/control-plane/src/threads/model-credentials.ts). |
 | `DAYTONA_API_KEY`                        | yes, dashboard (secret)      | `dtn_…`                                                                                   | Daytona API key.                                                                                                                                                                                           |
@@ -110,15 +129,13 @@ Every variable the control plane reads in this deployment. A test ([`deployment-
 
 <!-- railway-variables:end -->
 
-**Sign-in** will add variables of its own (for Supabase Auth); they belong in this table, and the test above fails until they are added.
-
 #### After the first deploy, check
 
 - The build log says it used the Dockerfile, and the deploy log shows, as JSON lines: `Applied a database migration` (once per migration, the first time), `Querying the database at this interval…` with `keepAliveIntervalInMinutes: 240`, `Creating thread sandboxes` with `sandboxProvider: "daytona"`, and `Control plane listening` on `0.0.0.0:8787`. The deployment turns active once `/health` answers.
-- `https://<domain>/health` answers `{"status":"ok"}` and `https://<domain>/` shows the thread list.
+- `https://<domain>/health` answers `{"status":"ok"}` and `https://<domain>/` asks you to sign in. A code arrives by email for an address on `BARRACK_ALLOWED_USER_EMAILS`, and signing in with it shows the thread list; another address is told it is not allowed.
 - Creating a thread makes a sandbox appear in Daytona's dashboard, the log shows `The thread's sandbox is ready` and then `Supervisor connected` for that `threadId`, and a message gets a reply.
 - Closing the tab and reopening the thread shows its whole history; a redeploy keeps it, the old deployment's log ends with `Shut down cleanly`, and the supervisors reconnect to the new one.
-- In Supabase's table editor, the `barrack` schema holds `threads`, `thread_events` and `schema_migrations`.
+- In Supabase's table editor, the `barrack` schema holds `users`, `threads`, `thread_events`, `thread_sequence_counters` and `schema_migrations`.
 
 #### Not yet verified
 
@@ -130,27 +147,36 @@ None of this has run against Railway, Supabase or Daytona: there were no credent
 4. **Shutdown on redeploy**: that Railway sends SIGTERM and allows the 120-second drain, and that with no overlap supervisors and browsers reconnect to the new deployment. A thread created in the seconds a redeploy takes may be marked failed: the new instance fails, at startup, every thread still being created, assuming it is the only instance.
 5. **Supabase**: that the session pooler accepts the connection with `verify-full` against the downloaded certificate, and that the keep-alive's query counts as activity. Supabase does not define "sufficient activity"; it emails a warning about a week before pausing a project, so watch for one in the first weeks.
 6. **Daytona**: the provider has only run against a stand-in for Daytona's API. Confirm the snapshot push command (Daytona's CLI for its generally available platform may be installed as `daytona` or `daytona-v0`) and its size flags, that a Tier 1 sandbox's supervisor can hold a WebSocket open to `*.up.railway.app`, and how the supervisor's token, which is in the sandbox's environment, can be reached through Daytona's own command interface (see the open gaps in the [decision log](decisions.md)).
-7. **Costs**: the figures above come from pricing pages, not from a bill.
+7. **Sign-in**: it has run only against the tests' stand-in for Supabase Auth, which signs tokens the way Supabase documents. Confirm that the control plane finds the project's published keys at startup, that the Magic Link template's code arrives (through custom SMTP for anyone outside the project's team), that signing in with it gives a token the control plane accepts, that its check of a listed address against Supabase (`/auth/v1/user`) admits a confirmed user and refuses others, and that a token refreshed while a thread is open keeps its connection open.
+8. **Costs**: the figures above come from pricing pages, not from a bill.
 
 ## On one machine with Docker Compose
 
 [`compose.yaml`](../compose.yaml) runs Postgres, the control plane and a Docker socket proxy; the control plane creates each thread's sandbox as a sibling container on the same Docker. It needs Docker Engine with Compose 2.24 or newer, on Linux or Docker Desktop.
 
 1. Build the sandbox image (`barrack-sandbox:dev`): `pnpm sandbox-image:build`, or without Node, `docker build --file sandbox-image/Dockerfile --tag barrack-sandbox:dev .`
-2. Write a `.env` file beside `compose.yaml` (it is ignored by Git):
+2. Set up a Supabase project for sign-in as in [step 1b](#1b-supabase-sign-in); this path needs no Supabase database. Development mode's single shared user is refused here, because the control plane listens on every interface of its container, where sandboxes can reach it.
+3. Write a `.env` file beside `compose.yaml` (it is ignored by Git):
 
    ```sh
    BARRACK_DATABASE_PASSWORD=<letters and digits>
+   BARRACK_SUPABASE_URL=https://<project-ref>.supabase.co
+   BARRACK_SUPABASE_PUBLISHABLE_KEY=sb_publishable_…
+   BARRACK_ALLOWED_USER_EMAILS=you@example.com
    BARRACK_MODEL=anthropic/<model-id>
    ANTHROPIC_API_KEY=<your key>
    # Or, to try it without a model: BARRACK_AGENT_HARNESS=fake
    ```
 
+   Compose refuses to start without the first four.
+
    Every variable in it reaches the control plane, so the control plane's other settings ([its README](../apps/control-plane/README.md#configuration)) can go here too. With rootless Docker, also set `DOCKER_SOCKET` to its socket's path.
 
-3. `docker compose up --build --detach`, then open <http://localhost:8787/>.
+4. `docker compose up --build --detach`, then open <http://localhost:8787/> and sign in.
 
-The port is published on `127.0.0.1` only. To use it from another machine, forward it over SSH (`ssh -L 8787:127.0.0.1:8787 <host>`) rather than publishing it, until sign-in exists.
+The port is published on `127.0.0.1` only. To use it from another machine, forward it over SSH (`ssh -L 8787:127.0.0.1:8787 <host>`), or put it behind a reverse proxy that serves HTTPS, since access tokens must not cross a network in the clear, and add that origin to `BARRACK_ALLOWED_CLIENT_ORIGINS`.
+
+After upgrading Barrack, rebuild the sandbox image too (step 1): a sandbox from an image built before the upgrade may speak an older protocol version, which the control plane refuses.
 
 **Stopping.** Sandboxes are not part of the Compose project, so remove them first, then the rest; `--volumes` also deletes the database:
 
@@ -184,3 +210,5 @@ On 2026-11-24, on one Linux machine with Docker 29.9 and Compose 5.7, building w
 
 - The image alone, against a throwaway Postgres: migrations applied, `/health` answered `{"status":"ok"}`, `/` served the web client, a thread was created, the keep-alive queried every minute when set to 1, and SIGTERM ended it with `Shut down cleanly` and exit code 0 in 0.1 seconds.
 - Compose: a thread created through the API got a sandbox container from `barrack-sandbox:dev` on the `barrack-sandboxes` network; a message sent through a client WebSocket was recorded and answered by the fake agent, and the run settled; after the control plane restarted, the thread's history replayed from Postgres and every supervisor reconnected. From inside a sandbox, as the agent's user: the control plane connected; `database` and `docker-api` did not resolve, their addresses timed out, the published port on the network's gateway was refused, and no Docker socket existed. Through the proxy, `docker ps` and `docker exec` were refused.
+
+That run came before sign-in and acknowledged delivery were added. Since then Compose has been checked only to refuse to start without the sign-in settings (`docker compose config`); running it with a real Supabase project is still to do.

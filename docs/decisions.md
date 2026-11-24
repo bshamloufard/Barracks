@@ -263,7 +263,7 @@ Each entry records a decision, what the project plan said about it, what we actu
 ## 2026-11-24: No deployment until sign-in exists
 
 - **What the plan said:** Milestone 2 deploys the control plane on Railway, with events in Supabase.
-- **What we did:** Milestone 2's parts are built and tested locally only; deploying waits for sign-in (Milestone 3).
+- **What we did:** Milestone 2's parts are built and tested locally only; deploying waited for sign-in (Milestone 3). Sign-in now exists (see below) and the deployment files are written, but nothing has been deployed yet; [the deployment guide](deployment.md#not-yet-verified) lists what the first deployment must confirm.
 - **Why:** Deployed as planned, the control plane would be on the internet with no authentication: anyone could create threads and command agents.
 
 ## 2026-11-24: An idle control plane does not keep a free Supabase project awake

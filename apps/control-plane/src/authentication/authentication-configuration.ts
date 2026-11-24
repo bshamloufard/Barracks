@@ -79,6 +79,12 @@ const supabaseSchema = z.object({
   BARRACK_ALLOWED_USER_EMAILS: allowedEmailsSchema,
 });
 
+/** Every variable this file reads, for the lists of what the control plane reads. */
+export const authenticationVariableNames = [
+  ...Object.keys(methodSchema.shape),
+  ...Object.keys(supabaseSchema.shape),
+];
+
 export function readAuthenticationConfiguration(
   environment: NodeJS.ProcessEnv,
 ): AuthenticationConfigurationResult {

@@ -6,12 +6,20 @@
 #   pnpm sandbox-image:build        # the sandbox image, barrack-sandbox:dev
 #   docker compose up --build --detach
 #
-# Settings come from a `.env` file beside this one: BARRACK_DATABASE_PASSWORD
-# is required; the agent's settings and model keys are read from it too.
+# Settings come from a `.env` file beside this one. Required:
+# BARRACK_DATABASE_PASSWORD, and for sign-in a Supabase project's URL and
+# publishable key (BARRACK_SUPABASE_URL, BARRACK_SUPABASE_PUBLISHABLE_KEY)
+# and the email addresses allowed to use this installation
+# (BARRACK_ALLOWED_USER_EMAILS). The agent's settings and model keys are
+# read from it too.
 #
-# THERE IS NO USER SIGN-IN YET. Anyone who can open the control plane's port
-# can create threads and command their agents, so it is published on
-# 127.0.0.1 only. Do not change that until sign-in exists.
+# SIGN-IN IS SUPABASE'S. The control plane listens on every interface of its
+# container, where development mode's one shared user is refused, so users
+# sign in with Supabase Auth (set the project up as docs/deployment.md
+# says) and see only their own threads. The port is still published on
+# 127.0.0.1 only: to use it from elsewhere, put it behind HTTPS (access
+# tokens must not cross a network in the clear) and add that origin to
+# BARRACK_ALLOWED_CLIENT_ORIGINS.
 #
 # DOCKER ACCESS IS HOST ACCESS. Whoever can create containers through the
 # Docker API can start one that is privileged or mounts the host's files,
@@ -110,6 +118,10 @@ services:
       BARRACK_DOCKER_IMAGE: ${BARRACK_DOCKER_IMAGE:-barrack-sandbox:dev}
       BARRACK_DOCKER_NETWORK: barrack-sandboxes
       BARRACK_SANDBOX_CONTROL_PLANE_URL: ws://control-plane:8787
+      BARRACK_AUTHENTICATION: supabase
+      BARRACK_SUPABASE_URL: ${BARRACK_SUPABASE_URL:?set BARRACK_SUPABASE_URL, your Supabase project's https URL, in .env}
+      BARRACK_SUPABASE_PUBLISHABLE_KEY: ${BARRACK_SUPABASE_PUBLISHABLE_KEY:?set BARRACK_SUPABASE_PUBLISHABLE_KEY, the project's publishable key, in .env}
+      BARRACK_ALLOWED_USER_EMAILS: ${BARRACK_ALLOWED_USER_EMAILS:?set BARRACK_ALLOWED_USER_EMAILS, the email addresses allowed to sign in, in .env}
       DOCKER_HOST: tcp://docker-api:2375
     ports:
       - "127.0.0.1:8787:8787"

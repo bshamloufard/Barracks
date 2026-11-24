@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { sandboxProviderVariableNames } from "@barrack/sandbox-providers";
 import { describe, expect, it } from "vitest";
-import { controlPlaneVariableNames } from "./configuration.js";
+import { controlPlaneVariableNames, readConfiguration } from "./configuration.js";
 import { forwardedModelCredentialNames } from "./threads/model-credentials.js";
 import { forwardedPiSettingNames } from "./threads/pi-settings.js";
 
@@ -9,7 +9,10 @@ import { forwardedPiSettingNames } from "./threads/pi-settings.js";
  * The deployment guide's table of Railway variables, and the Railway
  * configuration, are written by hand. These tests fail when either names a
  * variable the control plane does not read, or when the table leaves out
- * one it does, so neither can drift from the configuration schema.
+ * one it does, so neither can drift from the configuration schemas. The
+ * lists they compare against are themselves checked against what
+ * `readConfiguration` actually reads, so a schema added without joining
+ * those lists fails here too.
  */
 
 const deploymentGuide = readFileSync(
@@ -60,6 +63,38 @@ function variablesInRailwayConfiguration(): string[] {
   const environmentBlock = railwayConfiguration.slice(railwayConfiguration.indexOf("env: {"));
   return [...environmentBlock.matchAll(/^\s+([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1] ?? "");
 }
+
+/**
+ * The variables `readConfiguration` looks at in a hosted deployment's
+ * environment (Supabase sign-in, Daytona sandboxes), found by watching
+ * which it reads.
+ */
+function variablesReadByHostedConfiguration(): string[] {
+  const readNames = new Set<string>();
+  const environment = new Proxy<NodeJS.ProcessEnv>(
+    { BARRACK_AUTHENTICATION: "supabase", BARRACK_SANDBOX_PROVIDER: "daytona" },
+    {
+      get(target, name) {
+        if (typeof name === "string") {
+          readNames.add(name);
+        }
+        return Reflect.get(target, name);
+      },
+    },
+  );
+  readConfiguration(environment);
+  return [...readNames].filter((name) => /^[A-Z][A-Z0-9_]*$/.test(name));
+}
+
+describe("the lists of variables the guide is checked against", () => {
+  it("include every variable the control plane's configuration reads in a hosted deployment", () => {
+    const readNames = variablesReadByHostedConfiguration();
+
+    expect(readNames).toContain("BARRACK_SUPABASE_URL");
+    expect(readNames).toContain("DAYTONA_API_KEY");
+    expect(readNames.filter((name) => !knownVariables.has(name))).toEqual([]);
+  });
+});
 
 describe("the deployment guide's table of variables", () => {
   it("names only variables the control plane, its Daytona provider or Railway read", () => {
