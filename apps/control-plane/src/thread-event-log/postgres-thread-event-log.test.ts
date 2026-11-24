@@ -313,5 +313,27 @@ function eventsOfEveryKindWithAwkwardContent(): ThreadEvent[] {
     },
     { type: "agent_run_settled", wasInterrupted: true },
     { type: "agent_failed", errorMessage: awkwardText },
+    {
+      type: "repository_clone_started",
+      repositoryUrl: "https://github.com/octo/app",
+      baseBranch: null,
+    },
+    {
+      type: "repository_cloned",
+      baseBranch: "main",
+      baseCommit: "0123456789abcdef0123456789abcdef01234567",
+      workBranch: "barrack/thread-1",
+      lostEarlierWork: true,
+    },
+    { type: "repository_clone_failed", errorMessage: awkwardText },
+    {
+      type: "repository_published",
+      workBranch: "barrack/thread-1",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      branchUrl: "https://github.com/octo/app/tree/barrack/thread-1",
+      pullRequest: { number: 1, url: "https://github.com/octo/app/pull/1" },
+      isPullRequestNew: true,
+    },
+    { type: "repository_publication_failed", errorMessage: awkwardText },
   ];
 }
