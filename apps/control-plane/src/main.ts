@@ -3,9 +3,11 @@ import { createConfiguredAuthentication } from "./authentication/create-authenti
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
+import {
+  assembleThreadServices,
+  type ThreadServices,
+} from "./sandbox-lifecycle/assemble-thread-services.js";
 import { type OpenStorage, openStorage } from "./storage/open-storage.js";
-import { failInterruptedSandboxCreations } from "./threads/interrupted-sandbox-creations.js";
-import { ThreadCreator } from "./threads/thread-creator.js";
 
 async function main(): Promise<void> {
   const configurationResult = readConfiguration(process.env);
@@ -32,24 +34,29 @@ async function main(): Promise<void> {
     storage.userStore,
     logger,
   );
-  await failInterruptedSandboxCreations(storage.threadStore, logger);
-  const threadCreator = new ThreadCreator({
+  const threadServices = assembleThreadServices({
     threadStore: storage.threadStore,
+    threadEventLog: storage.threadEventLog,
     sandboxProvider: createSandboxProvider(configuration.sandboxProvider),
     sandboxProviderName: configuration.sandboxProvider.kind,
     supervisorEnvironment: configuration.supervisorEnvironment,
+    settings: configuration.sandboxLifecycle,
     logger,
   });
   const server = await startControlPlaneServer({
     configuration,
     threadEventLog: storage.threadEventLog,
     threadStore: storage.threadStore,
-    threadCreator,
+    relays: threadServices.relays,
+    sandboxLifecycle: threadServices.sandboxLifecycle,
     authenticator: authentication.authenticator,
     clientAuthentication: authentication.clientAuthentication,
     logger,
   });
-  shutDownOnSignal(server, threadCreator, storage, logger);
+  // The first sweep reconciles every sandbox with the provider, and takes
+  // over operations a control plane that has gone left under way.
+  threadServices.sweeps.start();
+  shutDownOnSignal(server, threadServices, storage, logger);
 }
 
 /** Says where agents will run and with what, naming credentials but never their values. */
@@ -65,6 +72,16 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
     },
     "Creating thread sandboxes",
   );
+  const { sandboxLifecycle } = configuration;
+  logger.info(
+    {
+      idleMinutes: sandboxLifecycle.idlePeriodInMilliseconds / 60_000,
+      runningSandboxesPerUser: sandboxLifecycle.admission.maximumPerUser,
+      runningSandboxesInTotal: sandboxLifecycle.admission.maximumInInstallation ?? null,
+      checkSeconds: sandboxLifecycle.checkIntervalInMilliseconds / 1000,
+    },
+    "Stopping idle sandboxes and limiting how many run at once",
+  );
   if (sandboxProvider.kind === "local-process") {
     logger.warn(
       "The local-process sandbox provider runs every agent on this machine, as this user, with NO isolation. It is for development only.",
@@ -78,14 +95,16 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
 }
 
 /**
- * The first SIGINT or SIGTERM closes every connection with "going away" so
- * peers know to reconnect elsewhere, lets sandbox creations under way finish
- * so none is left unrecorded, then closes storage; a second signal exits at
- * once, for when a peer or a provider is slow to finish.
+ * The first SIGINT or SIGTERM stops the sweeps, closes every connection with
+ * "going away" so peers know to reconnect elsewhere, lets sandbox operations
+ * under way finish so that their outcomes are recorded, then closes storage;
+ * a second signal exits at once, for when a peer or a provider is slow to
+ * finish. An operation cut short that way is taken over by the next control
+ * plane once its lease expires.
  */
 function shutDownOnSignal(
   server: RunningControlPlaneServer,
-  threadCreator: ThreadCreator,
+  threadServices: ThreadServices,
   storage: OpenStorage,
   logger: Logger,
 ): void {
@@ -97,9 +116,10 @@ function shutDownOnSignal(
     }
     isShuttingDown = true;
     logger.info({ signal }, "Shutting down");
-    server
-      .close()
-      .then(() => threadCreator.whenSandboxCreationsSettle())
+    threadServices.sweeps
+      .stop()
+      .then(() => server.close())
+      .then(() => threadServices.operations.whenSettled())
       .then(() => storage.close())
       .then(
         () => logger.info("Shut down cleanly"),

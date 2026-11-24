@@ -24,7 +24,12 @@ let controlPlane: RunningControlPlane;
 const clients: TestClient[] = [];
 
 beforeAll(async () => {
-  controlPlane = await startControlPlane({ sandboxes: { kind: "local-process" } });
+  controlPlane = await startControlPlane({
+    sandboxes: { kind: "local-process" },
+    // Every test's thread keeps running, so the limit is raised past the
+    // number of tests; thread-lifecycle.test.ts tests the limit.
+    environment: { BARRACK_RUNNING_SANDBOXES_PER_USER: "20" },
+  });
 });
 
 afterEach(async () => {

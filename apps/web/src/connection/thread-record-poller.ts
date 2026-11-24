@@ -1,21 +1,34 @@
+import type { ThreadSummary } from "@barrack/protocol";
 import type { ThreadsApi } from "../api/threads-api";
+import { isSandboxChanging } from "../presentation/describe-sandbox";
 import type { ThreadStore } from "../thread-state/thread-store";
 import { reconnectDelayInMilliseconds } from "./reconnect-delay";
 
 /**
- * While a thread's sandbox is being created, how often its record is asked
- * for again. Creation takes from a second (locally) to a minute or more (a
- * cloud provider pulling an image), and a request a second is nothing.
+ * While a thread's sandbox is changing state (being created, woken, stopped
+ * or deleted), how often its record is asked for again. Starting takes from
+ * a second (locally) to a minute or more (a cloud provider restoring an
+ * archived sandbox), and a request a second is nothing.
  */
-const creatingPollIntervalInMilliseconds = 1_000;
+const changingPollIntervalInMilliseconds = 1_000;
 
 /**
- * Fetches the thread's record into the store, and keeps fetching it while
- * its sandbox is being created, so the page learns when the sandbox is ready
- * or why it failed. The control plane tells nothing of that over the
- * thread's WebSocket: creation happens once in a thread's life, so asking is
- * simpler than a message pushed for it. Failed fetches are tried again after
- * a growing delay.
+ * Otherwise, how often: often enough to notice the sandbox stopped for being
+ * idle, or by another device, while the page sits open.
+ */
+const settledPollIntervalInMilliseconds = 15_000;
+
+/** How soon a refresh asked for happens, so several asked for together make one. */
+const refreshDelayInMilliseconds = 250;
+
+/**
+ * Fetches the thread's record into the store, and keeps fetching it, often
+ * while its sandbox is changing state and now and then otherwise, so the
+ * page learns when it is running, stopped or gone, and why. The thread's
+ * WebSocket tells nothing of that; `refreshNow` is called when something
+ * seen on it suggests the record changed (the supervisor coming or going, a
+ * message waking the sandbox). Failed fetches are tried again after a
+ * growing delay.
  */
 export class ThreadRecordPoller {
   readonly #threadId: string;
@@ -39,6 +52,14 @@ export class ThreadRecordPoller {
     void this.#poll();
   }
 
+  /**
+   * Fetches the record shortly instead of when next due. Calls close
+   * together, such as for each message of a replay, make one fetch.
+   */
+  refreshNow(): void {
+    this.#pollAgainIn(refreshDelayInMilliseconds);
+  }
+
   stop(): void {
     this.#isStopped = true;
     clearTimeout(this.#timer);
@@ -56,13 +77,8 @@ export class ThreadRecordPoller {
         return;
       }
       this.#store.dispatch({ type: "thread_record_loaded", thread });
-      if (!this.#hasBeenFound) {
-        this.#hasBeenFound = true;
-        this.#whenFound();
-      }
-      if (thread.sandbox.state === "creating") {
-        this.#pollAgainIn(creatingPollIntervalInMilliseconds);
-      }
+      this.#noticeFound();
+      this.#pollAgainIn(pollIntervalFor(thread));
     } catch (error) {
       console.error(error);
       this.#pollAgainIn(reconnectDelayInMilliseconds(this.#failedAttemptCount));
@@ -70,10 +86,24 @@ export class ThreadRecordPoller {
     }
   }
 
+  #noticeFound(): void {
+    if (!this.#hasBeenFound) {
+      this.#hasBeenFound = true;
+      this.#whenFound();
+    }
+  }
+
   #pollAgainIn(delayInMilliseconds: number): void {
     if (this.#isStopped) {
       return;
     }
+    clearTimeout(this.#timer);
     this.#timer = setTimeout(() => void this.#poll(), delayInMilliseconds);
   }
+}
+
+function pollIntervalFor(thread: ThreadSummary): number {
+  return isSandboxChanging(thread.sandbox)
+    ? changingPollIntervalInMilliseconds
+    : settledPollIntervalInMilliseconds;
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,9 @@ import {
   silentLogger,
   TestSchemas,
 } from "../test-support/test-database.js";
-import { applyPendingMigrations } from "./migration-runner.js";
+import { PostgresThreadEventLog } from "../thread-event-log/postgres-thread-event-log.js";
+import { PostgresThreadStore } from "../threads/postgres-thread-store.js";
+import { applyPendingMigrations, migrationsDirectory } from "./migration-runner.js";
 
 describeWithTestDatabase("the migration runner", () => {
   let pool: Pool;
@@ -197,17 +199,71 @@ describeWithTestDatabase("the control plane's migrations", () => {
     ).rejects.toThrow("violates check constraint");
   });
 
-  it("refuse a ready thread without a sandbox and a failed one without a reason", async () => {
+  it("refuse a running thread without a sandbox, a failed one without a reason, and one under way without a lease", async () => {
     const schema = await schemas.createMigrated();
-    const insertThread = (state: string) =>
+    const insertThread = (state: string, lease: Date | null = null) =>
       pool.query(
         `insert into ${escapeIdentifier(schema)}.threads
-          (thread_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state)
-          values ('thread-1', now(), 'fake', $1, $2)`,
-        [Buffer.alloc(32), state],
+          (thread_id, created_at, last_activity_at, sandbox_provider, supervisor_token_digest,
+            sandbox_state, lease_expires_at)
+          values ('thread-1', now(), now(), 'fake', $1, $2, $3)`,
+        [Buffer.alloc(32), state, lease],
       );
 
     await expect(insertThread("ready")).rejects.toThrow("violates check constraint");
+    await expect(insertThread("running")).rejects.toThrow("violates check constraint");
     await expect(insertThread("failed")).rejects.toThrow("violates check constraint");
+    await expect(insertThread("creating")).rejects.toThrow("violates check constraint");
+    await expect(insertThread("creating", new Date())).resolves.toBeDefined();
+  });
+
+  it("carry threads recorded before the sandbox lifecycle into it", async () => {
+    const schema = schemas.reserveName();
+    const earlierMigrationsPath = await mkdtemp(join(tmpdir(), "barrack-earlier-migrations-"));
+    const migrationNames = (await readdir(migrationsDirectory)).sort();
+    for (const name of migrationNames.filter((fileName) => fileName < "0030")) {
+      const sql = await readFile(new URL(name, migrationsDirectory), "utf8");
+      await writeFile(join(earlierMigrationsPath, name), sql);
+    }
+    await applyPendingMigrations({
+      pool,
+      schema,
+      logger: silentLogger,
+      directory: pathToFileURL(`${earlierMigrationsPath}/`),
+    });
+    await rm(earlierMigrationsPath, { recursive: true });
+    const table = (name: string) => `${escapeIdentifier(schema)}.${name}`;
+    await pool.query(`insert into ${table("users")} values ('user-a', now())`);
+    await pool.query(
+      `insert into ${table("threads")}
+        (thread_id, owner_user_id, created_at, sandbox_provider, supervisor_token_digest,
+          sandbox_state, sandbox_id)
+        values ('was-ready', 'user-a', now(), 'fake', $1, 'ready', 'sandbox-1'),
+          ('was-creating', 'user-a', now(), 'fake', $1, 'creating', null)`,
+      [Buffer.alloc(32)],
+    );
+    await pool.query(
+      `insert into ${table("thread_sequence_counters")} values ('was-ready', 2, null, 1)`,
+    );
+    await pool.query(
+      `insert into ${table("thread_events")} (thread_id, sequence, recorded_at, event) values
+        ('was-ready', 1, now(), '{"type":"user_message","messageId":"m-1","text":"Hi"}'),
+        ('was-ready', 2, now(), '{"type":"user_message","messageId":"m-2","text":"Again"}')`,
+    );
+
+    await applyPendingMigrations({ pool, schema, logger: silentLogger });
+
+    const store = new PostgresThreadStore(pool, schema);
+    const log = new PostgresThreadEventLog(pool, schema);
+    expect((await store.find("was-ready"))?.sandbox).toEqual({
+      state: "running",
+      sandboxId: "sandbox-1",
+      problem: undefined,
+    });
+    expect((await store.find("was-creating"))?.sandbox).toMatchObject({ state: "creating" });
+    expect(await log.readAgentWork("was-ready")).toEqual({
+      hasOpenRun: false,
+      hasUndeliveredUserMessage: true,
+    });
   });
 });

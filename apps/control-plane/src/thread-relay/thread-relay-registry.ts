@@ -1,8 +1,16 @@
 import type { Logger } from "../logger.js";
+import type { ThreadRuns } from "../sandbox-lifecycle/thread-runs.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
+import type { ThreadActivity } from "./thread-activity.js";
 import { ThreadRelay } from "./thread-relay.js";
+
+export type ThreadRelayRegistryOptions = {
+  threadEventLog: ThreadEventLog;
+  threadActivity: ThreadActivity;
+  logger: Logger;
+};
 
 /**
  * Hands out the one relay for each thread, creating it the first time a
@@ -18,15 +26,16 @@ import { ThreadRelay } from "./thread-relay.js";
  * Peers attach through the registry, which finds or creates the relay and
  * attaches the peer in one synchronous step. A relay is therefore never
  * dropped between being handed out and having its peer attached.
+ *
+ * It is also how the sandbox lifecycle reaches a thread's run (`ThreadRuns`),
+ * so that what the lifecycle records is in sequence with everything else.
  */
-export class ThreadRelayRegistry {
-  readonly #threadEventLog: ThreadEventLog;
-  readonly #logger: Logger;
+export class ThreadRelayRegistry implements ThreadRuns {
+  readonly #options: ThreadRelayRegistryOptions;
   readonly #relaysByThreadId = new Map<string, ThreadRelay>();
 
-  constructor(threadEventLog: ThreadEventLog, logger: Logger) {
-    this.#threadEventLog = threadEventLog;
-    this.#logger = logger;
+  constructor(options: ThreadRelayRegistryOptions) {
+    this.#options = options;
   }
 
   /** Returns the relay the supervisor is now attached to. */
@@ -51,15 +60,33 @@ export class ThreadRelayRegistry {
     return relay;
   }
 
+  prepareForStop(threadId: string): void {
+    this.#relaysByThreadId.get(threadId)?.prepareForStop();
+  }
+
+  finishStop(threadId: string): void {
+    this.#relaysByThreadId.get(threadId)?.finishStop();
+  }
+
+  /** A relay is made for this if nobody is connected, and dropped again once it is done. */
+  closeOpenRun(threadId: string, errorMessage: string): Promise<void> {
+    return this.#relayFor(threadId).closeOpenRun(errorMessage);
+  }
+
+  disconnectEveryone(threadId: string): void {
+    this.#relaysByThreadId.get(threadId)?.disconnectEveryone();
+  }
+
   #relayFor(threadId: string): ThreadRelay {
     const existingRelay = this.#relaysByThreadId.get(threadId);
     if (existingRelay !== undefined) {
       return existingRelay;
     }
-    const logger = this.#logger.child({ threadId });
+    const logger = this.#options.logger.child({ threadId });
     const relay: ThreadRelay = new ThreadRelay({
       threadId,
-      threadEventLog: this.#threadEventLog,
+      threadEventLog: this.#options.threadEventLog,
+      threadActivity: this.#options.threadActivity,
       logger,
       whenUnused: () => this.#drop(relay, logger),
     });

@@ -2,6 +2,7 @@ import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/prot
 import { DatabaseError, escapeIdentifier, type Pool } from "pg";
 import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
 import type {
+  AgentWork,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -43,6 +44,7 @@ type ResumePointRow = {
  */
 export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #pool: Pool;
+  readonly #qualifiedSchema: string;
   readonly #appendStatement: string;
   readonly #readNewestSequenceStatement: string;
   readonly #readEventsStatement: string;
@@ -53,6 +55,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   constructor(pool: Pool, schema: string = databaseSchema) {
     this.#pool = pool;
     const qualifiedSchema = escapeIdentifier(schema);
+    this.#qualifiedSchema = qualifiedSchema;
     this.#appendStatement = appendStatementFor(qualifiedSchema);
     this.#readNewestSequenceStatement = `select last_sequence from ${qualifiedSchema}.thread_sequence_counters where thread_id = $1`;
     this.#readEventsStatement = `select sequence, recorded_at, event from ${qualifiedSchema}.thread_events
@@ -148,6 +151,43 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     await this.#pool.query(this.#recordUserMessagesDeliveredStatement, [threadId, throughSequence]);
   }
 
+  async readAgentWork(threadId: string): Promise<AgentWork> {
+    const result = await this.#pool.query<{
+      has_open_run: boolean;
+      has_undelivered_user_message: boolean;
+    }>(
+      `select open_run_supervisor_instance_id is not null as has_open_run,
+          last_user_message_sequence > user_messages_delivered_through as has_undelivered_user_message
+        from ${this.#qualifiedSchema}.thread_sequence_counters where thread_id = $1`,
+      [threadId],
+    );
+    const row = result.rows[0];
+    return {
+      hasOpenRun: row?.has_open_run ?? false,
+      hasUndeliveredUserMessage: row?.has_undelivered_user_message ?? false,
+    };
+  }
+
+  async findThreadsWithOpenRuns(threadIds: readonly string[]): Promise<Set<string>> {
+    const result = await this.#pool.query<{ thread_id: string }>(
+      `select thread_id from ${this.#qualifiedSchema}.thread_sequence_counters
+        where thread_id = any($1::text[]) and open_run_supervisor_instance_id is not null`,
+      [threadIds],
+    );
+    return new Set(result.rows.map((row) => row.thread_id));
+  }
+
+  /** One statement, so the events and their counter row go together or not at all. */
+  async deleteHistory(threadId: string): Promise<void> {
+    await this.#pool.query(
+      `with removed_events as (
+          delete from ${this.#qualifiedSchema}.thread_events where thread_id = $1
+        )
+        delete from ${this.#qualifiedSchema}.thread_sequence_counters where thread_id = $1`,
+      [threadId],
+    );
+  }
+
   /**
    * The event is sent as JSON text and not read back, so a large tool
    * output crosses the network once.
@@ -164,6 +204,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       origin?.supervisorInstanceId ?? null,
       origin?.eventNumber ?? null,
       boundary,
+      event.type === "user_message",
     ]);
     const row = result.rows[0];
     if (row === undefined) {
@@ -194,19 +235,30 @@ function isDuplicateSupervisorEvent(error: unknown): boolean {
  *
  * The same update keeps the counter row's open run in step with the event
  * ($5 is its run boundary): a run start records the supervisor that sent
- * it, and a run end clears it.
+ * it, and a run end clears it. It also remembers the newest user message
+ * ($6 says whether this is one), so whether one waits to be delivered is
+ * known without reading events.
  */
 function appendStatementFor(qualifiedSchema: string): string {
   return `with assigned as (
       insert into ${qualifiedSchema}.thread_sequence_counters as counter
-        (thread_id, last_sequence, open_run_supervisor_instance_id)
-      values ($1::text, 1, case when $5::text = 'opens_run' then $3::text end)
+        (thread_id, last_sequence, open_run_supervisor_instance_id, last_user_message_sequence)
+      values (
+        $1::text,
+        1,
+        case when $5::text = 'opens_run' then $3::text end,
+        case when $6::boolean then 1 else 0 end
+      )
       on conflict (thread_id) do update set
         last_sequence = counter.last_sequence + 1,
         open_run_supervisor_instance_id = case $5::text
           when 'opens_run' then $3::text
           when 'closes_run' then null
           else counter.open_run_supervisor_instance_id
+        end,
+        last_user_message_sequence = case
+          when $6::boolean then counter.last_sequence + 1
+          else counter.last_user_message_sequence
         end
       returning counter.last_sequence as sequence
     )

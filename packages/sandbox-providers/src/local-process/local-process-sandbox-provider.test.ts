@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -133,6 +133,25 @@ describe("the local-process sandbox provider", () => {
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
     expect(await readdir(sandboxesDirectory)).toEqual([]);
+  });
+
+  it("reports a stop cut short as stopping, and lets a provider opened afresh finish it", async () => {
+    const sandboxId = await createSandbox();
+    const sandboxDirectory = path.dirname(workspaceOf(sandboxId));
+    const processId = Number(await readFile(path.join(sandboxDirectory, "supervisor.pid"), "utf8"));
+    // What a control plane killed between marking the stop and signalling leaves behind.
+    await rename(
+      path.join(sandboxDirectory, "supervisor.pid"),
+      path.join(sandboxDirectory, "supervisor-stopping.pid"),
+    );
+    const reopened = createProvider(standInSupervisorCommand);
+
+    const statusWhileCutShort = await reopened.getStatus(sandboxId);
+    await reopened.stop(sandboxId);
+
+    expect(statusWhileCutShort).toEqual({ state: "stopping" });
+    expect(await reopened.getStatus(sandboxId)).toEqual({ state: "stopped" });
+    expect(() => process.kill(processId, 0)).toThrow();
   });
 
   it("removes the sandbox's directory when it is destroyed", async () => {

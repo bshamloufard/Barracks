@@ -2,6 +2,7 @@ import { closeCodes, type ThreadEvent } from "@barrack/protocol";
 import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { standardCloseCodes } from "../standard-close-codes.js";
+import { acceptingThreadActivity } from "../test-support/accepting-thread-activity.js";
 import { ControllableThreadEventLog } from "../test-support/controllable-thread-event-log.js";
 import {
   agentRunSettled,
@@ -46,6 +47,7 @@ function createRelay(): { relay: ThreadRelay; threadEventLog: ControllableThread
   const relay = new ThreadRelay({
     threadId,
     threadEventLog,
+    threadActivity: acceptingThreadActivity,
     logger: pino({ level: "silent" }),
     whenUnused: () => undefined,
   });

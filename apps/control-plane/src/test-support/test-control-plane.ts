@@ -15,9 +15,13 @@ import { SupabaseAccessTokenVerifier } from "../authentication/supabase-access-t
 import type { UserAdmission } from "../authentication/user-admission.js";
 import { startControlPlaneServer } from "../control-plane-server.js";
 import type { Logger } from "../logger.js";
+import {
+  assembleThreadServices,
+  type ThreadServices,
+} from "../sandbox-lifecycle/assemble-thread-services.js";
+import type { Clock, SandboxLifecycleSettings } from "../sandbox-lifecycle/lifecycle-settings.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import type { SupervisorEnvironmentSettings } from "../threads/supervisor-environment.js";
-import { ThreadCreator } from "../threads/thread-creator.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
 import type { UserStore } from "../users/user-store.js";
@@ -37,6 +41,17 @@ export const testSupervisorEnvironment: SupervisorEnvironmentSettings = {
   agent: { harness: "fake" },
   modelCredentials: {},
   piSettings: {},
+};
+
+/**
+ * Generous, so tests about something else never meet the limit. The sweeps
+ * are not started by the test control plane; a test runs them itself
+ * (`threadServices.reconciler`, `threadServices.idleShutdown`).
+ */
+export const testLifecycleSettings: SandboxLifecycleSettings = {
+  idlePeriodInMilliseconds: 10 * 60_000,
+  admission: { maximumPerUser: 100, maximumInInstallation: undefined },
+  checkIntervalInMilliseconds: 30_000,
 };
 
 /**
@@ -62,11 +77,22 @@ export type TestControlPlaneOptions = {
   threadStore?: ThreadStore;
   /** Defaults to an in-memory store. */
   userStore?: UserStore;
+  /** Defaults to an empty controllable log. */
+  threadEventLog?: ControllableThreadEventLog;
   /** Defaults to a fake provider, which runs no supervisor of its own. */
   sandboxProvider?: FakeSandboxProvider;
   supervisorEnvironment?: SupervisorEnvironmentSettings;
-  /** Pauses between attempts to create a sandbox while the provider is unavailable; none by default. */
+  /** Pauses between attempts while the provider is unavailable; none by default. */
   retryDelaysInMilliseconds?: readonly number[];
+  /** Replaces some of `testLifecycleSettings`. */
+  lifecycleSettings?: Partial<SandboxLifecycleSettings>;
+  /** The real time unless a test controls it. */
+  clock?: Clock;
+  /**
+   * How long a stop waits for an interrupted run to end; short by default,
+   * since a fake supervisor answers only when told to.
+   */
+  interruptGracePeriodInMilliseconds?: number;
   /** Development mode's one user unless said otherwise. */
   authentication?: TestAuthentication;
   clientAuthenticationTimeoutInMilliseconds?: number;
@@ -87,8 +113,9 @@ export class TestControlPlane {
   readonly baseUrl: string;
   readonly httpBaseUrl: string;
   readonly threadEventLog: ControllableThreadEventLog;
+  readonly threadStore: ThreadStore;
   readonly sandboxProvider: FakeSandboxProvider;
-  readonly threadCreator: ThreadCreator;
+  readonly threadServices: ThreadServices;
   /** Every line the control plane logged, at every level. */
   readonly logLines: string[];
   readonly #closeServer: () => Promise<void>;
@@ -97,16 +124,18 @@ export class TestControlPlane {
   private constructor(fields: {
     port: number;
     threadEventLog: ControllableThreadEventLog;
+    threadStore: ThreadStore;
     sandboxProvider: FakeSandboxProvider;
-    threadCreator: ThreadCreator;
+    threadServices: ThreadServices;
     logLines: string[];
     closeServer: () => Promise<void>;
   }) {
     this.baseUrl = `ws://127.0.0.1:${fields.port}`;
     this.httpBaseUrl = `http://127.0.0.1:${fields.port}`;
     this.threadEventLog = fields.threadEventLog;
+    this.threadStore = fields.threadStore;
     this.sandboxProvider = fields.sandboxProvider;
-    this.threadCreator = fields.threadCreator;
+    this.threadServices = fields.threadServices;
     this.logLines = fields.logLines;
     this.#closeServer = fields.closeServer;
   }
@@ -114,16 +143,22 @@ export class TestControlPlane {
   static async start(options: TestControlPlaneOptions = {}): Promise<TestControlPlane> {
     const logLines: string[] = [];
     const logger = pino({ level: "trace" }, { write: (line: string) => logLines.push(line) });
-    const threadEventLog = new ControllableThreadEventLog();
+    const threadEventLog = options.threadEventLog ?? new ControllableThreadEventLog();
     const threadStore = options.threadStore ?? new InMemoryThreadStore();
     const sandboxProvider = options.sandboxProvider ?? new FakeSandboxProvider();
-    const threadCreator = new ThreadCreator({
+    const threadServices = assembleThreadServices({
       threadStore,
+      threadEventLog,
       sandboxProvider,
       sandboxProviderName: "fake",
       supervisorEnvironment: options.supervisorEnvironment ?? testSupervisorEnvironment,
+      settings: { ...testLifecycleSettings, ...options.lifecycleSettings },
       logger,
-      retryDelaysInMilliseconds: options.retryDelaysInMilliseconds ?? [],
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+      timing: {
+        providerRetryDelaysInMilliseconds: options.retryDelaysInMilliseconds ?? [],
+        interruptGracePeriodInMilliseconds: options.interruptGracePeriodInMilliseconds ?? 300,
+      },
     });
     const authentication = createTestAuthentication(
       options.authentication ?? { kind: "development" },
@@ -139,7 +174,8 @@ export class TestControlPlane {
       },
       threadEventLog,
       threadStore,
-      threadCreator,
+      relays: threadServices.relays,
+      sandboxLifecycle: threadServices.sandboxLifecycle,
       ...authentication,
       logger,
       ...(options.clientAuthenticationTimeoutInMilliseconds === undefined
@@ -152,10 +188,14 @@ export class TestControlPlane {
     return new TestControlPlane({
       port: server.port,
       threadEventLog,
+      threadStore,
       sandboxProvider,
-      threadCreator,
+      threadServices,
       logLines,
-      closeServer: server.close,
+      closeServer: async () => {
+        await server.close();
+        await threadServices.operations.whenSettled();
+      },
     });
   }
 
@@ -166,9 +206,27 @@ export class TestControlPlane {
       throw new Error(`Creating a thread answered ${response.status}: ${await response.text()}`);
     }
     const body = threadResponseSchema.parse(await response.json());
-    await this.threadCreator.whenSandboxCreationsSettle();
+    await this.whenOperationsSettle();
     const { threadId } = body.thread;
     return { threadId, supervisorToken: this.supervisorTokenGivenFor(threadId) };
+  }
+
+  /** Resolves once every sandbox operation started so far has finished. */
+  whenOperationsSettle(): Promise<void> {
+    return this.threadServices.operations.whenSettled();
+  }
+
+  /** Sends a request with a JSON body, as development mode's user from an allowed origin unless told otherwise. */
+  sendApi(
+    method: "POST" | "DELETE",
+    path: string,
+    accessToken = developmentAccessToken,
+  ): Promise<Response> {
+    return fetch(`${this.httpBaseUrl}${path}`, {
+      method,
+      headers: browserHeaders(accessToken),
+      body: method === "POST" ? "{}" : null,
+    });
   }
 
   /** Sends the request that creates a thread, as development mode's user from an allowed origin unless told otherwise. */
@@ -189,14 +247,14 @@ export class TestControlPlane {
     return fetch(`${this.httpBaseUrl}${path}`, { headers });
   }
 
-  /** The token in the environment the provider was asked to give the thread's supervisor. */
+  /** The token in the environment the provider was last asked to give the thread's supervisor. */
   supervisorTokenGivenFor(threadId: string): string {
     const environments = this.sandboxProvider.calls.flatMap((call) =>
       call.operation === "create" && call.request.threadId === threadId
         ? [call.request.supervisorEnvironment]
         : [],
     );
-    const { BARRACK_SUPERVISOR_TOKEN: token } = environments[0] ?? {};
+    const { BARRACK_SUPERVISOR_TOKEN: token } = environments.at(-1) ?? {};
     if (token === undefined) {
       throw new Error(`The provider was never given a supervisor token for ${threadId}.`);
     }

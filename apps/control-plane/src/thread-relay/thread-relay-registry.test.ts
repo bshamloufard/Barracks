@@ -1,11 +1,13 @@
 import { pino } from "pino";
 import { beforeAll, describe, expect, it } from "vitest";
+import { acceptingThreadActivity } from "../test-support/accepting-thread-activity.js";
 import { agentRunStarted } from "../test-support/example-agent-events.js";
 import {
   allPendingWorkSettled,
   FakeClientConnection,
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
+import { recordTestThread } from "../test-support/record-test-thread.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { ThreadAccess } from "../threads/thread-access.js";
@@ -17,12 +19,7 @@ let access: ThreadAccess;
 /** Clients are attached only with proof their user owns the thread, so the thread is given an owner. */
 beforeAll(async () => {
   const threadStore = new InMemoryThreadStore();
-  await threadStore.create({
-    threadId,
-    ownerUserId: "user-a",
-    sandboxProvider: "fake",
-    supervisorTokenDigest: Buffer.alloc(32),
-  });
+  await recordTestThread(threadStore, { threadId, ownerUserId: "user-a" });
   const checkedAccess = await ThreadAccess.check(threadStore, "user-a", threadId);
   if (checkedAccess === undefined) {
     throw new Error("The thread's owner was refused access to it.");
@@ -31,7 +28,11 @@ beforeAll(async () => {
 });
 
 function createRegistry(): ThreadRelayRegistry {
-  return new ThreadRelayRegistry(new InMemoryThreadEventLog(), pino({ level: "silent" }));
+  return new ThreadRelayRegistry({
+    threadEventLog: new InMemoryThreadEventLog(),
+    threadActivity: acceptingThreadActivity,
+    logger: pino({ level: "silent" }),
+  });
 }
 
 describe("the thread relay registry", () => {

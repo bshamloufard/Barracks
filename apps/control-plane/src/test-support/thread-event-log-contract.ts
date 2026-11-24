@@ -279,6 +279,69 @@ export function describeThreadEventLogContract(
       ).toBe(5);
     });
   });
+
+  describe(`${implementationName} as a record of the agent's work`, () => {
+    it("reports a thread with no history as having no open run and nothing to deliver", async () => {
+      const log = await createEmptyLog();
+
+      expect(await log.readAgentWork("thread-a")).toEqual({
+        hasOpenRun: false,
+        hasUndeliveredUserMessage: false,
+      });
+    });
+
+    it("reports a user message as waiting until delivery reaches it, whatever comes after it", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 2);
+      await log.append("thread-a", { type: "agent_failed", errorMessage: "Gone" });
+
+      const beforeDelivery = await log.readAgentWork("thread-a");
+      await log.recordUserMessagesDelivered("thread-a", 1);
+      const afterDeliveringTheFirst = await log.readAgentWork("thread-a");
+      await log.recordUserMessagesDelivered("thread-a", 2);
+
+      expect(beforeDelivery.hasUndeliveredUserMessage).toBe(true);
+      expect(afterDeliveringTheFirst.hasUndeliveredUserMessage).toBe(true);
+      expect((await log.readAgentWork("thread-a")).hasUndeliveredUserMessage).toBe(false);
+    });
+
+    it("reports a run as open from its start until it ends, and finds the threads with one", async () => {
+      const log = await createEmptyLog();
+      const origin = (eventNumber: number) => ({ supervisorInstanceId: "instance-1", eventNumber });
+      await log.appendSupervisorEvent("thread-a", { type: "agent_run_started" }, origin(1));
+      await log.appendSupervisorEvent("thread-b", { type: "agent_run_started" }, origin(1));
+      await log.appendSupervisorEvent(
+        "thread-b",
+        { type: "agent_run_settled", wasInterrupted: false },
+        origin(2),
+      );
+
+      expect((await log.readAgentWork("thread-a")).hasOpenRun).toBe(true);
+      expect((await log.readAgentWork("thread-b")).hasOpenRun).toBe(false);
+      expect(await log.findThreadsWithOpenRuns(["thread-a", "thread-b", "thread-c"])).toEqual(
+        new Set(["thread-a"]),
+      );
+      expect(await log.findThreadsWithOpenRuns([])).toEqual(new Set());
+    });
+
+    it("deletes a thread's whole history and nothing of another's, so it starts again from sequence 1", async () => {
+      const log = await createEmptyLog();
+      await appendUserMessages(log, "thread-a", 3);
+      await appendUserMessages(log, "thread-b", 2);
+
+      await log.deleteHistory("thread-a");
+      await log.deleteHistory("thread-that-never-was");
+
+      expect(await log.readNewestSequence("thread-a")).toBe(0);
+      expect(await readWholeThread(log, "thread-a")).toEqual([]);
+      expect(await log.readAgentWork("thread-a")).toEqual({
+        hasOpenRun: false,
+        hasUndeliveredUserMessage: false,
+      });
+      expect(await log.readNewestSequence("thread-b")).toBe(2);
+      expect((await log.append("thread-a", userMessageNumbered(1))).sequence).toBe(1);
+    });
+  });
 }
 
 function toolStarted(toolCallId: string): AgentEvent {

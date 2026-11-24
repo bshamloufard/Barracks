@@ -59,8 +59,42 @@ describe("the control plane configuration", () => {
           modelCredentials: {},
           piSettings: {},
         },
+        sandboxLifecycle: {
+          idlePeriodInMilliseconds: 10 * 60_000,
+          admission: { maximumPerUser: 3, maximumInInstallation: undefined },
+          checkIntervalInMilliseconds: 30_000,
+        },
       },
     });
+  });
+
+  it("reads when idle sandboxes stop, how many may run at once and how often they are checked", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_SANDBOX_IDLE_MINUTES: "0.5",
+      BARRACK_RUNNING_SANDBOXES_PER_USER: "2",
+      BARRACK_RUNNING_SANDBOXES_IN_TOTAL: "5",
+      BARRACK_SANDBOX_CHECK_SECONDS: "2",
+    });
+
+    expect(result.ok && result.configuration.sandboxLifecycle).toEqual({
+      idlePeriodInMilliseconds: 30_000,
+      admission: { maximumPerUser: 2, maximumInInstallation: 5 },
+      checkIntervalInMilliseconds: 2_000,
+    });
+  });
+
+  it.each([
+    ["BARRACK_SANDBOX_IDLE_MINUTES", "0"],
+    ["BARRACK_RUNNING_SANDBOXES_PER_USER", "0"],
+    ["BARRACK_RUNNING_SANDBOXES_PER_USER", "1.5"],
+    ["BARRACK_RUNNING_SANDBOXES_IN_TOTAL", "none"],
+    ["BARRACK_SANDBOX_CHECK_SECONDS", "-1"],
+  ])("refuses %s=%s", (name, value) => {
+    const result = readConfiguration({ ...minimalEnvironment, [name]: value });
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.problems.join("\n")).toContain(name);
   });
 
   it("has no shared supervisor token any more", () => {

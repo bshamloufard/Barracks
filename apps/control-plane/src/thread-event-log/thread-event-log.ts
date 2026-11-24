@@ -67,7 +67,27 @@ export interface ThreadEventLog {
 
   /** Notes that every user message up to `throughSequence` was handed to an agent. It never moves back. */
   recordUserMessagesDelivered(threadId: string, throughSequence: number): Promise<void>;
+
+  /**
+   * Whether the thread's agent is in the middle of a run, and whether a
+   * user message is waiting to be handed to it: what decides whether its
+   * sandbox may be stopped for being idle. Read without reading any event.
+   */
+  readAgentWork(threadId: string): Promise<AgentWork>;
+
+  /** Which of these threads have a run open, in one read, for the thread list. */
+  findThreadsWithOpenRuns(threadIds: readonly string[]): Promise<Set<string>>;
+
+  /** Removes the thread's whole history, for good. Removing one that has none does nothing. */
+  deleteHistory(threadId: string): Promise<void>;
 }
+
+export type AgentWork = {
+  /** A run has started and no `agent_run_settled` or `agent_failed` has ended it. */
+  hasOpenRun: boolean;
+  /** A user message is recorded after the furthest delivery of user messages. */
+  hasUndeliveredUserMessage: boolean;
+};
 
 export type ThreadEventPage = {
   afterSequence: number;

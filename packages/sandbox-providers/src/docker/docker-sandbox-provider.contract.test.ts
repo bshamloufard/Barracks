@@ -26,7 +26,7 @@ describeSandboxProviderContract({
   unavailableReason: describeWhyDockerTestsCannotRun(),
   async setUp() {
     const recorder = await SupervisorConnectionRecorder.listen(findDockerBridgeGateway());
-    const provider = new DockerSandboxProvider({
+    const settings = {
       image: dockerTestImage,
       cpuLimit: 1,
       memoryLimitInMebibytes: 512,
@@ -35,9 +35,11 @@ describeSandboxProviderContract({
       servicePorts: [],
       dockerExecutable: "docker",
       network: undefined,
-    });
+    };
+    const provider = new DockerSandboxProvider(settings);
     return {
       provider,
+      reopenProvider: () => new DockerSandboxProvider(settings),
       unknownSandboxId: randomBytes(32).toString("hex"),
       supervisorEnvironmentFor: (threadId) => ({
         BARRACK_CONTROL_PLANE_URL: `ws://${hostAlias}:${recorder.port}`,

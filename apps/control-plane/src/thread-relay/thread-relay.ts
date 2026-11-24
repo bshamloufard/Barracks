@@ -25,6 +25,7 @@ import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import { InProgressAssistantText } from "./in-progress-assistant-text.js";
 import { findMissedRange, type MissedRange, readMissedEvents } from "./read-missed-events.js";
 import { SerialTaskQueue } from "./serial-task-queue.js";
+import type { ThreadActivity } from "./thread-activity.js";
 
 /** The messages that must still reach a client once its replay is over. */
 type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
@@ -62,11 +63,14 @@ type AttachedSupervisor = {
    * sent on this connection or delivered before the supervisor attached.
    */
   deliveryCursor: number;
+  /** Its sandbox is being stopped, so it is handed no more user messages. */
+  isSandboxStopping: boolean;
 };
 
 export type ThreadRelayOptions = {
   threadId: string;
   threadEventLog: ThreadEventLog;
+  threadActivity: ThreadActivity;
   logger: Logger;
   /**
    * Called whenever the relay is left with no supervisor, no clients and no
@@ -101,6 +105,7 @@ export const abandonedRunErrorMessage =
 export class ThreadRelay {
   readonly threadId: string;
   readonly #threadEventLog: ThreadEventLog;
+  readonly #threadActivity: ThreadActivity;
   readonly #logger: Logger;
   readonly #whenUnused: () => void;
   readonly #queue = new SerialTaskQueue();
@@ -116,6 +121,7 @@ export class ThreadRelay {
   constructor(options: ThreadRelayOptions) {
     this.threadId = options.threadId;
     this.#threadEventLog = options.threadEventLog;
+    this.#threadActivity = options.threadActivity;
     this.#logger = options.logger;
     this.#whenUnused = options.whenUnused;
   }
@@ -200,6 +206,80 @@ export class ThreadRelay {
   }
 
   /**
+   * The thread's sandbox is about to stop: the agent is asked to end its run,
+   * and is handed no more user messages, which it would only lose. They wait
+   * in history for the supervisor that attaches once the sandbox is woken.
+   * Unlike a user's interrupt, there is nobody to tell if no supervisor is
+   * attached here: the sandbox's stop ends the run either way.
+   */
+  prepareForStop(): void {
+    this.#enqueue("prepare the agent for its sandbox stopping", async () => {
+      const supervisor = this.#supervisor;
+      if (supervisor === undefined) {
+        return;
+      }
+      supervisor.isSandboxStopping = true;
+      if (supervisor.connection.send({ type: "interrupt_agent" })) {
+        this.#logger.info("Interrupted the agent because its sandbox is stopping");
+      }
+    });
+  }
+
+  /**
+   * The stop is over. A supervisor still attached (the stop failed, and its
+   * sandbox runs on) is handed the user messages held back meanwhile.
+   */
+  finishStop(): void {
+    this.#enqueue("resume handing user messages over after a stop", async () => {
+      const supervisor = this.#supervisor;
+      if (supervisor === undefined || !supervisor.isSandboxStopping) {
+        return;
+      }
+      supervisor.isSandboxStopping = false;
+      const newestSequence = await this.#threadEventLog.readNewestSequence(this.threadId);
+      await this.#sendUserMessagesUpTo(supervisor, newestSequence);
+    });
+  }
+
+  /**
+   * Records the end of the run still open in history, if any, as a failure
+   * with `errorMessage`: its sandbox has stopped, so no agent will end it.
+   * It goes through the queue, after everything the supervisor sent before
+   * its sandbox stopped. Resolves once recorded, or at once if no run is
+   * open.
+   */
+  closeOpenRun(errorMessage: string): Promise<void> {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    this.#enqueue("close a run left open by a stopped sandbox", async () => {
+      try {
+        if ((await this.#threadEventLog.readAgentWork(this.threadId)).hasOpenRun) {
+          await this.#recordAndBroadcast({ type: "agent_failed", errorMessage });
+          this.#logger.info("Closed the run the stopped sandbox left open");
+        }
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return promise;
+  }
+
+  /** The thread was deleted: everyone attached is disconnected, and its supervisor forgotten. */
+  disconnectEveryone(): void {
+    for (const client of [...this.#clientPhases.keys()]) {
+      this.detachClient(client);
+      client.close(closeCodes.threadNotFound, "This thread has been deleted");
+    }
+    const supervisors = [...this.#connectingSupervisors, this.#supervisor?.connection];
+    this.#connectingSupervisors.clear();
+    this.#supervisor = undefined;
+    for (const supervisor of supervisors) {
+      supervisor?.close(standardCloseCodes.goingAway, "This thread has been deleted");
+    }
+    this.#reportIfUnused();
+  }
+
+  /**
    * The client was registered before the log is read, so any event recorded
    * while the replay is under way is held back for it rather than missed;
    * events the replay already covered are then skipped, so none is sent
@@ -273,6 +353,7 @@ export class ThreadRelay {
       supervisorInstanceId: hello.supervisorInstanceId,
       lastRecordedEventNumber: resumePoint.lastRecordedEventNumber,
       deliveryCursor: Math.max(claimedDelivery, resumePoint.userMessagesDeliveredThrough),
+      isSandboxStopping: false,
     };
     this.#supervisor = supervisor;
     connection.send({
@@ -393,6 +474,7 @@ export class ThreadRelay {
     if (!this.#fitsInClientFrame(supervisor.connection, event)) {
       return;
     }
+    await this.#threadActivity.recordAgentActivity(this.threadId);
     try {
       const outcome = await this.#threadEventLog.appendSupervisorEvent(this.threadId, event, {
         supervisorInstanceId: supervisor.supervisorInstanceId,
@@ -528,11 +610,18 @@ export class ThreadRelay {
    * Recorded whether or not an agent is connected: a message sent while the
    * thread's sandbox is starting or asleep waits in history, and clients
    * show it as waiting (see `UserMessageDeliveryStatus`), until a supervisor
-   * attaches and is handed it.
+   * attaches and is handed it. The sandbox lifecycle is asked first, and
+   * wakes a stopped sandbox for it; it refuses only a message no agent
+   * could receive, such as one to a thread being deleted.
    */
   async #acceptUserMessage(client: ClientConnection, text: string): Promise<void> {
     const messageId = randomUUID();
     try {
+      const admission = await this.#threadActivity.admitUserMessage(this.threadId, text);
+      if (!admission.isAccepted) {
+        this.#rejectClientMessage(client, admission.reason);
+        return;
+      }
       await this.#recordAndBroadcast({ type: "user_message", messageId, text });
     } catch (error) {
       this.#logger.error({ err: error }, "Could not record a user message");
@@ -583,6 +672,8 @@ export class ThreadRelay {
    * elsewhere (another control plane instance, or an append reported as
    * failed that was committed after all), and any user message among them
    * is handed over first, so messages reach the agent in sequence order.
+   * While its sandbox is stopping the cursor stays where it is, so what is
+   * held back is handed over if the stop fails.
    */
   async #broadcastRecordedEvent(recordedEvent: RecordedThreadEvent): Promise<void> {
     const { sequence, event } = recordedEvent;
@@ -590,7 +681,11 @@ export class ThreadRelay {
     this.#forgetTextSupersededBy(event);
     this.#broadcast({ type: "thread_event", ...recordedEvent });
     const supervisor = this.#supervisor;
-    if (supervisor === undefined || sequence <= supervisor.deliveryCursor) {
+    if (
+      supervisor === undefined ||
+      supervisor.isSandboxStopping ||
+      sequence <= supervisor.deliveryCursor
+    ) {
       return;
     }
     await this.#sendUserMessagesUpTo(supervisor, sequence - 1);
@@ -610,7 +705,7 @@ export class ThreadRelay {
     supervisor: AttachedSupervisor,
     throughSequence: number,
   ): Promise<void> {
-    if (throughSequence <= supervisor.deliveryCursor) {
+    if (supervisor.isSandboxStopping || throughSequence <= supervisor.deliveryCursor) {
       return;
     }
     const range: MissedRange = {

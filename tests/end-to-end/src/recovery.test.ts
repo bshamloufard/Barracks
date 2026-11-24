@@ -58,13 +58,19 @@ afterEach(async () => {
   await rm(recordDirectory, { recursive: true, force: true });
 });
 
-async function startTestControlPlane(port?: number): Promise<RunningControlPlane> {
+/** A control plane; given the one it replaces, on that one's port and sandboxes. */
+async function startTestControlPlane(
+  replacing?: RunningControlPlane,
+): Promise<RunningControlPlane> {
   const running = await startControlPlane({
     sandboxes: {
       kind: "local-process",
       supervisorCommand: restartableSupervisorCommand(recordDirectory),
+      ...(replacing?.sandboxesDirectory === undefined
+        ? {}
+        : { sandboxesDirectory: replacing.sandboxesDirectory }),
     },
-    ...(port === undefined ? {} : { port }),
+    ...(replacing === undefined ? {} : { port: replacing.port }),
     ...(database === undefined ? {} : { databaseUrl: database.url }),
   });
   controlPlanes.push(running);
@@ -129,7 +135,7 @@ describe("a thread whose control plane is killed in the middle of a run", () => 
       await waitUntilStreaming(clientBeforeKill, 1);
 
       await firstControlPlane.kill();
-      const secondControlPlane = await startTestControlPlane(firstControlPlane.port);
+      const secondControlPlane = await startTestControlPlane(firstControlPlane);
       const clientAfterRestart = await connectClient(secondControlPlane, threadId);
       await clientAfterRestart.waitUntilRunsHaveSettled(1);
 

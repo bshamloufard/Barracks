@@ -1,6 +1,7 @@
 import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
 import { runBoundaryOf } from "./run-boundary.js";
 import type {
+  AgentWork,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -14,6 +15,8 @@ type ThreadHistory = {
   recordedEventNumbersByInstance: Map<string, Set<number>>;
   openRunSupervisorInstanceId: string | undefined;
   userMessagesDeliveredThrough: number;
+  /** The sequence of the newest user message, or 0 for none. */
+  newestUserMessageSequence: number;
 };
 
 /**
@@ -88,6 +91,29 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     );
   }
 
+  async readAgentWork(threadId: string): Promise<AgentWork> {
+    const history = this.#historiesByThreadId.get(threadId);
+    return {
+      hasOpenRun: history?.openRunSupervisorInstanceId !== undefined,
+      hasUndeliveredUserMessage:
+        history !== undefined &&
+        history.newestUserMessageSequence > history.userMessagesDeliveredThrough,
+    };
+  }
+
+  async findThreadsWithOpenRuns(threadIds: readonly string[]): Promise<Set<string>> {
+    return new Set(
+      threadIds.filter(
+        (threadId) =>
+          this.#historiesByThreadId.get(threadId)?.openRunSupervisorInstanceId !== undefined,
+      ),
+    );
+  }
+
+  async deleteHistory(threadId: string): Promise<void> {
+    this.#historiesByThreadId.delete(threadId);
+  }
+
   #historyOf(threadId: string): ThreadHistory {
     const existing = this.#historiesByThreadId.get(threadId);
     if (existing !== undefined) {
@@ -98,6 +124,7 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
       recordedEventNumbersByInstance: new Map(),
       openRunSupervisorInstanceId: undefined,
       userMessagesDeliveredThrough: 0,
+      newestUserMessageSequence: 0,
     };
     this.#historiesByThreadId.set(threadId, history);
     return history;
@@ -114,6 +141,9 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
       event,
     };
     history.events.push(recordedEvent);
+    if (event.type === "user_message") {
+      history.newestUserMessageSequence = recordedEvent.sequence;
+    }
     const boundary = runBoundaryOf(event);
     if (boundary === "opens_run") {
       history.openRunSupervisorInstanceId = supervisorInstanceId;

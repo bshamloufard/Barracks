@@ -1,9 +1,14 @@
-import type { ThreadSandbox, ThreadSummary } from "@barrack/protocol";
+import type { ThreadSummary } from "@barrack/protocol";
 import { threadPageAddress } from "../page-address";
+import {
+  describeSandboxState,
+  describeTimeSince,
+  threadNameOf,
+} from "../presentation/describe-sandbox";
 import { useThreadList } from "../thread-list/use-thread-list";
 import { AccountBar } from "./account-bar";
 
-const createdAtFormat = new Intl.DateTimeFormat(undefined, {
+const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
@@ -50,30 +55,28 @@ function ThreadList({ threads }: { threads: ThreadSummary[] }) {
   if (threads.length === 0) {
     return <p className="quiet-note">No threads yet. Create one to give an agent a task.</p>;
   }
+  const now = new Date();
   return (
     <ul className="thread-list">
       {threads.map((thread) => (
         <li key={thread.threadId}>
           <a className="thread-list-item" href={threadPageAddress(thread.threadId)}>
-            <span className="thread-list-name">{thread.threadId}</span>
+            <span className="thread-list-name">{threadNameOf(thread)}</span>
             <span className="thread-list-details">
-              {createdAtFormat.format(new Date(thread.createdAt))} ·{" "}
-              {describeSandbox(thread.sandbox)}
+              <span className={`sandbox-state sandbox-state-${thread.sandbox.state}`}>
+                {describeSandboxState(thread.sandbox)}
+              </span>
+              {thread.isAgentWorking && <span className="agent-working">Agent working</span>}
+              <time
+                dateTime={thread.lastActiveAt}
+                title={`Last active ${dateTimeFormat.format(new Date(thread.lastActiveAt))}`}
+              >
+                Active {describeTimeSince(thread.lastActiveAt, now)}
+              </time>
             </span>
           </a>
         </li>
       ))}
     </ul>
   );
-}
-
-function describeSandbox(sandbox: ThreadSandbox): string {
-  switch (sandbox.state) {
-    case "creating":
-      return "Starting its sandbox…";
-    case "ready":
-      return "Sandbox ready";
-    case "failed":
-      return `Sandbox failed: ${sandbox.reason}`;
-  }
 }

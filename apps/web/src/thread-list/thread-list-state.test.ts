@@ -10,7 +10,10 @@ import {
 const thread: ThreadSummary = {
   threadId: "thread-1",
   createdAt: "2026-11-24T09:00:00.000Z",
-  sandbox: { state: "ready" },
+  lastActiveAt: "2026-11-24T09:00:00.000Z",
+  title: null,
+  isAgentWorking: false,
+  sandbox: { state: "running" },
 };
 
 function stateAfter(...actions: ThreadListAction[]): ThreadListState {

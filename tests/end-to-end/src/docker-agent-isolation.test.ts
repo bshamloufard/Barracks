@@ -18,7 +18,13 @@ import {
 } from "./support/docker-environment.js";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
-import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js";
+import {
+  createThread,
+  resumeThread,
+  stopThread,
+  waitUntilSandboxIs,
+  waitUntilSandboxIsReady,
+} from "./support/threads-api.js";
 
 /**
  * A thread created through the real control plane's API, whose sandbox the
@@ -36,8 +42,8 @@ import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js"
  * The test needs the thread's token to look for it, and the control plane
  * never reveals one, so the test reads it from the container's
  * configuration, as only someone in charge of the Docker daemon can. The
- * control plane cannot stop or start sandboxes yet, so the test does that
- * through the provider directly.
+ * stop of a frozen Pi is timed through the provider directly, so that it
+ * measures the container's stop and nothing the control plane does first.
  *
  * The control plane and the mock model listen on the host's address on
  * Docker's default bridge network, which containers reach as
@@ -142,11 +148,12 @@ if (unavailableReason !== undefined) {
         describeMockModel(modelServer),
       );
       const controlPlanePort = new URL(controlPlane.webSocketBaseUrl).port;
-      return { sandboxId, client, controlPlanePort, modelServer };
+      return { threadId, sandboxId, client, controlPlanePort, modelServer, controlPlane };
     }
 
     it("runs Pi as its own user, out of reach of the supervisor's secrets, and resumes its conversation after a stop and start", async () => {
-      const { sandboxId, client, controlPlanePort, modelServer } = await startThreadOnPi();
+      const { threadId, sandboxId, client, controlPlanePort, modelServer, controlPlane } =
+        await startThreadOnPi();
       const supervisorToken = readSupervisorTokenOf(sandboxId);
       const probe = await readFile(
         new URL("support/agent-isolation-probe.mjs", import.meta.url),
@@ -222,9 +229,11 @@ if (unavailableReason !== undefined) {
       ]);
       expect(findings.workspace).toEqual({ write: "allowed", ownerUserId: agentUserId });
 
-      await provider.stop(sandboxId);
+      await stopThread(controlPlane, threadId);
+      await waitUntilSandboxIs(controlPlane, threadId, "stopped");
       await client.waitUntil("the stopped sandbox's supervisor has gone", supervisorIs(false));
-      await provider.start(sandboxId);
+      await resumeThread(controlPlane, threadId);
+      await waitUntilSandboxIs(controlPlane, threadId, "running");
       await client.waitUntil("the restarted supervisor has reconnected", supervisorIs(true));
       client.send({
         type: "send_user_message",

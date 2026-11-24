@@ -16,6 +16,7 @@ import {
   describeProblems,
   toDatabaseConfiguration,
 } from "./database/database-configuration.js";
+import type { SandboxLifecycleSettings } from "./sandbox-lifecycle/lifecycle-settings.js";
 import { readModelCredentials } from "./threads/model-credentials.js";
 import { readPiSettings } from "./threads/pi-settings.js";
 import type {
@@ -40,6 +41,24 @@ const localDevelopmentOrigins = [
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
 
 const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
+
+/**
+ * A sandbox with nothing happening for this long is stopped. Waking one
+ * takes seconds (minutes from Daytona's archive) and keeps the conversation,
+ * so a short period costs a user little, and a long one costs money; ten
+ * minutes covers a short break. Open-Inspect chose the same; see the
+ * decision log.
+ */
+const defaultIdleMinutes = 10;
+
+/**
+ * Three: what Milestone 3 must show running at once, and about what the
+ * smallest Daytona tier's storage holds.
+ */
+const defaultRunningSandboxesPerUser = 3;
+
+/** How often sandboxes are compared with the provider and checked for idleness. */
+const defaultCheckSeconds = 30;
 
 const environmentSchema = z
   .object({
@@ -69,6 +88,23 @@ const environmentSchema = z
       .string()
       .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/example-model"')
       .optional(),
+    BARRACK_SANDBOX_IDLE_MINUTES: z.coerce
+      .number()
+      .positive()
+      .max(7 * 24 * 60)
+      .default(defaultIdleMinutes),
+    BARRACK_RUNNING_SANDBOXES_PER_USER: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1_000)
+      .default(defaultRunningSandboxesPerUser),
+    BARRACK_RUNNING_SANDBOXES_IN_TOTAL: z.coerce.number().int().min(1).max(100_000).optional(),
+    BARRACK_SANDBOX_CHECK_SECONDS: z.coerce
+      .number()
+      .positive()
+      .max(60 * 60)
+      .default(defaultCheckSeconds),
     ...databaseEnvironmentShape,
   })
   .refine((settings) => settings.BARRACK_AGENT_HARNESS === "fake" || settings.BARRACK_MODEL, {
@@ -106,6 +142,8 @@ export type ControlPlaneConfiguration = {
   sandboxProvider: SandboxProviderConfiguration;
   /** What every new sandbox's supervisor is told. Holds model keys: never log it. */
   supervisorEnvironment: SupervisorEnvironmentSettings;
+  /** When sandboxes stop by themselves, and how many may run at once. */
+  sandboxLifecycle: SandboxLifecycleSettings;
 };
 
 export type ConfigurationResult =
@@ -165,6 +203,14 @@ function toConfiguration(
       agent: toAgentSettings(settings),
       modelCredentials: readModelCredentials(environment),
       piSettings: readPiSettings(environment),
+    },
+    sandboxLifecycle: {
+      idlePeriodInMilliseconds: settings.BARRACK_SANDBOX_IDLE_MINUTES * 60_000,
+      admission: {
+        maximumPerUser: settings.BARRACK_RUNNING_SANDBOXES_PER_USER,
+        maximumInInstallation: settings.BARRACK_RUNNING_SANDBOXES_IN_TOTAL,
+      },
+      checkIntervalInMilliseconds: settings.BARRACK_SANDBOX_CHECK_SECONDS * 1000,
     },
   };
 }

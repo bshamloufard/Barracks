@@ -2,6 +2,7 @@ import type {
   AssistantTextFragment,
   ControlPlaneToClientMessage,
   ThreadEvent,
+  ThreadSummary,
 } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -11,6 +12,15 @@ import {
   type ThreadAction,
   type ThreadState,
 } from "./thread-state";
+
+const exampleThread: ThreadSummary = {
+  threadId: "thread-1",
+  createdAt: "2026-11-24T09:00:00.000Z",
+  lastActiveAt: "2026-11-24T09:00:00.000Z",
+  title: "Fix the build",
+  isAgentWorking: false,
+  sandbox: { state: "running" },
+};
 
 function recorded(sequence: number, event: ThreadEvent): ThreadAction {
   return {
@@ -433,25 +443,77 @@ describe("the thread's record", () => {
     expect(initialThreadState.record).toEqual({ name: "loading" });
   });
 
-  it("holds the sandbox's state as the latest record tells it", () => {
-    const thread = { threadId: "thread-1", createdAt: "2026-11-24T09:00:00.000Z" };
+  it("holds the thread as the latest record tells it", () => {
+    const failedThread = {
+      ...exampleThread,
+      sandbox: { state: "failed", reason: "No quota left", canResume: false },
+    } as const;
 
     const failed = stateAfter(
-      { type: "thread_record_loaded", thread: { ...thread, sandbox: { state: "creating" } } },
-      {
-        type: "thread_record_loaded",
-        thread: { ...thread, sandbox: { state: "failed", reason: "No quota left" } },
-      },
+      { type: "thread_record_loaded", thread: exampleThread },
+      { type: "thread_record_loaded", thread: failedThread },
     );
 
-    expect(failed.record).toEqual({
-      name: "found",
-      sandbox: { state: "failed", reason: "No quota left" },
-    });
+    expect(failed.record).toEqual({ name: "found", thread: failedThread });
+  });
+
+  it("forgets having seen a supervisor once the sandbox is no longer running, so a restart shows as starting", () => {
+    const supervisorConnected: ControlPlaneToClientMessage = {
+      type: "supervisor_connection_status",
+      isSupervisorConnected: true,
+    };
+    const supervisorGone: ControlPlaneToClientMessage = {
+      type: "supervisor_connection_status",
+      isSupervisorConnected: false,
+    };
+
+    const restarted = stateAfter(
+      { type: "connection_changed", connection: { name: "connected" } },
+      { type: "message_received", message: supervisorConnected },
+      { type: "message_received", message: supervisorGone },
+      { type: "thread_record_loaded", thread: { ...exampleThread, sandbox: { state: "stopped" } } },
+      { type: "thread_record_loaded", thread: exampleThread },
+    );
+
+    expect(restarted.hasSeenSupervisorConnected).toBe(false);
   });
 
   it("says when the control plane has no such thread", () => {
     expect(stateAfter({ type: "thread_record_missing" }).record).toEqual({ name: "not_found" });
+  });
+});
+
+describe("stopping, resuming and deleting", () => {
+  it("asks to confirm a deletion first, and forgets it when cancelled", () => {
+    const confirming = stateAfter({ type: "delete_confirmation_requested" });
+    const cancelled = reduceThreadState(confirming, { type: "delete_confirmation_cancelled" });
+
+    expect(confirming.lifecycleRequest).toEqual({ name: "confirming_delete" });
+    expect(cancelled.lifecycleRequest).toEqual({ name: "none" });
+  });
+
+  it("shows a request as sending, then takes the thread as the control plane answered", () => {
+    const stopping = { ...exampleThread, sandbox: { state: "stopping" } } as const;
+
+    const sending = stateAfter({ type: "lifecycle_request_sent", action: "stop" });
+    const answered = reduceThreadState(sending, {
+      type: "lifecycle_request_answered",
+      thread: stopping,
+    });
+
+    expect(sending.lifecycleRequest).toEqual({ name: "sending", action: "stop" });
+    expect(answered.lifecycleRequest).toEqual({ name: "none" });
+    expect(answered.record).toEqual({ name: "found", thread: stopping });
+  });
+
+  it("shows why a request was refused until dismissed", () => {
+    const refused = stateAfter(
+      { type: "lifecycle_request_sent", action: "resume" },
+      { type: "lifecycle_request_failed", reason: "You already have 3 sandboxes running" },
+    );
+
+    expect(refused.lifecycleRequest).toEqual({ name: "none" });
+    expect(refused.rejectionReason).toBe("You already have 3 sandboxes running");
   });
 });
 

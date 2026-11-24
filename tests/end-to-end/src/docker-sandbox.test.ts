@@ -9,7 +9,13 @@ import {
 } from "./support/docker-environment.js";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
-import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js";
+import {
+  createThread,
+  resumeThread,
+  stopThread,
+  waitUntilSandboxIs,
+  waitUntilSandboxIsReady,
+} from "./support/threads-api.js";
 
 /**
  * One thread created through the real control plane's API, whose sandbox
@@ -17,9 +23,8 @@ import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js"
  * image, with the control plane running from its sources on the host. The
  * supervisor inside the container (with the fake agent) must connect out by
  * itself with the token it was given, carry a user's message to the agent
- * and back, and connect again by itself after the sandbox is stopped and
- * started. The control plane cannot stop or start sandboxes yet, so the
- * test does that through the provider directly.
+ * and back, and connect again by itself after the control plane stops and
+ * resumes the sandbox, whose container is then stopped and running again.
  *
  * The control plane listens on the host's address on Docker's default bridge
  * network, which containers reach as host.docker.internal. That address is
@@ -85,9 +90,12 @@ if (unavailableReason !== undefined) {
       client.send({ type: "send_user_message", text: "Hello from the host" });
       await client.waitUntilRunsHaveSettled(1);
 
-      await provider.stop(sandboxId);
+      expect((await stopThread(controlPlane, threadId)).status).toBe(202);
+      await waitUntilSandboxIs(controlPlane, threadId, "stopped");
       await client.waitUntil("the stopped sandbox's supervisor has gone", supervisorIs(false));
-      await provider.start(sandboxId);
+      const statusWhileStopped = await provider.getStatus(sandboxId);
+      expect((await resumeThread(controlPlane, threadId)).status).toBe(202);
+      await waitUntilSandboxIs(controlPlane, threadId, "running");
       await client.waitUntil("the restarted supervisor has reconnected", supervisorIs(true));
       client.send({ type: "send_user_message", text: "Hello again" });
       await client.waitUntilRunsHaveSettled(2);
@@ -100,6 +108,7 @@ if (unavailableReason !== undefined) {
         { content: [{ type: "text", text: 'You said: "Hello from the host"' }] },
         { content: [{ type: "text", text: 'You said: "Hello again"' }] },
       ]);
+      expect(statusWhileStopped).toEqual({ state: "stopped" });
       expect(await provider.getStatus(sandboxId)).toEqual({ state: "running" });
     });
   });
