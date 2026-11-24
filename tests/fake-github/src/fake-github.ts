@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { jwtVerify } from "jose";
 import { serveGitRequest } from "./git-http-backend.js";
-import { createBareRepository, readBranch } from "./local-repositories.js";
+import { createBareRepository, type ObjectFormat, readBranch } from "./local-repositories.js";
 
 export {
   pushCommitAsSomeoneElse,
@@ -180,6 +180,8 @@ export class FakeGithub {
     isPrivate: boolean;
     defaultBranch?: string;
     files?: Record<string, string>;
+    /** SHA-1 unless given; GitHub hosts no SHA-256 repository, but other hosts can. */
+    objectFormat?: ObjectFormat;
   }): Promise<FakeRepository> {
     const fullName = `${options.owner}/${options.name}`;
     const directory = path.join(this.#repositoriesDirectory, `${fullName}.git`);
@@ -188,6 +190,7 @@ export class FakeGithub {
       directory,
       defaultBranch,
       options.files ?? { "README.md": `# ${options.name}\n` },
+      options.objectFormat,
     );
     const repository: FakeRepository = {
       id: this.#mintIdentifier(),

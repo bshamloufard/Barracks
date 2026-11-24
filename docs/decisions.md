@@ -926,3 +926,9 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Secrets never go in the repository.
 - **What we did:** Keys in tests shaped like real ones (an `sk-ant-` prefix and "real-key") are now `fake-<provider>-key-of-<owner>`.
 - **Why:** They may trip secret scanners; the redaction they exercise matches the exact value and relies on no shape.
+
+## 2026-11-24: A repository that names its objects with SHA-256 is refused at clone time
+
+- **What the plan said:** A thread may start from a Git repository; validate anything that crosses a boundary.
+- **What we did:** After cloning, the supervisor asks Git for the clone's object format and fails the clone unless it is SHA-1, with a `repository_clone_failed` the user sees saying the repository uses SHA-256, which Barrack does not support. The protocol's commit rule stays 40 hex digits, and the protocol version is unchanged.
+- **Why:** Before this a public repository using SHA-256 (only hosts other than GitHub can serve one) cloned, and the supervisor then built `repository_cloned` with a 64-digit commit the protocol refuses, logged the refusal and sent nothing: the user saw a clone start and never finish, while the agent worked on. Supporting SHA-256 end to end would mean a wider commit rule, a protocol version, and the control plane's bundle checks (which accept only SHA-1 bundles) and publishing changed, all for a path that can never publish, since GitHub hosts no SHA-256 repository and publishing goes only to GitHub. Refusing is the smaller correct thing; the format is known only once cloned, since the control plane does not ask a public repository's host anything before the sandbox clones it.

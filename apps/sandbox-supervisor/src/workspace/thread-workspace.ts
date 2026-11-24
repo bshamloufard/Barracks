@@ -222,6 +222,7 @@ export class ThreadWorkspace {
           this.#settings.cloneTimeoutInMilliseconds ?? defaultCloneTimeoutInMilliseconds,
       }),
     );
+    await refuseUnsupportedObjectFormat(git);
     const baseBranch = (
       await expectSuccess(git.run(["symbolic-ref", "--short", "HEAD"], quick()))
     ).trim();
@@ -321,6 +322,26 @@ export function describeCredentialHelperCommand(
 
 function quoteForShell(word: string): string {
   return `'${word.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Barrack names commits by SHA-1 throughout: in its events, in publishing,
+ * and at GitHub, which hosts no SHA-256 repository. A public repository from
+ * elsewhere may use SHA-256, which is known only once it is cloned; its
+ * commits could not be reported, so the clone fails, saying why. See the
+ * decision log.
+ */
+async function refuseUnsupportedObjectFormat(git: AgentGit): Promise<void> {
+  const objectFormat = (
+    await expectSuccess(git.run(["rev-parse", "--show-object-format"], quick()))
+  ).trim();
+  if (objectFormat === "sha1") {
+    return;
+  }
+  const formatName = objectFormat === "sha256" ? "SHA-256" : `"${objectFormat}"`;
+  throw new Error(
+    `it names its objects with ${formatName}, which Barrack does not support: it works only with repositories that use SHA-1, as every repository on GitHub does.`,
+  );
 }
 
 function quick(): { timeoutInMilliseconds: number } {

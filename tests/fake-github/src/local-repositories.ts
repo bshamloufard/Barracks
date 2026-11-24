@@ -39,6 +39,9 @@ export function runGit(gitArguments: string[], workingDirectory: string): Promis
   });
 }
 
+/** How a repository names its objects: SHA-1, as every repository GitHub hosts does, or SHA-256. */
+export type ObjectFormat = "sha1" | "sha256";
+
 /**
  * Makes a bare repository at `repositoryPath` whose default branch holds
  * `files` in one commit. It serves partial clones, as GitHub does, and
@@ -48,17 +51,16 @@ export async function createBareRepository(
   repositoryPath: string,
   defaultBranch: string,
   files: Record<string, string>,
+  objectFormat: ObjectFormat = "sha1",
 ): Promise<void> {
-  await runGit(
-    ["init", "--quiet", "--bare", "--initial-branch", defaultBranch, repositoryPath],
-    "/",
-  );
+  const initialization = ["--initial-branch", defaultBranch, `--object-format=${objectFormat}`];
+  await runGit(["init", "--quiet", "--bare", ...initialization, repositoryPath], "/");
   await runGit(["config", "uploadpack.allowFilter", "true"], repositoryPath);
   await runGit(["config", "uploadpack.allowAnySHA1InWant", "true"], repositoryPath);
   await runGit(["config", "http.receivepack", "true"], repositoryPath);
   const workingDirectory = await mkdtemp(path.join(tmpdir(), "barrack-fake-github-seed-"));
   try {
-    await runGit(["init", "--quiet", "--initial-branch", defaultBranch], workingDirectory);
+    await runGit(["init", "--quiet", ...initialization], workingDirectory);
     for (const [filePath, contents] of Object.entries(files)) {
       await writeFile(path.join(workingDirectory, filePath), contents);
     }

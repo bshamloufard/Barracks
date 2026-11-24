@@ -308,6 +308,35 @@ describe("the agent's workspace", () => {
     expect(await workspace.isReadyForMessages()).toBe(false);
   });
 
+  it("fails the clone, saying why, when the repository names its objects with SHA-256", async () => {
+    const sha256Repository = await github.createRepository({
+      owner: "octo",
+      name: "sha256",
+      isPrivate: false,
+      objectFormat: "sha256",
+    });
+    const sandbox = await makeSandbox("sha256");
+    const workspace = createWorkspace(sandbox);
+
+    await workspace.prepare({
+      type: "prepare_workspace",
+      repository: describeRepository(sha256Repository, "none"),
+      agentHasWorkedBefore: false,
+    });
+
+    for (const event of events) {
+      expect(workspaceEventSchema.safeParse(event).success, event.type).toBe(true);
+    }
+    expect(events.at(-1)).toEqual({
+      type: "repository_clone_failed",
+      errorMessage: expect.stringContaining(
+        "it names its objects with SHA-256, which Barrack does not support",
+      ),
+    });
+    expect(await workspace.readCloneRecord()).toBeUndefined();
+    expect(await workspace.isReadyForMessages()).toBe(false);
+  });
+
   it("reports a repository that does not exist", async () => {
     const sandbox = await makeSandbox("missing");
     const workspace = createWorkspace(sandbox);
