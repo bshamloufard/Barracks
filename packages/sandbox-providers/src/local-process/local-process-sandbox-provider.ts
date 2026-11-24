@@ -28,9 +28,10 @@ import {
   isLocalSandboxId,
   isProcessAlive,
   type LocalSandboxRecord,
+  markSupervisorBeingStopped,
   readEverySandboxRecord,
   readSandboxRecord,
-  readSupervisorProcessId,
+  readSupervisorProcess,
   removeSupervisorProcessId,
   writeSandboxRecord,
   writeSupervisorProcessId,
@@ -174,11 +175,15 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
     if ((await readSandboxRecord(directory)) === undefined) {
       return { state: "missing" };
     }
-    const processId = await readSupervisorProcessId(directory);
-    if (processId === undefined) {
+    const supervisor = await readSupervisorProcess(directory);
+    if (supervisor === undefined) {
       return { state: "stopped" };
     }
-    if (this.#isSupervisorRunning(processId)) {
+    const isRunning = this.#isSupervisorRunning(supervisor.processId);
+    if (supervisor.isBeingStopped) {
+      return { state: isRunning ? "stopping" : "stopped" };
+    }
+    if (isRunning) {
       return { state: "running" };
     }
     return {
@@ -290,27 +295,32 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
   }
 
   /**
-   * The supervisor's identifier is removed from disk before it is signalled,
-   * so a supervisor found gone while its identifier is still there exited by
-   * itself. Waits until it has exited, killing it after the grace period.
+   * The supervisor is marked as being stopped before it is signalled, so a
+   * supervisor found gone while still marked running exited by itself, and
+   * a stop cut short is finished by the next. Waits until it has exited,
+   * killing it after the grace period.
    */
   async #stopSupervisor(sandboxId: string): Promise<void> {
     const directory = this.#directoryOf(sandboxId);
-    const processId = await readSupervisorProcessId(directory);
-    await removeSupervisorProcessId(directory);
+    const supervisor = await readSupervisorProcess(directory);
     this.#exitDescriptions.delete(sandboxId);
-    if (processId === undefined || !this.#isSupervisorRunning(processId)) {
+    if (supervisor === undefined) {
       return;
     }
-    signalUnlessGone(processId, "SIGTERM");
-    const killTimer = setTimeout(
-      () => signalUnlessGone(processId, "SIGKILL"),
-      this.#settings.stopTimeoutInMilliseconds,
-    );
-    while (this.#isSupervisorRunning(processId)) {
-      await sleep(exitPollIntervalInMilliseconds);
+    await markSupervisorBeingStopped(directory);
+    const { processId } = supervisor;
+    if (this.#isSupervisorRunning(processId)) {
+      signalUnlessGone(processId, "SIGTERM");
+      const killTimer = setTimeout(
+        () => signalUnlessGone(processId, "SIGKILL"),
+        this.#settings.stopTimeoutInMilliseconds,
+      );
+      while (this.#isSupervisorRunning(processId)) {
+        await sleep(exitPollIntervalInMilliseconds);
+      }
+      clearTimeout(killTimer);
     }
-    clearTimeout(killTimer);
+    await removeSupervisorProcessId(directory);
   }
 
   /**

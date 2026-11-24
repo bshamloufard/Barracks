@@ -1,4 +1,4 @@
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -13,13 +13,16 @@ import { z } from "zod";
  *   on this provider the agent runs as that same user and can read it
  *   anyway (see the provider's own comment).
  * - `supervisor.pid`: the process identifier of the running supervisor,
- *   written once it has started and removed by whoever stops it, before it
- *   is signalled. A file naming a process that is gone therefore means the
- *   supervisor exited by itself.
+ *   written once it has started. Whoever stops it first renames the file
+ *   `supervisor-stopping.pid`, then signals the process, then removes the
+ *   file once it has exited. A `supervisor.pid` naming a process that is
+ *   gone therefore means the supervisor exited by itself, and a stop cut
+ *   short (its control plane killed) leaves a file the next stop finds.
  */
 
 const recordFileName = "sandbox-record.json";
 const supervisorProcessFileName = "supervisor.pid";
+const stoppingSupervisorProcessFileName = "supervisor-stopping.pid";
 
 /**
  * Identifiers the provider mints are `local-` and a UUID. Anything else
@@ -85,18 +88,47 @@ export async function writeSupervisorProcessId(
   await writeFile(path.join(sandboxDirectory, supervisorProcessFileName), String(processId));
 }
 
-export async function readSupervisorProcessId(
+/** The supervisor last launched, and whether a stop of it has begun; undefined if none runs or ran. */
+export type SupervisorProcess = { processId: number; isBeingStopped: boolean };
+
+export async function readSupervisorProcess(
   sandboxDirectory: string,
-): Promise<number | undefined> {
-  const text = await readFileIfPresent(path.join(sandboxDirectory, supervisorProcessFileName));
-  const processId = Number(text);
-  return text === undefined || !Number.isSafeInteger(processId) || processId <= 0
-    ? undefined
-    : processId;
+): Promise<SupervisorProcess | undefined> {
+  const running = await readProcessId(path.join(sandboxDirectory, supervisorProcessFileName));
+  if (running !== undefined) {
+    return { processId: running, isBeingStopped: false };
+  }
+  const stopping = await readProcessId(
+    path.join(sandboxDirectory, stoppingSupervisorProcessFileName),
+  );
+  return stopping === undefined ? undefined : { processId: stopping, isBeingStopped: true };
+}
+
+/** Notes that the supervisor is about to be signalled to stop; see the comment at the top. */
+export async function markSupervisorBeingStopped(sandboxDirectory: string): Promise<void> {
+  try {
+    await rename(
+      path.join(sandboxDirectory, supervisorProcessFileName),
+      path.join(sandboxDirectory, stoppingSupervisorProcessFileName),
+    );
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
 }
 
 export async function removeSupervisorProcessId(sandboxDirectory: string): Promise<void> {
   await rm(path.join(sandboxDirectory, supervisorProcessFileName), { force: true });
+  await rm(path.join(sandboxDirectory, stoppingSupervisorProcessFileName), { force: true });
+}
+
+async function readProcessId(filePath: string): Promise<number | undefined> {
+  const text = await readFileIfPresent(filePath);
+  const processId = Number(text);
+  return text === undefined || !Number.isSafeInteger(processId) || processId <= 0
+    ? undefined
+    : processId;
 }
 
 /** Whether a process with this identifier exists (signal 0 checks without signalling). */

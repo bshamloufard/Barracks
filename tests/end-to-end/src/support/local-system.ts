@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readlink, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -240,21 +240,18 @@ async function sandboxVariables(sandboxes: SandboxChoice, port: number): Promise
 
 /**
  * A control plane ends the supervisors it started when it exits normally,
- * but not those an earlier one, killed outright, left running and it took
- * over; the local-process provider names each running one in its sandbox's
- * `supervisor.pid`.
+ * but not those an earlier one, killed outright, left running. One killed
+ * between starting a supervisor and noting its process can even leave one
+ * nobody knows of, so on Linux every process working in a sandbox is found
+ * through `/proc` and killed; elsewhere this does nothing.
  */
 async function killSupervisorsLeftIn(sandboxesDirectory: string): Promise<void> {
-  const sandboxDirectories = await readdir(sandboxesDirectory).catch(() => []);
-  for (const sandboxDirectory of sandboxDirectories) {
-    const processIdText = await readFile(
-      path.join(sandboxesDirectory, sandboxDirectory, "supervisor.pid"),
-      "utf8",
-    ).catch(() => undefined);
-    const processId = Number(processIdText);
-    if (processIdText !== undefined && Number.isSafeInteger(processId) && processId > 0) {
+  const processIds = await readdir("/proc").catch(() => []);
+  for (const processId of processIds.filter((entry) => /^\d+$/.test(entry))) {
+    const workingDirectory = await readlink(`/proc/${processId}/cwd`).catch(() => "");
+    if (workingDirectory.startsWith(`${sandboxesDirectory}${path.sep}`)) {
       try {
-        process.kill(processId, "SIGKILL");
+        process.kill(Number(processId), "SIGKILL");
       } catch {
         // Already gone, as it should be.
       }
