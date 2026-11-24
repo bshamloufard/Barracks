@@ -7,7 +7,7 @@ describe("protocolVersion", () => {
     expect(protocolVersion).toBeGreaterThan(0);
   });
 
-  it("is 3, the first version that works with a Git repository", () => {
-    expect(protocolVersion).toBe(3);
+  it("is 4, the first version in which each user brings their own model access", () => {
+    expect(protocolVersion).toBe(4);
   });
 });

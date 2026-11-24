@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { threadIdSchema } from "./identifier.js";
 import { maximumErrorMessageLength } from "./limits.js";
+import { modelReferenceSchema } from "./model-access.js";
 import {
   commitIdSchema,
   threadRepositoryRequestSchema,
@@ -14,11 +15,17 @@ import {
  * through these schemas, so the shapes are defined once, like the WebSocket
  * messages.
  *
- * - `POST /api/threads` with `{}`, or `{ "repository": … }` to start from a
- *   Git repository: create (201), or 409 `sandbox_limit_reached` when the
- *   user already runs as many sandboxes as allowed, saying which; 400 for a
- *   repository URL Barrack does not accept, 403 `repository_not_allowed`
- *   for a repository the user has not been verified to have access to.
+ * - `POST /api/threads` with `{ "model": "provider/model" }`, and
+ *   `"repository": …` to start from a Git repository: create (201), or 409
+ *   `sandbox_limit_reached` when the user already runs as many sandboxes as
+ *   allowed, saying which; 409 `model_credential_missing` when the user has
+ *   no key for the model's provider, saying what to add and where; 400 for
+ *   a repository URL Barrack does not accept, or no model where the agent
+ *   needs one; 403 `repository_not_allowed` for a repository the user has
+ *   not been verified to have access to.
+ * - `PUT /api/threads/{threadId}/model` with `{ "model" }`: switch the
+ *   thread to another model from its next run (200); 409
+ *   `model_credential_missing` as above.
  * - `GET /api/threads`: the user's threads, the most recently active first.
  * - `GET /api/threads/{threadId}`: one thread.
  * - `POST /api/threads/{threadId}/stop` with `{}`: stop its sandbox, files
@@ -67,6 +74,10 @@ export function buildPublishThreadApiPath(threadId: string): string {
   return `${buildThreadApiPath(threadId)}/publication`;
 }
 
+export function buildThreadModelApiPath(threadId: string): string {
+  return `${buildThreadApiPath(threadId)}/model`;
+}
+
 /** Why a requested change did not happen, or what went wrong; for the user. */
 const reasonSchema = z.string().min(1).max(maximumErrorMessageLength);
 
@@ -112,10 +123,17 @@ export const threadSummarySchema = z.strictObject({
   sandbox: threadSandboxSchema,
   /** The repository the thread started from, or null for an empty workspace. */
   repository: threadRepositorySummarySchema.nullable(),
+  /** The model its agent runs on, as `provider/model`; null if none was chosen. */
+  model: modelReferenceSchema.nullable(),
 });
 
-/** A new thread starts from an empty workspace, or from one repository. */
+/**
+ * A new thread runs on `model`, which the user must have a key for, and
+ * starts from an empty workspace or from one repository. An installation
+ * running the fake agent lets the model be left out.
+ */
 export const createThreadRequestSchema = z.strictObject({
+  model: modelReferenceSchema.optional(),
   repository: threadRepositoryRequestSchema.optional(),
 });
 
@@ -159,6 +177,8 @@ export const threadListResponseSchema = z.strictObject({
  *   the access to a repository that what they asked for needs.
  * - `publication_failed` (409): publishing was tried and did not happen;
  *   the message says why.
+ * - `model_credential_missing` (409): the user has no key for the model's
+ *   provider; the message says which key to add, and where.
  */
 export const apiErrorResponseSchema = z.strictObject({
   error: z.strictObject({
@@ -175,6 +195,7 @@ export const apiErrorResponseSchema = z.strictObject({
       "sandbox_limit_reached",
       "repository_not_allowed",
       "publication_failed",
+      "model_credential_missing",
       "unavailable",
     ]),
     message: z.string().min(1),

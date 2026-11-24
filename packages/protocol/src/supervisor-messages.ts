@@ -2,6 +2,7 @@ import { z } from "zod";
 import { agentEventSchema } from "./agent-events.js";
 import { identifierSchema } from "./identifier.js";
 import { interruptAgentMessageSchema } from "./interrupt-agent-message.js";
+import { configureModelAccessSchema } from "./model-access.js";
 import { parseFrame } from "./parse-frame.js";
 import type { ParseResult } from "./parse-result.js";
 import { workspaceEventSchema } from "./repository-events.js";
@@ -62,7 +63,10 @@ import {
  * stop whatever the agent was doing by then, which the user never asked for.
  *
  * The workspace's messages (cloning, credentials, publishing) are described
- * in `workspace-messages.ts`; `prepare_workspace` follows the welcome.
+ * in `workspace-messages.ts`; `prepare_workspace` follows the welcome. Then
+ * `configure_model_access` (in `model-access.ts`) tells the supervisor the
+ * thread's model and its owner's credential for it, before any user
+ * message, and again whenever either changes.
  */
 
 /**
@@ -148,6 +152,7 @@ export const controlPlaneToSupervisorMessageSchema = z.discriminatedUnion("type"
   agentEventsRecordedSchema,
   deliverUserMessageSchema,
   interruptAgentMessageSchema,
+  configureModelAccessSchema,
   ...controlPlaneWorkspaceMessageSchema.options,
 ]);
 

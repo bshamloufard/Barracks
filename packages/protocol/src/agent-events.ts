@@ -6,6 +6,7 @@ import {
 } from "./assistant-content.js";
 import { identifierSchema } from "./identifier.js";
 import { maximumErrorMessageLength, maximumToolOutputLength } from "./limits.js";
+import { modelAccessErrorKindSchema } from "./model-access.js";
 
 /**
  * Thread events that the agent causes. The supervisor translates the agent
@@ -41,6 +42,11 @@ export const assistantMessageEndReasonSchema = z.enum([
 /**
  * A complete assistant message. It is the authoritative record of what the
  * model said and supersedes any stream fragments sent while it was produced.
+ *
+ * An errored message carries the provider's own `errorMessage` and, when the
+ * harness recognised the failure as one the user can act on, its
+ * `errorKind` (see `modelAccessErrorKindSchema`); clients explain the kind,
+ * and never read meaning into the message's wording.
  */
 export const assistantMessageEventSchema = z
   .strictObject({
@@ -49,10 +55,15 @@ export const assistantMessageEventSchema = z
     content: z.array(assistantContentBlockSchema),
     endReason: assistantMessageEndReasonSchema,
     errorMessage: errorMessageSchema.exactOptional(),
+    errorKind: modelAccessErrorKindSchema.exactOptional(),
   })
   .refine((event) => (event.endReason === "errored") === (event.errorMessage !== undefined), {
     message: 'errorMessage is required when endReason is "errored" and not allowed otherwise',
     path: ["errorMessage"],
+  })
+  .refine((event) => event.errorKind === undefined || event.endReason === "errored", {
+    message: 'errorKind is allowed only when endReason is "errored"',
+    path: ["errorKind"],
   });
 
 export const toolExecutionStartedEventSchema = z.strictObject({

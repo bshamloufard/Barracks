@@ -25,5 +25,9 @@
  *   `client_message_rejected` the identifier of the message it refuses,
  *   which came in alongside it (and alone would have needed no increment:
  *   a reload brings the web client up to date with its control plane).
+ * - 4: each user's own model access: `configure_model_access` after
+ *   `prepare_workspace` and whenever the thread's model or its owner's key
+ *   changes, in place of a model and keys in the sandbox's environment; and
+ *   `errorKind` on errored assistant messages.
  */
-export const protocolVersion = 3;
+export const protocolVersion = 4;

@@ -14,6 +14,7 @@ const runningThread = {
   isAgentWorking: false,
   sandbox: { state: "running" },
   repository: null,
+  model: "anthropic/example-model",
 };
 
 describe("the threads API", () => {
