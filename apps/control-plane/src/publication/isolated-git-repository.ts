@@ -204,6 +204,8 @@ export class IsolatedGitRepository {
         }
       });
       input.on("error", reject);
+      // Git stops reading as soon as it refuses the pack, and writing on
+      // then fails with EPIPE; its exit status, below, says why.
       child.stdin.on("error", () => undefined);
       input.pipe(child.stdin);
       child.on("error", reject);

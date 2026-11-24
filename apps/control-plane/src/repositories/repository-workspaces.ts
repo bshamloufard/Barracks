@@ -42,7 +42,9 @@ export class RepositoryWorkspaces implements ThreadWorkspaces {
     if (repository === undefined) {
       return { type: "prepare_workspace", repository: null, ...situation };
     }
-    const ownerUserId = (await threadStore.find(threadId))?.ownerUserId ?? threadId;
+    // Every thread with a repository was created by a signed-in user; a
+    // thread from before sign-in has no owner and no repository.
+    const ownerUserId = (await threadStore.find(threadId))?.ownerUserId ?? "";
     const connection = await connections.find(ownerUserId);
     return {
       type: "prepare_workspace",
