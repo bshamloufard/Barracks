@@ -2,6 +2,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  branchNameSchema,
   maximumErrorMessageLength,
   type PrepareWorkspace,
   type WorkspaceEvent,
@@ -224,6 +225,14 @@ export class ThreadWorkspace {
     const baseBranch = (
       await expectSuccess(git.run(["symbolic-ref", "--short", "HEAD"], quick()))
     ).trim();
+    // Only a branch asked for by name was checked before the clone; the
+    // repository's default is known only now. One outside the protocol's
+    // rule could not be reported as cloned, so the clone fails, saying why.
+    if (!branchNameSchema.safeParse(baseBranch).success) {
+      throw new Error(
+        `its default branch, ${describeBranchName(baseBranch)}, is not a branch name Barrack can use. Start a thread that names a base branch instead.`,
+      );
+    }
     const baseCommit = (
       await expectSuccess(git.run(["rev-parse", "--verify", "HEAD^{commit}"], quick()))
     ).trim();
@@ -341,4 +350,13 @@ export function describeGitFailure(standardError: string, exitCode: number | nul
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+/** A branch name as the user can read it, with any control character spelled out. */
+function describeBranchName(name: string): string {
+  const spelled = name.replace(
+    /\p{Cc}/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  return `"${spelled}"`;
 }
