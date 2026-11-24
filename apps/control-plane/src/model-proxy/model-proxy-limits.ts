@@ -34,6 +34,8 @@ export type ModelProxyLimits = {
   idleTimeoutInMilliseconds: number;
   /** How long one request may take in all. */
   totalTimeoutInMilliseconds: number;
+  /** How often a request in flight is checked against the records again. */
+  reauthorizationIntervalInMilliseconds: number;
 };
 
 export const defaultModelProxyLimits: ModelProxyLimits = {
@@ -50,6 +52,7 @@ export const defaultModelProxyLimits: ModelProxyLimits = {
   firstByteTimeoutInMilliseconds: 5 * 60_000,
   idleTimeoutInMilliseconds: 5 * 60_000,
   totalTimeoutInMilliseconds: 60 * 60_000,
+  reauthorizationIntervalInMilliseconds: 30_000,
 };
 
 /** A token bucket: `tokens` left as of `refilledAt`. */

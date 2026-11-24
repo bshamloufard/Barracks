@@ -205,6 +205,64 @@ describe("the model proxy", () => {
     }
   });
 
+  it("ends a request in flight here soon after the other control plane stops its thread", async () => {
+    const shared = {
+      threadStore: new InMemoryThreadStore(),
+      modelCredentialStore: new InMemoryModelCredentialStore(
+        new CredentialKeyring(Buffer.alloc(32, 7)),
+      ),
+      modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
+      threadEventLog: new ControllableThreadEventLog(),
+      sandboxProvider: new FakeSandboxProvider(),
+    };
+    await start(shared);
+    const stopping = controlPlane;
+    const relaying = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer },
+      modelProxyUpstreamOrigin: modelServer.origin,
+      modelProxyLimits: { reauthorizationIntervalInMilliseconds: 200 },
+      ...shared,
+    });
+    try {
+      await stopping.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+      const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+      const inFlight = await callModelProxy(
+        relaying,
+        access,
+        relayedFormatExamples.anthropic,
+        `Please ${mockModelTriggers.slowReply}`,
+      );
+      expect(inFlight.status).toBe(200);
+
+      await stopping.sendApi("POST", buildStopThreadApiPath(thread.threadId), adaToken);
+      const startedWaiting = Date.now();
+      await expect(inFlight.text()).rejects.toThrow();
+
+      expect(Date.now() - startedWaiting).toBeLessThan(2_000);
+      await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
+    } finally {
+      await relaying.close();
+    }
+  });
+
+  it("ends a request in flight soon after its owner's key is removed", async () => {
+    await start({ modelProxyLimits: { reauthorizationIntervalInMilliseconds: 200 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const inFlight = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      `Please ${mockModelTriggers.slowReply}`,
+    );
+    expect(inFlight.status).toBe(200);
+
+    await controlPlane.sendJson("DELETE", "/api/model-credentials/anthropic", {}, adaToken);
+
+    await expect(inFlight.text()).rejects.toThrow();
+    await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
+  });
+
   it("rebuilds the request's headers, keeping only what the provider needs", async () => {
     await start();
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);

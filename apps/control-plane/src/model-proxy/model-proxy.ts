@@ -3,7 +3,7 @@ import { type ModelProxyRequestTarget, parseModelProxyRequestTarget } from "@bar
 import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
 import { describeAnswerUsage, type RequestedAnswer } from "./answer-usage.js";
-import type { ModelProxyAuthorization } from "./model-proxy-authorization.js";
+import type { ModelProxyAuthorization, RequestedModels } from "./model-proxy-authorization.js";
 import {
   AuthenticationAllowance,
   ModelProxyAdmissions,
@@ -21,13 +21,16 @@ import {
   RequestBodyBudget,
 } from "./request-body.js";
 
-/** One request on its way through the proxy, and what it is relayed with. */
+/** One authenticated request on its way through the proxy, and what it is relayed with. */
 type RelayedExchange = {
   request: IncomingMessage;
   response: ServerResponse;
   target: ModelProxyRequestTarget;
   route: RelayedRoute;
-  cancellation: AbortSignal;
+  /** The thread's token, as the request presented it. */
+  presentedToken: string;
+  /** Aborting it ends the request wherever it is. */
+  cancellation: AbortController;
   logger: Logger;
 };
 
@@ -119,7 +122,8 @@ export class ModelProxy {
   ): Promise<void> {
     const { threadId, providerId } = target;
     const logger = this.#options.logger.child({ threadId, providerId });
-    if (!(await this.#authenticate(request, response, target, route, logger))) {
+    const presentedToken = await this.#authenticate(request, response, target, route, logger);
+    if (presentedToken === undefined) {
       return;
     }
     const admission = this.#admissions.admit(threadId);
@@ -140,7 +144,15 @@ export class ModelProxy {
     const cancellation = new AbortController();
     this.#trackInFlight(threadId, cancellation);
     try {
-      await this.#authorizeAndRelay(request, response, target, route, cancellation.signal, logger);
+      await this.#authorizeAndRelay({
+        request,
+        response,
+        target,
+        route,
+        presentedToken,
+        cancellation,
+        logger,
+      });
     } finally {
       this.#untrackInFlight(threadId, cancellation);
       admission.release();
@@ -148,8 +160,8 @@ export class ModelProxy {
   }
 
   /**
-   * Whether the request presents its thread's token for this provider,
-   * refusing it if not. Nothing else is spent on a request before this: a
+   * The token the request presents, if it is its thread's for this
+   * provider; otherwise the request is refused, and undefined returned. Nothing else is spent on a request before this: a
    * token that could not be one is refused without a lookup, and lookups for
    * callers not yet authenticated are bounded for the whole instance, so
    * nobody who lacks the token can use up a thread's allowance or make the
@@ -162,41 +174,35 @@ export class ModelProxy {
     target: ModelProxyRequestTarget,
     route: RelayedRoute,
     logger: Logger,
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     const presentedToken = readPresentedToken(request.headers);
     if (presentedToken === undefined || !ModelProxyTokens.isWellFormed(presentedToken)) {
       sendRefusal(response, route.format, proxyRefusals.tokenRefused);
-      return false;
+      return undefined;
     }
     const lookup = this.#authentications.enter();
     if (lookup.kind === "busy") {
       logger.warn("Refused a model request: too many token lookups at once on this instance");
       sendRefusal(response, route.format, proxyRefusals.proxyBusy);
-      return false;
+      return undefined;
     }
     try {
       if (await this.#options.authorization.authenticate(target, presentedToken)) {
-        return true;
+        return presentedToken;
       }
       sendRefusal(response, route.format, proxyRefusals.tokenRefused);
-      return false;
+      return undefined;
     } catch (error) {
       logger.error({ err: error }, "Could not check a model request's token");
       sendRefusal(response, route.format, proxyRefusals.cannotDecide);
-      return false;
+      return undefined;
     } finally {
       lookup.leave();
     }
   }
 
-  async #authorizeAndRelay(
-    request: IncomingMessage,
-    response: ServerResponse,
-    target: ModelProxyRequestTarget,
-    route: RelayedRoute,
-    cancellation: AbortSignal,
-    logger: Logger,
-  ): Promise<void> {
+  async #authorizeAndRelay(relayed: RelayedExchange): Promise<void> {
+    const { request, response, route, logger } = relayed;
     const reading = await this.#readBody(request, response);
     if (reading.kind !== "read") {
       sendRefusal(response, route.format, bodyReadingRefusals[reading.kind]);
@@ -215,11 +221,7 @@ export class ModelProxy {
         maximumOutputTokens: inspection.body.maximumOutputTokens,
         isStreamed: inspection.body.isStreamed,
       };
-      await this.#decideAndRelay(
-        { request, response, target, route, cancellation, logger },
-        inspection.body,
-        requested,
-      );
+      await this.#decideAndRelay(relayed, inspection.body, requested);
     } finally {
       reading.release();
     }
@@ -262,6 +264,7 @@ export class ModelProxy {
     }
     response.shouldKeepAlive = true;
     const startedAt = Date.now();
+    const stopWatching = this.#keepAuthorized(relayed, body);
     const outcome = await relayRequest({
       request,
       response,
@@ -269,8 +272,8 @@ export class ModelProxy {
       body: body.bytes,
       ownerKey: authorization.ownerKey,
       limits: this.#options.limits,
-      cancellation,
-    });
+      cancellation: cancellation.signal,
+    }).finally(stopWatching);
     await this.#recordUsage(target, authorization.ownerUserId, outcome, requested);
     logger.info(
       {
@@ -283,6 +286,60 @@ export class ModelProxy {
       },
       "Relayed a model request",
     );
+  }
+
+  /**
+   * Checks a request in flight against the records again every
+   * `reauthorizationIntervalInMilliseconds`, ending it once its token is
+   * revoked, its thread no longer runs, its owner is no longer admitted,
+   * their key is gone or their cap is reached. A stop handled by this
+   * instance ends the thread's requests at once (`cancelThread`); this is
+   * what ends them when the other instance handled it, during a redeploy's
+   * overlap. A check that cannot be made lets the request carry on, as a
+   * database that cannot be asked is no reason to cut an answer short.
+   * Returns what stops the checking.
+   */
+  #keepAuthorized(relayed: RelayedExchange, requested: RequestedModels): () => void {
+    let isChecking = false;
+    const check = () => {
+      if (isChecking) {
+        return;
+      }
+      isChecking = true;
+      this.#isStillAuthorized(relayed, requested)
+        .then(
+          (isAuthorized) => {
+            if (!isAuthorized) {
+              relayed.cancellation.abort();
+            }
+          },
+          (error: unknown) =>
+            relayed.logger.warn(
+              { err: error },
+              "Could not check a model request in flight again; it carries on",
+            ),
+        )
+        .finally(() => {
+          isChecking = false;
+        });
+    };
+    const timer = setInterval(check, this.#options.limits.reauthorizationIntervalInMilliseconds);
+    return () => clearInterval(timer);
+  }
+
+  async #isStillAuthorized(relayed: RelayedExchange, requested: RequestedModels): Promise<boolean> {
+    const { authorization } = this.#options;
+    const { target, presentedToken, logger } = relayed;
+    if (!(await authorization.authenticate(target, presentedToken))) {
+      logger.warn("Ended a model request in flight: its token was revoked");
+      return false;
+    }
+    const decision = await authorization.decide(target, requested);
+    if (decision.kind === "refused") {
+      logger.warn({ reason: decision.reason }, "Ended a model request in flight");
+      return false;
+    }
+    return true;
   }
 
   async #recordUsage(
