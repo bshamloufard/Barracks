@@ -15,6 +15,12 @@ import type { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
 import { PostgresModelCredentialStore } from "../model-access/postgres-model-credential-store.js";
+import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
+import { PostgresModelProxyTokenStore } from "../model-proxy/postgres-model-proxy-token-store.js";
+import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import type { ModelUsageStore } from "../model-usage/model-usage-store.js";
+import { PostgresModelUsageStore } from "../model-usage/postgres-model-usage-store.js";
 import { PostgresThreadRepositoryStore } from "../repositories/postgres-thread-repository-store.js";
 import type { ThreadRepositoryStore } from "../repositories/thread-repository-store.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
@@ -40,6 +46,10 @@ export type OpenStorage = {
   githubConnectionStore: GithubConnectionStore;
   /** Users' model credentials, sealed under `keyring`. */
   modelCredentialStore: ModelCredentialStore;
+  /** The digests of the tokens sandboxes present to the model proxy. */
+  modelProxyTokenStore: ModelProxyTokenStore;
+  /** Users' model usage, and the caps they set themselves. */
+  modelUsageStore: ModelUsageStore;
   /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
@@ -77,6 +87,8 @@ export async function openStorage(
       threadRepositoryStore: threadStore.repositories,
       githubConnectionStore: new InMemoryGithubConnectionStore(),
       modelCredentialStore: new InMemoryModelCredentialStore(keyring),
+      modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
+      modelUsageStore: new InMemoryModelUsageStore(),
       close: async () => undefined,
     };
   }
@@ -106,6 +118,8 @@ export async function openStorage(
     threadRepositoryStore: new PostgresThreadRepositoryStore(pool),
     githubConnectionStore: new PostgresGithubConnectionStore(pool),
     modelCredentialStore: new PostgresModelCredentialStore(pool, keyring),
+    modelProxyTokenStore: new PostgresModelProxyTokenStore(pool),
+    modelUsageStore: new PostgresModelUsageStore(pool),
     close: async () => {
       await keepAlive?.stop();
       await pool.end();

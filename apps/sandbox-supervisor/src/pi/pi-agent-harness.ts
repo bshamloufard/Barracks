@@ -26,6 +26,12 @@ import {
 } from "../missing-model-access.js";
 import { classifyModelAccessError } from "./classify-model-access-error.js";
 import { PiCredentialFile } from "./pi-credential-file.js";
+import {
+  isPiOutOfStep,
+  type PiCredentials,
+  type PiRunningOn,
+  planPiCredentials,
+} from "./pi-credential-plan.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
   initialTranslationState,
@@ -96,17 +102,20 @@ export function getPiDirectories(stateDirectory: string) {
  * and with the credential the control plane says, given the same session
  * each time so the conversation carries on.
  *
- * Pi runs only while it has a model and a key for that model's provider:
- * it is started once the first credential arrives, and again on the next
- * user message if it exits unexpectedly. The key reaches Pi through its
- * credential file (`PiCredentialFile`), never its environment. A replaced
- * key is written over the old one, and Pi uses it from its next request. A
- * removed key is erased at once, and Pi stopped once its run ends; it starts
- * again when a key comes back. Another model needs a new Pi: the pinned Pi
- * neither offers a provider that had no key when it started nor rereads its
- * model list, so `set_model` cannot reach one. So the switch waits for the
- * run in progress to end, and Pi is started again on the new model,
- * resuming its session: the new model is sent the conversation so far.
+ * Pi runs only while it has a model and a credential for that model's
+ * provider (the owner's key, or a token for the control plane's model
+ * proxy): it is started once the first credential arrives, and again on
+ * the next user message if it exits unexpectedly. The credential reaches Pi
+ * through its own files (`PiCredentialFile`), never its environment. A
+ * replaced one is written over the old, and Pi uses it from its next
+ * request. A removed one is erased at once, and Pi stopped once its run
+ * ends; it starts again when a credential comes back. Another model needs a
+ * new Pi: the pinned Pi neither offers a provider that had no key when it
+ * started nor rereads its model list, so `set_model` cannot reach one. So
+ * the switch waits for the run in progress to end, which keeps its own
+ * provider's credential until then (`planPiCredentials`), and Pi is
+ * started again on the new model, resuming its session: the new model is
+ * sent the conversation so far.
  *
  * Starting Pi, delivering a message, interrupting, stopping and applying
  * model access all take turns in one queue, so each finishes before the
@@ -126,15 +135,15 @@ export class PiAgentHarness implements AgentHarness {
   /** Messages waiting their turn in the queue; an interrupt drops them. */
   readonly #undeliveredUserMessages = new Set<UserMessage>();
   #piProcess: PiProcess | undefined;
-  /** The model the running Pi was started on. */
-  #runningModel: string | undefined;
+  /** The model the running Pi was started on, and its provider's credential now. */
+  #runningOn: PiRunningOn | undefined;
   #translationState: TranslationState = initialTranslationState;
   /** From a prompt Pi accepted until its run ends, so Pi is never restarted under a run. */
   #isRunInProgress = false;
   /** What the control plane last said; undefined until it has. */
   #modelAccess: ModelAccess | undefined;
-  /** What the credential file holds, so an unchanged credential is not written again. */
-  #credentialOnFile: string | undefined;
+  /** What the credential files hold, so unchanged credentials are not written again. */
+  #credentialsOnFile: string | undefined;
   #sessionFile: string | undefined;
   #isStopped = false;
 
@@ -219,7 +228,7 @@ export class PiAgentHarness implements AgentHarness {
   /** On starting and stopping: a failure is logged, and stops nothing else. */
   async #eraseCredentialFile(occasion: string): Promise<void> {
     try {
-      await this.#replaceCredentialFile(undefined);
+      await this.#replaceCredentialFile(new Map());
     } catch (error) {
       this.#logger.error({ err: error, occasion }, "Could not erase the agent's credential file");
     }
@@ -234,8 +243,9 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   /**
-   * Brings the credential file and Pi in line with the latest model access.
-   * The file changes at once; Pi is started, restarted on another model, or
+   * Brings the credential files and Pi in line with the latest model access.
+   * The files change at once, keeping what the run in progress started with
+   * (`planPiCredentials`); Pi is started, restarted on another model, or
    * stopped for want of a key only between runs, and this runs again when
    * the run in progress ends.
    */
@@ -244,56 +254,69 @@ export class PiAgentHarness implements AgentHarness {
     if (access === undefined || this.#isStopped) {
       return;
     }
-    const usableAccess = isModelAccessUsable(access) ? access : undefined;
+    const credentials = planPiCredentials(access, this.#aliveRunningOn(), this.#isRunInProgress);
     try {
-      await this.#replaceCredentialFile(usableAccess);
+      await this.#replaceCredentialFile(credentials);
     } catch (error) {
       this.#reportAgentFailure(
         `The agent's key could not be handed to it: ${describeError(error)}`,
       );
       return;
     }
+    this.#noteRunningCredential(credentials);
     if (this.#isRunInProgress) {
       return;
     }
-    if (usableAccess === undefined) {
+    if (!isModelAccessUsable(access)) {
       await this.#stopPiProcess("it has no key for its model");
       return;
     }
-    await this.#ensureRunningOn(usableAccess.model);
+    await this.#ensureRunningOn(access);
   }
 
-  /** Whether Pi is not what the latest model access asks for. */
-  #isOutOfStepWithModelAccess(): boolean {
-    const access = this.#modelAccess;
-    const isRunning = this.#piProcess !== undefined && !this.#piProcess.hasExited;
-    if (!isModelAccessUsable(access)) {
-      return isRunning;
+  /** What the running Pi was started on, or undefined when no Pi is running. */
+  #aliveRunningOn(): PiRunningOn | undefined {
+    return this.#piProcess !== undefined && !this.#piProcess.hasExited
+      ? this.#runningOn
+      : undefined;
+  }
+
+  /** A credential replaced in place for the running Pi's provider is the one it uses now. */
+  #noteRunningCredential(credentials: PiCredentials): void {
+    const runningOn = this.#runningOn;
+    if (runningOn === undefined) {
+      return;
     }
-    return !isRunning || this.#runningModel !== access.model;
+    const current = credentials.get(parseModelReference(runningOn.model).providerId);
+    if (current !== undefined) {
+      this.#runningOn = { ...runningOn, credential: current };
+    }
   }
 
-  async #replaceCredentialFile(access: UsableModelAccess | undefined): Promise<void> {
-    const contents =
-      access === undefined
-        ? undefined
-        : JSON.stringify([parseModelReference(access.model).providerId, access.credential]);
-    if (contents === this.#credentialOnFile && contents !== undefined) {
+  /** Whether Pi, or its credential files, are not what the latest model access asks for between runs. */
+  #isOutOfStepWithModelAccess(): boolean {
+    const betweenRuns = planPiCredentials(this.#modelAccess, undefined, false);
+    return (
+      isPiOutOfStep(this.#modelAccess, this.#aliveRunningOn()) ||
+      describeCredentials(betweenRuns) !== this.#credentialsOnFile
+    );
+  }
+
+  async #replaceCredentialFile(credentials: PiCredentials): Promise<void> {
+    const contents = describeCredentials(credentials);
+    if (contents === this.#credentialsOnFile) {
       return;
     }
     await this.#prepareDirectories();
-    if (access === undefined) {
+    if (credentials.size === 0) {
       await this.#credentialFile.erase();
     } else {
-      await this.#credentialFile.write(
-        parseModelReference(access.model).providerId,
-        access.credential,
-      );
+      await this.#credentialFile.write(credentials);
     }
-    this.#credentialOnFile = contents;
+    this.#credentialsOnFile = contents;
     this.#logger.info(
-      { hasCredential: access !== undefined },
-      access === undefined ? "Erased the agent's credential" : "Wrote the agent's credential",
+      { providers: [...credentials.keys()] },
+      credentials.size === 0 ? "Erased the agent's credential" : "Wrote the agent's credentials",
     );
   }
 
@@ -340,7 +363,7 @@ export class PiAgentHarness implements AgentHarness {
       this.#reportUnansweredMessage(describeMissingModelAccess(access), "credential_missing");
       return;
     }
-    const piProcess = await this.#ensureRunning(access.model);
+    const piProcess = await this.#ensureRunning(access);
     if (piProcess === undefined) {
       this.#logger.warn(
         { messageId: message.messageId },
@@ -408,27 +431,27 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   /** Pi as it runs, whatever its model: a message never waits for a model switch. */
-  async #ensureRunning(model: string): Promise<PiProcess | undefined> {
+  async #ensureRunning(access: UsableModelAccess): Promise<PiProcess | undefined> {
     if (this.#piProcess !== undefined && !this.#piProcess.hasExited) {
       return this.#piProcess;
     }
-    return this.#launch(model);
+    return this.#launch(access);
   }
 
   /** Only ever runs in the command queue, between runs. */
-  async #ensureRunningOn(model: string): Promise<PiProcess | undefined> {
+  async #ensureRunningOn(access: UsableModelAccess): Promise<PiProcess | undefined> {
     const piProcess = this.#piProcess;
     if (piProcess !== undefined && !piProcess.hasExited) {
-      if (this.#runningModel === model) {
+      if (!isPiOutOfStep(access, this.#runningOn)) {
         return piProcess;
       }
       this.#logger.info(
-        { fromModel: this.#runningModel, toModel: model },
-        "Starting Pi again on another model",
+        { fromModel: this.#runningOn?.model, toModel: access.model },
+        "Starting Pi again on another model or provider address",
       );
       await piProcess.stop();
     }
-    return this.#launch(model);
+    return this.#launch(access);
   }
 
   async #stopPiProcess(reason: string): Promise<void> {
@@ -441,19 +464,19 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   /** Only ever runs in the command queue, so two launches cannot overlap. */
-  async #launch(model: string): Promise<PiProcess | undefined> {
+  async #launch(access: UsableModelAccess): Promise<PiProcess | undefined> {
     if (this.#isStopped) {
       return undefined;
     }
     let piProcess: PiProcess;
     try {
-      piProcess = await this.#spawnPi(model);
+      piProcess = await this.#spawnPi(access.model);
     } catch (error) {
       this.#reportAgentFailure(`Pi could not be started: ${describeError(error)}`);
       return undefined;
     }
     this.#piProcess = piProcess;
-    this.#runningModel = model;
+    this.#runningOn = { model: access.model, credential: access.credential };
     return this.#waitUntilReady(piProcess);
   }
 
@@ -620,6 +643,11 @@ export class PiAgentHarness implements AgentHarness {
   #emitEvent(event: AgentEvent): void {
     this.#observer.onAgentEvent(event);
   }
+}
+
+/** The same credentials always describe the same, whatever order they were planned in. */
+function describeCredentials(credentials: PiCredentials): string {
+  return JSON.stringify([...credentials].sort(([first], [second]) => first.localeCompare(second)));
 }
 
 function rejectAfter<Value>(

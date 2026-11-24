@@ -58,6 +58,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
             thread={record.thread}
             isSwitching={modelSwitch.name === "switching"}
             switchFailure={modelSwitch.name === "failed" ? modelSwitch.reason : undefined}
+            isAgentWorking={state.isAgentWorking}
             onSwitch={(model) => {
               setModelSwitch({ name: "switching" });
               controls.switchModel(model).then(

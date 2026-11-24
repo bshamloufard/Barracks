@@ -7,8 +7,11 @@ import type { ControlPlaneConfiguration } from "./configuration.js";
 import { type DesktopFlowLimits, defaultDesktopFlowLimits } from "./desktop/desktop-splice.js";
 import type { ThreadDesktops } from "./desktop/thread-desktops.js";
 import { createHttpApp } from "./http/http-app.js";
+import { routeHttpRequest } from "./http/route-http-request.js";
 import type { ThreadModelAccessDependencies } from "./http/threads-routes.js";
 import type { Logger } from "./logger.js";
+import type { ModelProxy } from "./model-proxy/model-proxy.js";
+import type { ModelUsage } from "./model-usage/model-usage.js";
 import type { ThreadPublisher } from "./publication/thread-publisher.js";
 import type { RepositoryServices } from "./repositories/assemble-repository-services.js";
 import type { SandboxLifecycle } from "./sandbox-lifecycle/sandbox-lifecycle.js";
@@ -59,6 +62,8 @@ export type ControlPlaneServerOptions = {
   sandboxLifecycle: SandboxLifecycle;
   repositoryServices: RepositoryServices;
   modelAccess: ThreadModelAccessDependencies;
+  modelProxy: ModelProxy;
+  modelUsage: ModelUsage;
   publisher: ThreadPublisher;
   authenticator: Authenticator;
   /** What clients are told about signing in. */
@@ -76,7 +81,7 @@ export type RunningControlPlaneServer = {
   close(): Promise<void>;
 };
 
-/** One HTTP server on one port, serving the HTTP routes and both WebSocket endpoints. */
+/** One HTTP server on one port, serving the HTTP routes, the model proxy and the WebSocket endpoints. */
 export async function startControlPlaneServer(
   options: ControlPlaneServerOptions,
 ): Promise<RunningControlPlaneServer> {
@@ -120,13 +125,19 @@ export async function startControlPlaneServer(
       authorizeSupervisor,
       logger,
     },
+    modelUsage: { usage: options.modelUsage, threadStore, logger },
     webClientDirectory: configuration.webClientDirectory,
     acceptOnlyLoopbackHosts,
   });
   // Hono's adapter would otherwise replace the global Request and Response
   // classes with faster ones; nothing here needs that, so globals are left alone.
   const httpServer = createServer(
-    getRequestListener(httpApp.fetch, { overrideGlobalObjects: false }),
+    routeHttpRequest({
+      app: getRequestListener(httpApp.fetch, { overrideGlobalObjects: false }),
+      modelProxy: options.modelProxy,
+      acceptOnlyLoopbackHosts,
+      logger,
+    }),
   );
   httpServer.on(
     "upgrade",

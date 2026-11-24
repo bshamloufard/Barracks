@@ -1,3 +1,4 @@
+import { relayedProviders } from "@barrack/model-catalogue";
 import { createSandboxProvider } from "@barrack/sandbox-providers";
 import { createConfiguredAuthentication } from "./authentication/create-authenticator.js";
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
@@ -8,6 +9,9 @@ import { CredentialKeyring } from "./model-access/credential-keyring.js";
 import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
 import { OwnerModelAccess } from "./model-access/owner-model-access.js";
+import { assembleModelProxy } from "./model-proxy/assemble-model-proxy.js";
+import { ModelProxyTokens } from "./model-proxy/model-proxy-tokens.js";
+import { ModelUsage } from "./model-usage/model-usage.js";
 import {
   defaultGitChildLimits,
   describeUnapplicableLimits,
@@ -52,6 +56,12 @@ async function main(): Promise<void> {
     storage.userStore,
     logger,
   );
+  const proxyTokens = new ModelProxyTokens(storage.modelProxyTokenStore);
+  const modelUsage = new ModelUsage({
+    store: storage.modelUsageStore,
+    settings: configuration.modelUsageCap,
+    logger,
+  });
   const repositoryServices = assembleRepositoryServices({
     threadStore: storage.threadStore,
     repositories: storage.threadRepositoryStore,
@@ -71,7 +81,24 @@ async function main(): Promise<void> {
       threadStore: storage.threadStore,
       credentials,
       isModelRequired,
+      proxyTokens,
+      usage: modelUsage,
+      controlPlaneUrlForSandboxes: toHttpUrl(
+        configuration.supervisorEnvironment.controlPlaneUrlForSandboxes,
+      ),
     }),
+    logger,
+  });
+  const modelProxy = assembleModelProxy({
+    threadStore: storage.threadStore,
+    threadEventLog: storage.threadEventLog,
+    userStore: storage.userStore,
+    admission: authentication.admission,
+    credentials,
+    tokens: proxyTokens,
+    usage: modelUsage,
+    endings: threadServices.relays,
+    upstreamOrigin: configuration.modelProxyUpstreamOrigin,
     logger,
   });
   const server = await startControlPlaneServer({
@@ -87,6 +114,8 @@ async function main(): Promise<void> {
       changes: new ModelAccessChanges(storage.threadStore, threadServices.relays),
       isModelRequired,
     },
+    modelProxy,
+    modelUsage,
     publisher: repositoryServices.createPublisher(threadServices.relays),
     authenticator: authentication.authenticator,
     clientAuthentication: authentication.clientAuthentication,
@@ -146,6 +175,31 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
   if (github.app !== undefined) {
     describePublicationLimits(logger);
   }
+  describeModelAccess(configuration, logger);
+}
+
+/** Says which providers' keys stay here, and the cap on usage; never a key. */
+function describeModelAccess(configuration: ControlPlaneConfiguration, logger: Logger): void {
+  const { modelUsageCap, modelProxyUpstreamOrigin } = configuration;
+  logger.info(
+    {
+      providersWhoseKeysStayHere: relayedProviders.map((provider) => provider.providerId),
+      usageCapTokens: modelUsageCap.installationCapTokens ?? null,
+      usageCapWindowHours: modelUsageCap.windowHours,
+    },
+    "Relaying some providers' model traffic so their keys stay out of sandboxes; every other provider's key is placed in the sandbox",
+  );
+  if (modelProxyUpstreamOrigin !== undefined) {
+    logger.warn(
+      { modelProxyUpstreamOrigin },
+      "The model proxy sends every provider's requests to this origin instead of the provider's, for tests and local development only; never set BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN in a deployment.",
+    );
+  }
+}
+
+/** Sandboxes reach the control plane's WebSockets at this URL, and its HTTP at the same place. */
+function toHttpUrl(webSocketUrl: string): string {
+  return webSocketUrl.replace(/^ws(s?):/, "http$1:");
 }
 
 /** Publishing runs Git on untrusted input; says which of its limits this machine cannot apply. */

@@ -63,6 +63,9 @@ importers:
       '@barrack/fake-github':
         specifier: workspace:*
         version: link:../../tests/fake-github
+      '@barrack/mock-model-server':
+        specifier: workspace:*
+        version: link:../../tests/mock-model-server
       '@barrack/test-identity-issuer':
         specifier: workspace:*
         version: link:../../tests/test-identity-issuer

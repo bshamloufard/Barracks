@@ -80,6 +80,13 @@ describe("translatePiEvent", () => {
           messageId: "minted-1",
           content: [{ type: "text", text: "Hello there." }],
           endReason: "completed",
+          usage: {
+            model: "mock/mock-1",
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
         },
       },
       { type: "agent_event", event: { type: "agent_run_settled", wasInterrupted: false } },
@@ -114,6 +121,13 @@ describe("translatePiEvent", () => {
         },
       ],
       endReason: "tool_use_requested",
+      usage: {
+        model: "mock/mock-1",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
     });
     expect(toolStarted).toEqual({
       type: "tool_execution_started",

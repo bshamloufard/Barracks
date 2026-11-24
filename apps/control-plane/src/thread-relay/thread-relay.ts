@@ -41,7 +41,12 @@ import {
   noThreadDesktops,
   type ThreadDesktopState,
 } from "./thread-desktop-state.js";
-import { noThreadModelAccess, type ThreadModelAccess } from "./thread-model-access.js";
+import {
+  type ModelAccessConnection,
+  newModelAccessConnection,
+  noThreadModelAccess,
+  type ThreadModelAccess,
+} from "./thread-model-access.js";
 import {
   emptyThreadWorkspaces,
   isSupervisorWorkspaceMessage,
@@ -97,6 +102,8 @@ type AttachedSupervisor = {
    * not sent again. It holds a key, in memory only, as the message did.
    */
   sentModelAccess: string | undefined;
+  /** What this connection was given for the model proxy; see `ModelAccessConnection`. */
+  modelAccessConnection: ModelAccessConnection;
 };
 
 export type ThreadRelayOptions = {
@@ -378,6 +385,10 @@ export class ThreadRelay {
         return;
       }
       supervisor.isSandboxStopping = false;
+      // The stop revoked the thread's model proxy tokens (see `assembleModelProxy`),
+      // so a sandbox left running is given new ones.
+      supervisor.modelAccessConnection = newModelAccessConnection();
+      await this.#refreshModelAccess(supervisor);
       const newestSequence = await this.#threadEventLog.readNewestSequence(this.threadId);
       await this.#sendUserMessagesUpTo(supervisor, newestSequence);
     });
@@ -600,6 +611,7 @@ export class ThreadRelay {
       deliveryCursor: Math.max(claimedDelivery, resumePoint.userMessagesDeliveredThrough),
       isSandboxStopping: false,
       sentModelAccess: undefined,
+      modelAccessConnection: newModelAccessConnection(),
     };
     this.#supervisor = supervisor;
     connection.send({
@@ -664,7 +676,10 @@ export class ThreadRelay {
    */
   async #describeModelAccess(supervisor: AttachedSupervisor): Promise<boolean> {
     try {
-      await this.#sendModelAccess(supervisor, await this.#modelAccess.describe(this.threadId));
+      await this.#sendModelAccess(
+        supervisor,
+        await this.#modelAccess.describe(this.threadId, supervisor.modelAccessConnection),
+      );
       return true;
     } catch (error) {
       this.#logger.error({ err: error }, "Could not read the thread's model access");
@@ -684,7 +699,10 @@ export class ThreadRelay {
    */
   async #refreshModelAccess(supervisor: AttachedSupervisor): Promise<void> {
     try {
-      await this.#sendModelAccess(supervisor, await this.#modelAccess.describe(this.threadId));
+      await this.#sendModelAccess(
+        supervisor,
+        await this.#modelAccess.describe(this.threadId, supervisor.modelAccessConnection),
+      );
     } catch (error) {
       this.#logger.error({ err: error }, "Could not read the thread's model access to refresh it");
     }
@@ -861,6 +879,7 @@ export class ThreadRelay {
         this.#logger.info({ eventNumber }, "An agent event sent again was already recorded");
         return;
       }
+      this.#noteReportedUsage(event);
       await this.#broadcastRecordedEvent(outcome.recordedEvent);
     } catch (error) {
       // The supervisor keeps every event it has not seen acknowledged, so it
@@ -875,6 +894,20 @@ export class ThreadRelay {
         "The control plane could not record an event",
       );
     }
+  }
+
+  /**
+   * Counted once, as its event is recorded once, and not awaited: it is the
+   * sandbox's own account, kept to be shown, and the thread's events need
+   * not wait for it.
+   */
+  #noteReportedUsage(event: AgentEventMessage["event"]): void {
+    if (event.type !== "assistant_message" || event.usage === undefined) {
+      return;
+    }
+    this.#modelAccess.noteReportedUsage(this.threadId, event.usage).catch((error: unknown) => {
+      this.#logger.error({ err: error }, "Could not count the usage the agent reported");
+    });
   }
 
   #acknowledgeAgentEvents(supervisor: AttachedSupervisor): void {

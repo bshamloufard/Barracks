@@ -9,11 +9,14 @@ import {
 } from "./development-single-user.js";
 import { requireAsymmetricSigningKeys } from "./signing-key-check.js";
 import { SupabaseAccessTokenVerifier } from "./supabase-access-token-verifier.js";
+import type { UserAdmission } from "./user-admission.js";
 
 export type ConfiguredAuthentication = {
   authenticator: Authenticator;
   /** What clients are told about signing in, at `GET /api/client-configuration`. */
   clientAuthentication: ClientAuthenticationConfiguration;
+  /** Who is admitted, which the model proxy asks again of a thread's owner. */
+  admission: UserAdmission;
 };
 
 /**
@@ -30,10 +33,12 @@ export async function createConfiguredAuthentication(
     logger.warn(
       "Authentication is development-single-user: there is no sign-in, and every client is one fixed user. For a control plane on this machine only.",
     );
+    const admission: UserAdmission = { kind: "anyone-who-can-sign-in" };
     return {
+      admission,
       authenticator: new Authenticator({
         verifier: new DevelopmentSingleUserVerifier(),
-        admission: { kind: "anyone-who-can-sign-in" },
+        admission,
         userStore,
         logger,
       }),
@@ -70,6 +75,7 @@ export async function createConfiguredAuthentication(
     confirmEmailAddresses: admission.kind === "listed-email-addresses",
   });
   return {
+    admission,
     authenticator: new Authenticator({ verifier, admission, userStore, logger }),
     clientAuthentication: {
       method: "supabase",

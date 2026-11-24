@@ -5,7 +5,7 @@ Barrack is an open-source, self-hostable, always-on coding-agent platform in the
 Barrack has four parts: clients (web first), an always-on control plane, a Postgres data store, and one sandbox per thread. Inside each sandbox, a small supervisor process connects outward to the control plane. See [docs/architecture.md](docs/architecture.md) for how they fit together.
 
 > [!WARNING]
-> **`pnpm dev` has no sign-in.** It runs the control plane in development mode, where every client is one fixed user, so the control plane refuses to listen anywhere but `127.0.0.1` and `localhost`; each agent can run any command on your machine. With Supabase sign-in the control plane may listen anywhere, and each user sees and controls only their own threads, but nothing has been deployed yet, and each user's own model key reaches their threads' sandboxes, where the agent (and any code a repository makes it run) can read it: admit only people you trust, and use keys with a spending limit.
+> **`pnpm dev` has no sign-in.** It runs the control plane in development mode, where every client is one fixed user, so the control plane refuses to listen anywhere but `127.0.0.1` and `localhost`; each agent can run any command on your machine. With Supabase sign-in the control plane may listen anywhere, and each user sees and controls only their own threads, but nothing has been deployed yet, and for providers the control plane does not relay, each user's own model key reaches their threads' sandboxes, where the agent (and any code a repository makes it run) can read it (Settings says, per provider, where the key lives): admit only people you trust, and use keys with a spending limit.
 
 ## Status
 

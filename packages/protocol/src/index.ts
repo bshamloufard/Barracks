@@ -11,6 +11,8 @@ export * from "./identifier.js";
 export * from "./interrupt-agent-message.js";
 export * from "./limits.js";
 export * from "./model-access.js";
+export * from "./model-proxy-path.js";
+export * from "./model-usage.js";
 export type { ParseResult } from "./parse-result.js";
 export { protocolVersion } from "./protocol-version.js";
 export * from "./repositories.js";

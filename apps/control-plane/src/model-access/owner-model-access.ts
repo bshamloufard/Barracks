@@ -1,13 +1,41 @@
-import { type ConfigureModelAccess, parseModelReference } from "@barrack/protocol";
-import type { ThreadModelAccess } from "../thread-relay/thread-model-access.js";
+import { isRelayedProvider } from "@barrack/model-catalogue";
+import {
+  buildModelProxyBasePath,
+  type ConfigureModelAccess,
+  type ModelCredential,
+  parseModelReference,
+  type ReportedModelUsage,
+} from "@barrack/protocol";
+import type { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
+import { describeReachedCap, type ModelUsage } from "../model-usage/model-usage.js";
+import type {
+  ModelAccessConnection,
+  ThreadModelAccess,
+} from "../thread-relay/thread-model-access.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { ModelCredentials } from "./model-credentials.js";
+
+export type OwnerModelAccessOptions = {
+  threadStore: ThreadStore;
+  credentials: ModelCredentials;
+  /** The agent cannot run without a model (Pi); the fake agent can. */
+  isModelRequired: boolean;
+  proxyTokens: ModelProxyTokens;
+  usage: ModelUsage;
+  /** Where sandboxes reach the control plane over HTTP, such as `https://barrack.example.com`. */
+  controlPlaneUrlForSandboxes: string;
+};
 
 /**
  * Each thread's model access, decided from the thread's own record: its
  * model, and its owner's credential for that model's provider. A sandbox
- * therefore only ever receives its own thread's owner's key, and only for
- * its own thread's model, whatever its supervisor sends.
+ * therefore only ever receives what reaches its own thread's owner's key,
+ * and only for its own thread's model, whatever its supervisor sends.
+ *
+ * For a provider whose traffic the control plane relays, that is not the
+ * key but a token for the model proxy, minted once per supervisor
+ * connection and provider, with the proxy's address for this thread and
+ * provider; the key stays here. For any other, it is the key.
  *
  * When the credential is sealed under a key this control plane does not
  * hold, `describe` throws rather than describe no credential: the relay
@@ -16,48 +44,39 @@ import type { ModelCredentials } from "./model-credentials.js";
  * the key.
  */
 export class OwnerModelAccess implements ThreadModelAccess {
-  readonly #threadStore: ThreadStore;
-  readonly #credentials: ModelCredentials;
-  readonly #isModelRequired: boolean;
+  readonly #options: OwnerModelAccessOptions;
 
-  /** `isModelRequired`: the agent cannot run without one (Pi); the fake agent can. */
-  constructor(options: {
-    threadStore: ThreadStore;
-    credentials: ModelCredentials;
-    isModelRequired: boolean;
-  }) {
-    this.#threadStore = options.threadStore;
-    this.#credentials = options.credentials;
-    this.#isModelRequired = options.isModelRequired;
+  constructor(options: OwnerModelAccessOptions) {
+    this.#options = options;
   }
 
-  async describe(threadId: string): Promise<ConfigureModelAccess> {
-    const thread = await this.#threadStore.find(threadId);
+  async describe(
+    threadId: string,
+    connection: ModelAccessConnection,
+  ): Promise<ConfigureModelAccess> {
+    const thread = await this.#options.threadStore.find(threadId);
     const model = thread?.model;
     const ownerUserId = thread?.ownerUserId;
     if (model === undefined || ownerUserId === undefined) {
       return { type: "configure_model_access", model: model ?? null, credential: null };
     }
-    const credential = await this.#credentials.read(
-      ownerUserId,
-      parseModelReference(model).providerId,
-    );
-    return {
-      type: "configure_model_access",
-      model,
-      credential: credential === undefined ? null : { kind: "api_key", ...credential },
-    };
+    const { providerId } = parseModelReference(model);
+    const credential = isRelayedProvider(providerId)
+      ? await this.#describeRelayedCredential(threadId, ownerUserId, providerId, connection)
+      : await this.#describeKey(ownerUserId, providerId);
+    return { type: "configure_model_access", model, credential };
   }
 
   async admitUserMessage(
     threadId: string,
   ): Promise<{ isAccepted: true } | { isAccepted: false; reason: string }> {
-    const thread = await this.#threadStore.find(threadId);
+    const { threadStore, credentials, usage, isModelRequired } = this.#options;
+    const thread = await threadStore.find(threadId);
     if (thread === undefined || thread.ownerUserId === undefined) {
       return { isAccepted: true };
     }
     if (thread.model === undefined) {
-      return this.#isModelRequired
+      return isModelRequired
         ? {
             isAccepted: false,
             reason:
@@ -65,11 +84,73 @@ export class OwnerModelAccess implements ThreadModelAccess {
           }
         : { isAccepted: true };
     }
-    const missing = await this.#credentials.describeMissingCredential(
+    const missing = await credentials.describeMissingCredential(
       thread.ownerUserId,
       thread.model,
       "send your message again",
     );
-    return missing === undefined ? { isAccepted: true } : { isAccepted: false, reason: missing };
+    if (missing !== undefined) {
+      return { isAccepted: false, reason: missing };
+    }
+    if (!isRelayedProvider(parseModelReference(thread.model).providerId)) {
+      return { isAccepted: true };
+    }
+    const cap = await usage.checkCap(thread.ownerUserId);
+    return cap.isReached
+      ? { isAccepted: false, reason: describeReachedCap(cap) }
+      : { isAccepted: true };
+  }
+
+  /**
+   * What a relayed provider's traffic used is measured at the proxy, so the
+   * sandbox's own account of it is not counted twice.
+   */
+  async noteReportedUsage(threadId: string, reported: ReportedModelUsage): Promise<void> {
+    const { providerId, modelId } = parseModelReference(reported.model);
+    if (isRelayedProvider(providerId)) {
+      return;
+    }
+    const thread = await this.#options.threadStore.find(threadId);
+    if (thread?.ownerUserId === undefined) {
+      return;
+    }
+    await this.#options.usage.record({
+      ownerUserId: thread.ownerUserId,
+      threadId,
+      providerId,
+      modelId,
+      source: "reported",
+      inputTokens: reported.inputTokens,
+      outputTokens: reported.outputTokens,
+      cacheReadTokens: reported.cacheReadTokens,
+      cacheWriteTokens: reported.cacheWriteTokens,
+    });
+  }
+
+  async #describeKey(ownerUserId: string, providerId: string): Promise<ModelCredential | null> {
+    const key = await this.#options.credentials.read(ownerUserId, providerId);
+    return key === undefined ? null : { kind: "api_key", ...key };
+  }
+
+  /** The key itself is not opened: the sandbox never receives it. */
+  async #describeRelayedCredential(
+    threadId: string,
+    ownerUserId: string,
+    providerId: string,
+    connection: ModelAccessConnection,
+  ): Promise<ModelCredential | null> {
+    if (!(await this.#options.credentials.has(ownerUserId, providerId))) {
+      return null;
+    }
+    let token = connection.proxyTokens.get(providerId);
+    if (token === undefined) {
+      token = await this.#options.proxyTokens.mint(threadId, providerId);
+      connection.proxyTokens.set(providerId, token);
+    }
+    return {
+      kind: "proxy_token",
+      secret: token,
+      baseUrl: `${this.#options.controlPlaneUrlForSandboxes}${buildModelProxyBasePath(threadId, providerId)}`,
+    };
   }
 }

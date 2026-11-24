@@ -33,5 +33,9 @@
  *   `open_desktop_stream`, `desktop_control`, `desktop_availability` and
  *   `desktop_stream_failed` between control plane and supervisor, and
  *   `desktop_control_status` to clients (see `desktop-messages.ts`).
+ * - 6: keys kept out of sandboxes and usage counted: `configure_model_access`
+ *   may carry a `proxy_token` credential with the base URL of the control
+ *   plane's model proxy instead of the key; assistant messages may carry
+ *   the agent's `usage`; and `usage_cap_reached` joins the error kinds.
  */
-export const protocolVersion = 5;
+export const protocolVersion = 6;

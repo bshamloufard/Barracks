@@ -31,7 +31,7 @@ describeWithTestDatabase("the Postgres model credential store", () => {
     const schema = await schemas.createMigrated();
     const users = new PostgresUserStore(pool, schema);
     for (const userId of credentialContractOwnerUserIds) {
-      await users.recordUser(userId);
+      await users.recordUser(userId, undefined);
     }
     return schema;
   }

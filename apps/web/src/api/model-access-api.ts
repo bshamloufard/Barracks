@@ -1,6 +1,7 @@
 import {
   apiErrorResponseSchema,
   buildModelCredentialApiPath,
+  buildThreadModelUsageApiPath,
   type ModelCatalogue,
   type ModelCredentialSummary,
   modelCatalogueApiPath,
@@ -8,14 +9,20 @@ import {
   modelCredentialListResponseSchema,
   modelCredentialResponseSchema,
   modelCredentialsApiPath,
+  modelUsageApiPath,
+  ownUsageCapApiPath,
+  type ThreadModelUsageResponse,
+  threadModelUsageResponseSchema,
+  type UserModelUsageResponse,
+  userModelUsageResponseSchema,
 } from "@barrack/protocol";
 import type { AuthorizedFetch } from "./authorized-fetch";
 
 /**
  * The control plane's model access API: the catalogue of what the agent
- * supports, and the signed-in user's own keys. A key goes out to be saved
- * and never comes back; the page only ever learns that one exists, when it
- * was added and its last four characters.
+ * supports, the signed-in user's own keys, and what their threads have used.
+ * A key goes out to be saved and never comes back; the page only ever
+ * learns that one exists, when it was added and its last four characters.
  */
 export class ModelAccessApi {
   readonly #request: AuthorizedFetch;
@@ -59,6 +66,26 @@ export class ModelAccessApi {
     });
     return (await readAnswer(response, modelCredentialListResponseSchema, "remove your key"))
       .credentials;
+  }
+
+  async readUsage(): Promise<UserModelUsageResponse> {
+    const response = await this.#request(modelUsageApiPath);
+    return readAnswer(response, userModelUsageResponseSchema, "read your usage");
+  }
+
+  /** Sets the user's own cap, or removes it with null; answers with their usage as it now stands. */
+  async changeOwnCap(tokens: number | null): Promise<UserModelUsageResponse> {
+    const response = await this.#request(ownUsageCapApiPath, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokens }),
+    });
+    return readAnswer(response, userModelUsageResponseSchema, "change your cap");
+  }
+
+  async readThreadUsage(threadId: string): Promise<ThreadModelUsageResponse> {
+    const response = await this.#request(buildThreadModelUsageApiPath(threadId));
+    return readAnswer(response, threadModelUsageResponseSchema, "read this thread's usage");
   }
 
   async #fetchCatalogue(): Promise<ModelCatalogue> {

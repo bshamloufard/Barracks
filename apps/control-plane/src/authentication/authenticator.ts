@@ -1,6 +1,7 @@
 import type { Logger } from "../logger.js";
 import type { UserStore } from "../users/user-store.js";
 import type { AccessTokenVerifier } from "./access-token-verifier.js";
+import { digestConfirmedEmailAddress } from "./owner-admission.js";
 import { isAdmitted, type UserAdmission } from "./user-admission.js";
 
 /** A user the control plane has verified, admitted and recorded. */
@@ -39,12 +40,16 @@ export type AuthenticatorOptions = {
  * The one judgement of an access token, shared by the HTTP API and the
  * client WebSocket: verify it, check the installation admits the user, and
  * record the user on their first authenticated request, so a thread is only
- * ever recorded for a known user.
+ * ever recorded for a known user, with the digest of their confirmed email
+ * address (see `OwnerAdmission`).
  */
 export class Authenticator {
   readonly #options: AuthenticatorOptions;
-  /** Users this process has recorded already, so most requests skip the database. */
-  readonly #recordedUserIds = new Set<string>();
+  /**
+   * Users this process has recorded already, with the digest recorded (hex,
+   * or empty for none), so most requests skip the database.
+   */
+  readonly #recordedUsers = new Map<string, string>();
 
   constructor(options: AuthenticatorOptions) {
     this.#options = options;
@@ -68,24 +73,30 @@ export class Authenticator {
       );
       return { ok: false, refusal: "not_allowed" };
     }
-    if (!(await this.#recordUser(identity.userId))) {
+    if (!(await this.#recordUser(identity.userId, identity.confirmedEmailAddress))) {
       return { ok: false, refusal: "unavailable" };
     }
     return { ok: true, user: { userId: identity.userId, validUntil: identity.validUntil } };
   }
 
-  async #recordUser(userId: string): Promise<boolean> {
-    if (this.#recordedUserIds.has(userId)) {
+  async #recordUser(userId: string, confirmedEmailAddress: string | undefined): Promise<boolean> {
+    const digest =
+      confirmedEmailAddress === undefined
+        ? undefined
+        : digestConfirmedEmailAddress(confirmedEmailAddress);
+    const digestText = digest?.toString("hex") ?? "";
+    const previouslyRecorded = this.#recordedUsers.get(userId);
+    if (previouslyRecorded === digestText) {
       return true;
     }
     try {
-      await this.#options.userStore.recordUser(userId);
+      await this.#options.userStore.recordUser(userId, digest);
     } catch (error) {
       this.#options.logger.error({ err: error, userId }, "Could not record a signed-in user");
       return false;
     }
-    if (!this.#recordedUserIds.has(userId)) {
-      this.#recordedUserIds.add(userId);
+    this.#recordedUsers.set(userId, digestText);
+    if (previouslyRecorded === undefined) {
       this.#options.logger.info({ userId }, "A user signed in for the first time since startup");
     }
     return true;

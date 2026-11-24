@@ -39,11 +39,31 @@ const assistantContentBlockSchema = z.union([
   unrecognizedBlockSchema(["text", "thinking", "toolCall"]),
 ]);
 
+/** A token count as Pi reports it; anything else is left out rather than failing the message. */
+const tokenCountSchema = z.int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * What producing the message used, as Pi read it from the provider's
+ * answer. Optional, and dropped if malformed: it is reported, never needed.
+ */
+const assistantUsageSchema = z
+  .looseObject({
+    input: tokenCountSchema,
+    output: tokenCountSchema,
+    cacheRead: tokenCountSchema,
+    cacheWrite: tokenCountSchema,
+  })
+  .optional()
+  .catch(undefined);
+
 const assistantMessageSchema = z.looseObject({
   role: z.literal("assistant"),
   content: z.array(assistantContentBlockSchema),
   stopReason: z.string(),
   errorMessage: z.string().optional(),
+  provider: z.string().optional().catch(undefined),
+  model: z.string().optional().catch(undefined),
+  usage: assistantUsageSchema,
 });
 
 /** User, system, tool result and extension messages: the supervisor forwards none of them. */

@@ -11,7 +11,7 @@ export function describeUserStoreContract(
       const store = await createEmptyStore();
 
       expect(await store.hasUser("user-a")).toBe(false);
-      await store.recordUser("user-a");
+      await store.recordUser("user-a", undefined);
 
       expect(await store.hasUser("user-a")).toBe(true);
       expect(await store.hasUser("user-b")).toBe(false);
@@ -20,10 +20,24 @@ export function describeUserStoreContract(
     it("records a user again without complaint, however many times at once", async () => {
       const store = await createEmptyStore();
 
-      await Promise.all(Array.from({ length: 10 }, () => store.recordUser("user-a")));
-      await store.recordUser("user-a");
+      await Promise.all(Array.from({ length: 10 }, () => store.recordUser("user-a", undefined)));
+      await store.recordUser("user-a", undefined);
 
       expect(await store.hasUser("user-a")).toBe(true);
+    });
+
+    it("keeps the digest of the user's confirmed email address as last recorded", async () => {
+      const store = await createEmptyStore();
+      const first = Buffer.alloc(32, 1);
+      const second = Buffer.alloc(32, 2);
+
+      expect(await store.readConfirmedEmailDigest("user-a")).toBeUndefined();
+      await store.recordUser("user-a", first);
+      expect(await store.readConfirmedEmailDigest("user-a")).toEqual(first);
+      await store.recordUser("user-a", second);
+      expect(await store.readConfirmedEmailDigest("user-a")).toEqual(second);
+      await store.recordUser("user-a", undefined);
+      expect(await store.readConfirmedEmailDigest("user-a")).toBeUndefined();
     });
   });
 }

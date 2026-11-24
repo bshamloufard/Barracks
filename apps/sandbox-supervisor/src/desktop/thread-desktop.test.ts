@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { SupervisorDesktopMessage } from "@barrack/protocol";
+import { protocolVersion, type SupervisorDesktopMessage } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
@@ -98,7 +98,7 @@ describe("the supervisor's desktop streams", () => {
 
     expect(controlPlane.upgradeRequests).toEqual([
       {
-        path: `/threads/thread-1/desktop-streams/${streamIds[0]}?protocolVersion=5`,
+        path: `/threads/thread-1/desktop-streams/${streamIds[0]}?protocolVersion=${protocolVersion}`,
         authorization: "Bearer token-1",
       },
     ]);

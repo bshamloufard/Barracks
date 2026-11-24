@@ -40,5 +40,12 @@ export function describeModelAccessError(kind: ModelAccessErrorKind): ModelAcces
         nextStep: "Wait a minute, then send your message again.",
         isFixedInSettings: false,
       };
+    case "usage_cap_reached":
+      return {
+        what: "You have reached your model usage cap, so Barrack stopped sending this thread's requests.",
+        nextStep:
+          "Wait for older usage to leave the cap's window, or raise your own cap in Settings, then send your message again.",
+        isFixedInSettings: true,
+      };
   }
 }

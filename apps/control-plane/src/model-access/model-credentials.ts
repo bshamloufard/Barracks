@@ -41,6 +41,11 @@ export class ModelCredentials {
     return this.#store.list(ownerUserId);
   }
 
+  /** Whether the owner has a key for the provider, without opening it. */
+  has(ownerUserId: string, providerId: string): Promise<boolean> {
+    return this.#store.has(ownerUserId, providerId);
+  }
+
   async save(
     ownerUserId: string,
     providerId: string,

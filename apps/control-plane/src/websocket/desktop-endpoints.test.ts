@@ -1,5 +1,6 @@
 import {
   buildDesktopStreamEndpointPath,
+  buildDesktopViewerEndpointPath,
   buildStopThreadApiPath,
   type ControlPlaneToClientMessage,
   closeCodes,
@@ -317,7 +318,7 @@ describe("who may open a desktop", () => {
   });
 
   it("refuses a viewer from an origin that is not allowed", async () => {
-    const path = `/threads/${thread.threadId}/desktop?protocolVersion=5`;
+    const path = buildDesktopViewerEndpointPath({ threadId: thread.threadId });
 
     const outcome = await attemptUpgrade(`${controlPlane.baseUrl}${path}`, {
       Origin: "https://attacker.example",

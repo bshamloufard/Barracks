@@ -12,6 +12,8 @@ import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import { ModelCredentials } from "../model-access/model-credentials.js";
+import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import { ModelUsage } from "../model-usage/model-usage.js";
 import { assembleRepositoryServices } from "../repositories/assemble-repository-services.js";
 import { assembleThreadServices } from "../sandbox-lifecycle/assemble-thread-services.js";
 import {
@@ -30,6 +32,11 @@ import { publicationBundleUploadRoute } from "./publication-routes.js";
  * Guards against a route added later answering without a token: every
  * route registered on the app, whatever it is, is requested here without
  * one, and only the listed public paths may answer.
+ *
+ * The model proxy (`/threads/{id}/model-proxy/…`) is not one of the app's
+ * routes: the server hands it its requests before the app sees them
+ * (`route-http-request.ts`), and it authenticates each by the thread's
+ * proxy token, which its own tests refuse without (`model-proxy/`).
  */
 
 const logger = pino({ level: "silent" });
@@ -92,6 +99,15 @@ function createApp() {
       authorizeSupervisor: authorizeWithThreadTokens(threadStore),
       logger,
     },
+    modelUsage: {
+      usage: new ModelUsage({
+        store: new InMemoryModelUsageStore(),
+        settings: { installationCapTokens: undefined, windowHours: 24 },
+        logger,
+      }),
+      threadStore,
+      logger,
+    },
     webClientDirectory: undefined,
   });
 }
@@ -120,6 +136,9 @@ describe("the HTTP API's access control", () => {
         "GET /api/model-credentials",
         "PUT /api/model-credentials/some-identifier",
         "DELETE /api/model-credentials/some-identifier",
+        "GET /api/model-usage",
+        "PUT /api/model-usage/own-cap",
+        "GET /api/threads/some-identifier/model-usage",
         "GET /api/github/connection",
         "POST /api/github/connection",
         "DELETE /api/github/connection",

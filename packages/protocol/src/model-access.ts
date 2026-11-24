@@ -60,12 +60,17 @@ export function parseModelReference(reference: ModelReference): ParsedModelRefer
  *   another model.
  * - `rate_limited`: too many requests for now, after the agent's own retries
  *   ran out. Wait, then send again.
+ * - `usage_cap_reached`: Barrack itself refused the request, because the
+ *   thread's owner has used as many tokens as their usage cap allows within
+ *   its window (see `model-usage.ts`). Wait for older usage to leave the
+ *   window, or raise your own cap in Settings.
  */
 export const modelAccessErrorKindSchema = z.enum([
   "credential_missing",
   "credential_rejected",
   "quota_exhausted",
   "rate_limited",
+  "usage_cap_reached",
 ]);
 
 export type ModelAccessErrorKind = z.infer<typeof modelAccessErrorKindSchema>;
@@ -108,38 +113,65 @@ export const credentialSettingsSchema = z
 
 export type CredentialSettings = z.infer<typeof credentialSettingsSchema>;
 
+/** The user's own key for the provider, which the agent sends to the provider itself. */
+export const apiKeyCredentialSchema = z.strictObject({
+  kind: z.literal("api_key"),
+  secret: credentialSecretSchema,
+  settings: credentialSettingsSchema,
+});
+
+/**
+ * Where the agent sends the provider's requests instead of the provider
+ * (the control plane's model proxy, for this thread and provider), and the
+ * token that proves them to be this thread's. The user's key never leaves
+ * the control plane: the proxy attaches it to each request it forwards. The
+ * token is worth nothing anywhere else, works only while the thread may
+ * run, and is revoked when its sandbox stops (see the control plane's
+ * `model-proxy/`).
+ */
+export const proxyTokenCredentialSchema = z.strictObject({
+  kind: z.literal("proxy_token"),
+  secret: credentialSecretSchema,
+  baseUrl: z.url({ protocol: /^https?$/ }).max(2048),
+});
+
+export const modelCredentialSchema = z.discriminatedUnion("kind", [
+  apiKeyCredentialSchema,
+  proxyTokenCredentialSchema,
+]);
+
 /**
  * Sent by the control plane right after `prepare_workspace`, and again
  * whenever what it says changes (the user replaced or removed the key, or
- * chose another model): the thread's model, and its owner's credential for
- * that model's provider, or null when there is none. The control plane
- * decides both from the thread and its owner, never from anything a
- * supervisor sends; nothing a supervisor can send asks for a credential.
+ * chose another model): the thread's model, and what the agent needs to
+ * reach that model's provider on its owner's account, or null when the
+ * owner has no key for it. The control plane decides both from the thread
+ * and its owner, never from anything a supervisor sends; nothing a
+ * supervisor can send asks for a credential.
  *
- * The credential is the user's secret. A supervisor hands it to its agent,
- * and never writes it to its log, its environment or an event (see the
- * supervisor's README for where it goes). A model change takes effect for
- * the agent's next run; a replaced or removed key, at once.
+ * For a provider whose traffic the control plane relays (its catalogue
+ * entry says `kept_on_server`) the credential is a `proxy_token`; for any
+ * other, the owner's `api_key` itself. Either is a secret: a supervisor
+ * hands it to its agent, and never writes it to its log, its environment or
+ * an event (see the supervisor's README for where it goes). A model change
+ * takes effect for the agent's next run, the run in progress carrying on
+ * with what it had; a replaced or removed credential, at once.
  *
- * Only API keys exist today. A credential that expires and is refreshed by
- * the control plane (a subscription's access token) would be another
- * `kind`, sent again before each expiry in the same way.
+ * A credential that expires and is refreshed by the control plane (a
+ * subscription's access token) would be another `kind`, sent again before
+ * each expiry in the same way.
  */
 export const configureModelAccessSchema = z.strictObject({
   type: z.literal("configure_model_access"),
   /** Null for a thread created without one, which an agent that needs a model cannot run. */
   model: modelReferenceSchema.nullable(),
-  credential: z
-    .strictObject({
-      kind: z.literal("api_key"),
-      secret: credentialSecretSchema,
-      settings: credentialSettingsSchema,
-    })
-    .nullable(),
+  credential: modelCredentialSchema.nullable(),
 });
 
 export type ConfigureModelAccess = z.infer<typeof configureModelAccessSchema>;
-export type ModelCredential = NonNullable<ConfigureModelAccess["credential"]>;
+export type ModelCredential = z.infer<typeof modelCredentialSchema>;
+export type ApiKeyCredential = z.infer<typeof apiKeyCredentialSchema>;
+export type ProxyTokenCredential = z.infer<typeof proxyTokenCredentialSchema>;
 
 // --- The HTTP API for model access -----------------------------------------
 //
@@ -178,8 +210,21 @@ export const catalogueCredentialSettingSchema = z.strictObject({
   label: z.string().min(1),
 });
 
-/** A provider the agent can use with an API key, and the models it lists for it. */
-export const catalogueProviderSchema = z.strictObject({
+/**
+ * Where a user's key for a provider lives while their threads use it:
+ * - `kept_on_server`: on the control plane alone. The agent's requests to
+ *   the provider pass through the control plane, which adds the key, so
+ *   nothing in the sandbox can read it, and usage is measured there.
+ * - `placed_in_sandbox`: handed to the agent in the thread's sandbox, where
+ *   the agent and any code it runs can read it, and usage is only what the
+ *   sandbox reports.
+ */
+export const keyPlacementSchema = z.enum(["kept_on_server", "placed_in_sandbox"]);
+
+export type KeyPlacement = z.infer<typeof keyPlacementSchema>;
+
+/** A provider the agent can use with an API key, as the catalogue generated from the agent lists it. */
+export const generatedCatalogueProviderSchema = z.strictObject({
   providerId: modelProviderIdSchema,
   name: z.string().min(1),
   /** What the key is called, such as "Anthropic API key". */
@@ -190,13 +235,31 @@ export const catalogueProviderSchema = z.strictObject({
   models: z.array(catalogueModelSchema),
 });
 
+/** A provider the agent can use with an API key, the models it lists, and where its key lives. */
+export const catalogueProviderSchema = generatedCatalogueProviderSchema.extend({
+  keyPlacement: keyPlacementSchema,
+});
+
+const catalogueAgentSchema = z.strictObject({
+  name: z.string().min(1),
+  version: z.string().min(1),
+});
+
+/** The catalogue as generated from the pinned agent, before Barrack says where each key lives. */
+export const generatedModelCatalogueSchema = z.strictObject({
+  agent: catalogueAgentSchema,
+  providers: z.array(generatedCatalogueProviderSchema),
+});
+
 /**
  * What the agent Barrack runs supports, generated from its pinned version
- * (`agent`). It is a snapshot: the agent may know models added after it was
- * generated, and the user may enter any model identifier, listed or not.
+ * (`agent`), with where each provider's key lives. It is a snapshot: the
+ * agent may know models added after it was generated, and the user may
+ * enter any model identifier, listed or not (whose key is placed in the
+ * sandbox).
  */
 export const modelCatalogueSchema = z.strictObject({
-  agent: z.strictObject({ name: z.string().min(1), version: z.string().min(1) }),
+  agent: catalogueAgentSchema,
   providers: z.array(catalogueProviderSchema),
 });
 
@@ -204,6 +267,8 @@ export type CatalogueModel = z.infer<typeof catalogueModelSchema>;
 export type CatalogueCredentialSetting = z.infer<typeof catalogueCredentialSettingSchema>;
 export type CatalogueProvider = z.infer<typeof catalogueProviderSchema>;
 export type ModelCatalogue = z.infer<typeof modelCatalogueSchema>;
+export type GeneratedCatalogueProvider = z.infer<typeof generatedCatalogueProviderSchema>;
+export type GeneratedModelCatalogue = z.infer<typeof generatedModelCatalogueSchema>;
 
 /** Adds a key, or replaces the user's key for the provider. */
 export const saveModelCredentialRequestSchema = z.strictObject({
