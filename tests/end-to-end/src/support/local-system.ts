@@ -289,7 +289,7 @@ async function killSupervisorsLeftIn(sandboxesDirectory: string): Promise<void> 
  * moment before the control plane does; the control plane would then fail
  * to start and say so.
  */
-function findFreePort(host: string): Promise<number> {
+export function findFreePort(host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
