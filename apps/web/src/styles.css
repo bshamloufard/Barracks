@@ -600,3 +600,46 @@ code {
 .model-access-error p {
   margin: 0 0 0.25rem;
 }
+
+.desktop-panel {
+  padding: 0.75rem 0 0;
+}
+
+.desktop-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.desktop-bar h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.desktop-status {
+  flex: 1 1 12rem;
+  color: var(--text-quiet);
+  font-size: 0.9rem;
+}
+
+.desktop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The sandbox's display is 1280x800; noVNC scales it to this box's width. */
+.desktop-screen {
+  width: 100%;
+  aspect-ratio: 1280 / 800;
+  background: #000000;
+  border: 2px solid var(--border);
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+
+.desktop-screen-controlled {
+  border-color: var(--accent);
+}
