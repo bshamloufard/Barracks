@@ -34,7 +34,9 @@ import { type LimitedGitOutcome, runLimitedGit } from "./run-limited-git.js";
  *
  * The write-capable token reaches Git only through a credential helper that
  * reads it from the environment of Git's own process. It is never in a URL,
- * an argument or a file, and error messages are scrubbed of it.
+ * an argument or a file, and error messages are scrubbed of it. The helper
+ * is configured for the remote's exact URL alone, path included, and Git
+ * follows no redirect, so the token is offered to no other server.
  */
 
 /** Git is found where the control plane finds its other programs. */
@@ -277,11 +279,19 @@ export class IsolatedGitRepository {
       ["transfer.fsckObjects", "true"],
       ["fetch.fsckObjects", "true"],
       ...boundedGitSettings,
+      // Git's documentation: https://git-scm.com/docs/gitcredentials and
+      // https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpfollowRedirects.
+      // A helper under `credential.<url>` is asked only for that URL, and
+      // the path is part of the match only with `useHttpPath`. A redirect,
+      // even GitHub's for a renamed repository, fails the command rather
+      // than send the request, and so the token, elsewhere.
       ["credential.helper", ""],
+      ["credential.useHttpPath", "true"],
       [
-        "credential.helper",
+        `credential.${this.#options.remoteUrl}.helper`,
         '!f() { test "$1" = get && printf "username=%s\\npassword=%s\\n" "$BARRACK_GIT_USERNAME" "$BARRACK_GIT_PASSWORD"; }; f',
       ],
+      ["http.followRedirects", "false"],
     ];
     const environment: NodeJS.ProcessEnv = {
       PATH: searchPath,
