@@ -1,6 +1,7 @@
 export * from "./agent-events.js";
 export * from "./assistant-content.js";
 export * from "./client-messages.js";
+export * from "./endpoints.js";
 export * from "./identifier.js";
 export * from "./interrupt-agent-message.js";
 export * from "./limits.js";
