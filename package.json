@@ -10,10 +10,11 @@
   },
   "scripts": {
     "build": "pnpm --recursive build",
+    "build:packages": "pnpm --filter \"./packages/*\" build",
     "lint": "biome check --error-on-warnings .",
     "format": "biome check --write .",
-    "typecheck": "tsc --project tsconfig.json && pnpm --recursive typecheck",
-    "test": "vitest run",
+    "typecheck": "pnpm build:packages && tsc --project tsconfig.json && pnpm --recursive typecheck",
+    "test": "pnpm build:packages && vitest run",
     "check": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {

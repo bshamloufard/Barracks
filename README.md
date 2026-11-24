@@ -29,8 +29,8 @@ Run all commands from the repository root. Each one covers every package in the 
 | `pnpm build`     | Compiles every package to JavaScript.                               |
 | `pnpm lint`      | Checks formatting, import order and lint rules with Biome.          |
 | `pnpm format`    | Rewrites files to fix formatting, import order and safe lint fixes. |
-| `pnpm typecheck` | Type-checks every package with the TypeScript compiler.             |
-| `pnpm test`      | Runs every package's tests with Vitest.                             |
+| `pnpm typecheck` | Builds the shared packages, then type-checks every package.         |
+| `pnpm test`      | Builds the shared packages, then runs every test with Vitest.       |
 | `pnpm check`     | Runs lint, typecheck and test. CI runs this plus `pnpm build`.      |
 
 ## Repository layout
