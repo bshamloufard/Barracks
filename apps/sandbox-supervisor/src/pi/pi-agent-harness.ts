@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { type AgentEvent, maximumErrorMessageLength } from "@barrack/protocol";
 import type { AgentHarness, AgentHarnessObserver, UserMessage } from "../agent-harness.js";
 import type { AgentProcessLauncher } from "../agent-process/agent-process-launcher.js";
+import { finishesWithin } from "../finishes-within.js";
 import type { Logger } from "../logger.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
@@ -18,6 +19,7 @@ import {
 import { type PiExit, PiProcess } from "./pi-process.js";
 import { type PiEvent, type PiExtensionUiRequest, parsePiState } from "./pi-records.js";
 import { PiCommandRejectedError, PiOutputEndedError } from "./pi-rpc-client.js";
+import { defaultPiStopTiming, type PiStopTiming } from "./pi-stop-timing.js";
 import { SerialCommandQueue } from "./serial-command-queue.js";
 
 export type PiAgentHarnessSettings = {
@@ -33,6 +35,7 @@ export type PiAgentHarnessSettings = {
   agentProcessLauncher: AgentProcessLauncher;
   logger: Logger;
   mintIdentifier?: () => string;
+  stopTiming?: Partial<PiStopTiming>;
 };
 
 /**
@@ -74,6 +77,7 @@ export class PiAgentHarness implements AgentHarness {
   readonly #settings: PiAgentHarnessSettings;
   readonly #logger: Logger;
   readonly #mintIdentifier: () => string;
+  readonly #stopTiming: PiStopTiming;
   readonly #commands = new SerialCommandQueue();
   /** Messages waiting their turn in the queue; an interrupt drops them. */
   readonly #undeliveredUserMessages = new Set<UserMessage>();
@@ -87,6 +91,7 @@ export class PiAgentHarness implements AgentHarness {
     this.#settings = settings;
     this.#logger = settings.logger;
     this.#mintIdentifier = settings.mintIdentifier ?? randomUUID;
+    this.#stopTiming = { ...defaultPiStopTiming, ...settings.stopTiming };
   }
 
   async start(): Promise<void> {
@@ -114,10 +119,29 @@ export class PiAgentHarness implements AgentHarness {
     return this.#commands.run(() => this.#interruptPi());
   }
 
-  stop(): Promise<void> {
+  /**
+   * Stops Pi in its turn, after the command it is working on, but does not
+   * wait for that command for long: Pi answers `abort` only once the agent
+   * is idle, and a Pi that never does would hold the sandbox's shutdown up
+   * forever. After the wait, Pi is stopped regardless; its ending fails the
+   * command in flight, and the stop in the queue then finds it gone.
+   */
+  async stop(): Promise<void> {
     this.#isStopped = true;
     this.#dropUndeliveredUserMessages("the supervisor is stopping");
-    return this.#commands.run(async () => this.#piProcess?.stop());
+    const stoppedInTurn = this.#commands.run(async () => this.#piProcess?.stop());
+    const waitInMilliseconds = this.#stopTiming.commandInFlightTimeoutInMilliseconds;
+    if (await finishesWithin(stoppedInTurn, waitInMilliseconds)) {
+      return;
+    }
+    this.#logger.warn(
+      { waitInMilliseconds },
+      "Pi is still busy with a command; stopping it without waiting further",
+    );
+    await this.#piProcess?.stop();
+    if (!(await finishesWithin(stoppedInTurn, waitInMilliseconds))) {
+      this.#logger.error("The command Pi was busy with never finished; no longer waiting for it");
+    }
   }
 
   /**
@@ -287,6 +311,7 @@ export class PiAgentHarness implements AgentHarness {
         model: this.#settings.model,
         environment: buildPiEnvironment(this.#settings.sourceEnvironment, agentDirectory),
         launcher: this.#settings.agentProcessLauncher,
+        stopTiming: this.#stopTiming,
       },
       {
         onEvent: (event) => this.#handlePiEvent(event),
