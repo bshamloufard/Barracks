@@ -18,7 +18,12 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
-import { createThread, saveModelCredential } from "./support/threads-api.js";
+import {
+  createThread,
+  deleteThread,
+  saveModelCredential,
+  waitUntilThreadIsGone,
+} from "./support/threads-api.js";
 
 /**
  * The model proxy with the real Pi: local-process sandboxes, whose Pi is
@@ -36,6 +41,7 @@ const keys = {
 let modelServer: MockModelServer;
 let controlPlane: RunningControlPlane;
 const clients: TestClient[] = [];
+const threadIds: string[] = [];
 
 beforeAll(async () => {
   modelServer = await startMockModelServer();
@@ -51,9 +57,14 @@ beforeAll(async () => {
   await saveModelCredential(controlPlane, "openai", keys.openai);
 }, 60_000);
 
+/** Each test's threads go when it ends, so only one test's Pi runs at a time. */
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.close()));
-});
+  for (const threadId of threadIds.splice(0)) {
+    await deleteThread(controlPlane, threadId);
+    await waitUntilThreadIsGone(controlPlane, threadId);
+  }
+}, 60_000);
 
 afterAll(async () => {
   await controlPlane?.stop();
@@ -78,6 +89,7 @@ async function hurryPiRetries(): Promise<void> {
 
 async function startThread(model: string): Promise<{ threadId: string; client: TestClient }> {
   const { threadId } = await createThread(controlPlane, model);
+  threadIds.push(threadId);
   const client = await TestClient.connect(controlPlane, threadId, 0);
   clients.push(client);
   await client.waitUntilSupervisorIsConnected();
