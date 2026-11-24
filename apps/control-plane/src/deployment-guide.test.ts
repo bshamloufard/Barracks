@@ -41,17 +41,23 @@ const knownVariables = new Set([
   railwayPortVariable,
 ]);
 
-/** Every variable named in the first column of the table between the guide's markers. */
-function variablesInGuideTable(): string[] {
+/**
+ * Every variable named in the first column of the table between the
+ * guide's markers, or only those of rows whose second column (where it is
+ * set) passes `isSetWhere`.
+ */
+function variablesInGuideTable(isSetWhere: (setWhere: string) => boolean = () => true): string[] {
   const start = deploymentGuide.indexOf("<!-- railway-variables:start -->");
   const end = deploymentGuide.indexOf("<!-- railway-variables:end -->");
   expect(start, "the guide marks where its variable table starts").toBeGreaterThan(-1);
   expect(end, "and where it ends").toBeGreaterThan(start);
   const rows = deploymentGuide.slice(start, end).split("\n").filter(isTableBodyRow);
-  return rows.flatMap((row) => {
-    const firstCell = row.split("|")[1] ?? "";
-    return [...firstCell.matchAll(/`([A-Z][A-Z0-9_]*)`/g)].map((match) => match[1] ?? "");
-  });
+  return rows
+    .filter((row) => isSetWhere((row.split("|")[2] ?? "").trim()))
+    .flatMap((row) => {
+      const firstCell = row.split("|")[1] ?? "";
+      return [...firstCell.matchAll(/`([A-Z][A-Z0-9_]*)`/g)].map((match) => match[1] ?? "");
+    });
 }
 
 function isTableBodyRow(line: string): boolean {
@@ -108,6 +114,22 @@ describe("the deployment guide's table of variables", () => {
     const missing = variablesForHostedDeployment.filter((name) => !documented.has(name));
 
     expect(missing).toEqual([]);
+  });
+
+  it("names only variables set in the dashboard that the Railway configuration preserves", () => {
+    // The model provider's key is the one the configuration's comment asks
+    // the operator to add, since which provider is theirs to choose.
+    const setInDashboard = variablesInGuideTable(
+      (setWhere) => setWhere.includes("dashboard") && !setWhere.startsWith("one,"),
+    );
+    const preserved = new Set(
+      [...railwayConfiguration.matchAll(/^\s+([A-Z][A-Z0-9_]*): preserve\(\),/gm)].map(
+        (match) => match[1] ?? "",
+      ),
+    );
+
+    expect(setInDashboard).toContain("BARRACK_GITHUB_APP_PRIVATE_KEY");
+    expect(setInDashboard.filter((name) => !preserved.has(name))).toEqual([]);
   });
 
   it("names every variable the Railway configuration sets", () => {

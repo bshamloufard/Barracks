@@ -103,6 +103,13 @@ export default defineRailway((context, project) => {
       DAYTONA_API_KEY: preserve(),
       BARRACK_DATABASE_URL: preserve(),
       BARRACK_DATABASE_CA_CERTIFICATE: preserve(),
+      // Optional, all four or none: the GitHub App through which users
+      // reach private repositories and publish (step 4 of the guide). Kept
+      // like the other secrets, so an apply never deletes them once set.
+      BARRACK_GITHUB_APP_CLIENT_ID: preserve(),
+      BARRACK_GITHUB_APP_CLIENT_SECRET: preserve(),
+      BARRACK_GITHUB_APP_PRIVATE_KEY: preserve(),
+      BARRACK_GITHUB_APP_SLUG: preserve(),
     },
   });
 
