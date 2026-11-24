@@ -1,6 +1,6 @@
 # Sandbox supervisor
 
-A small long-running Node process that lives inside a thread's sandbox (for Milestone 1, on the developer's machine). It:
+A small long-running Node process that lives inside a thread's sandbox: a container from the [sandbox image](../../sandbox-image), or under `pnpm dev` an ordinary process on the developer's machine. It:
 
 1. starts the coding agent ([Pi](https://github.com/earendil-works/pi), or a scripted fake);
 2. dials **out** to the control plane over a WebSocket, so the sandbox needs no inbound networking;
@@ -9,13 +9,13 @@ A small long-running Node process that lives inside a thread's sandbox (for Mile
 
 ## Configuration
 
-Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed.
+Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed. The control plane sets them when it creates the thread's sandbox (see [its README](../control-plane/README.md#threads-and-their-sandboxes)), and the sandbox image sets the directories and the agent's user.
 
 | Variable                      | Required | Meaning                                                                                          |
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
 | `BARRACK_CONTROL_PLANE_URL`   | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                              |
 | `BARRACK_THREAD_ID`           | yes      | The thread this sandbox belongs to                                                               |
-| `BARRACK_SUPERVISOR_TOKEN`    | yes      | Sent as `Authorization: Bearer …`. Never logged; kept out of the agent's environment (see below) |
+| `BARRACK_SUPERVISOR_TOKEN`    | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it |
 | `BARRACK_AGENT_HARNESS`       | no       | `pi` (default) or `fake`                                                                         |
 | `BARRACK_MODEL`               | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                          |
 | `BARRACK_WORKSPACE_DIRECTORY` | for `pi` | The agent's working directory                                                                    |
@@ -40,36 +40,23 @@ What the agent can and cannot reach as that user is listed in the sandbox image'
 
 ## Running it
 
-Build first (from the repository root): `pnpm install && pnpm build`.
+The control plane starts every supervisor: it creates each thread's sandbox through its [sandbox provider](../../packages/sandbox-providers) with a token minted for that thread alone, which it keeps only as a digest and never reveals. There is no shared token any more, so a supervisor cannot simply be started by hand against a control plane. `pnpm dev` at the repository root runs the control plane with the local-process provider, which starts each thread's supervisor from its sources as an ordinary process; that is the way to run one locally.
 
-**With the fake agent** (no model, no API key):
+**To debug a supervisor**, change how the local-process provider starts it rather than starting it yourself: run the control plane with the variables `pnpm dev` gives it ([`scripts/dev/services.ts`](../../scripts/dev/services.ts)), but with `BARRACK_LOCAL_SUPERVISOR_COMMAND` set to, for example, `["node", "--inspect=0", "/absolute/path/to/apps/sandbox-supervisor/dist/main.js"]`. Paths must be absolute, since each supervisor starts in its sandbox's workspace, and `--inspect=0` gives each one a free port, which Node prints.
+
+**To start one by hand** for a thread that already exists, you need that thread's token, which exists only in the environment of the supervisor the provider started. With the local-process provider that is a process of your own user, so on Linux `tr '\0' '\n' < /proc/<its pid>/environ | grep ^BARRACK_` shows its variables. A supervisor started with the same thread and token replaces it, since the newest supervisor of a thread wins, and the one it replaced exits:
 
 ```sh
 BARRACK_CONTROL_PLANE_URL=ws://127.0.0.1:8787 \
 BARRACK_THREAD_ID=<thread id> \
-BARRACK_SUPERVISOR_TOKEN=<supervisor token> \
+BARRACK_SUPERVISOR_TOKEN=<that thread's token> \
 BARRACK_AGENT_HARNESS=fake \
 node apps/sandbox-supervisor/dist/main.js
 ```
 
-The fake agent quotes each message back word by word. A message containing `[tool]` makes it call a tool first; one containing `[fail]` makes it fail as if its process had crashed.
+Build it first (`pnpm build`). For Pi instead of the fake agent, set `BARRACK_MODEL`, the model provider's key, `BARRACK_WORKSPACE_DIRECTORY` and `BARRACK_STATE_DIRECTORY` as in the table above. Run this way, Pi runs as your own user and can read the token, as with any supervisor and agent that share a user.
 
-**With Pi** (needs a model provider key):
-
-```sh
-ANTHROPIC_API_KEY=<key> \
-BARRACK_CONTROL_PLANE_URL=ws://127.0.0.1:8787 \
-BARRACK_THREAD_ID=<thread id> \
-BARRACK_SUPERVISOR_TOKEN=<supervisor token> \
-BARRACK_MODEL=anthropic/<model-id> \
-BARRACK_WORKSPACE_DIRECTORY=/path/to/a/checkout \
-BARRACK_STATE_DIRECTORY=$HOME/.barrack/thread-state \
-node apps/sandbox-supervisor/dist/main.js
-```
-
-`pnpm --filter @barrack/sandbox-supervisor exec pi --list-models <search>` lists the model identifiers Pi knows. Pi runs with full access to whatever its process can reach; on a developer machine, point it at a workspace you are happy for it to change.
-
-`pnpm --filter @barrack/sandbox-supervisor start` runs the same entry point with the variables from your shell.
+The fake agent quotes each message back word by word. A message containing `[tool]` makes it call a tool first; one containing `[fail]` makes it fail as if its process had crashed. `pnpm --filter @barrack/sandbox-supervisor exec pi --list-models <search>` lists the model identifiers Pi knows.
 
 ## How it behaves
 
