@@ -42,6 +42,15 @@ const gracefulExitTimeoutInMilliseconds = 5_000;
 const terminatedExitTimeoutInMilliseconds = 3_000;
 const recentDiagnosticsMaximumLength = 2_000;
 
+/**
+ * Diagnostics are human-readable lines, logged one by one, and only the last
+ * couple of thousand characters are ever shown to the user. Something that
+ * writes to stderr without ever ending its line (a progress indicator redrawn
+ * with `\r`, a stray binary dump) would otherwise grow the held line without
+ * limit, so a line is cut after this many bytes; its start says what it is.
+ */
+const diagnosticLineMaximumLengthInBytes = 16 * 1024;
+
 export function buildPiArguments(settings: PiLaunchSettings): string[] {
   // `--session-id` is looked up relative to the working directory, so the
   // session file path is the more reliable way to reopen a session.
@@ -159,7 +168,9 @@ export class PiProcess {
    * and the most recent kept, to explain a crash to the user.
    */
   #recordDiagnostics(diagnosticStream: Readable): void {
-    const lineSplitter = new LineSplitter();
+    const lineSplitter = new LineSplitter({
+      maximumLineLengthInBytes: diagnosticLineMaximumLengthInBytes,
+    });
     diagnosticStream.on("data", (chunk: Buffer) => {
       for (const line of lineSplitter.push(chunk)) {
         this.#logger.info({ diagnostic: line }, "Pi wrote a diagnostic");

@@ -50,4 +50,40 @@ describe("LineSplitter", () => {
 
     expect(splitter.unfinishedLineLength).toBe(4);
   });
+
+  // Joining the held bytes on every chunk made this take over a minute. It
+  // is the shape of Pi's `agent_end` record after a run with screenshots.
+  it("reassembles a multi-megabyte line that arrives in many small chunks", () => {
+    const splitter = new LineSplitter();
+    const line = JSON.stringify({ type: "agent_end", image: "A".repeat(16 * 1024 * 1024) });
+    const bytes = Buffer.from(`${line}\n{"n":2}\n`);
+    const chunkLength = 1024;
+
+    const lines: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += chunkLength) {
+      lines.push(...splitter.push(bytes.subarray(offset, offset + chunkLength)));
+    }
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0] === line).toBe(true);
+    expect(lines[1]).toBe('{"n":2}');
+    expect(splitter.unfinishedLineLength).toBe(0);
+  });
+
+  it("keeps only the start of a line longer than its limit and marks what it left out", () => {
+    const splitter = new LineSplitter({ maximumLineLengthInBytes: 10 });
+
+    splitter.push(Buffer.from("0123456"));
+    const lines = splitter.push(Buffer.from("789abcdef\nshort\n"));
+
+    expect(lines).toEqual(["0123456789 [… 6 more bytes not kept]", "short"]);
+  });
+
+  it("counts the bytes it left out of an unfinished line as held", () => {
+    const splitter = new LineSplitter({ maximumLineLengthInBytes: 4 });
+
+    splitter.push(Buffer.from("0123456789"));
+
+    expect(splitter.unfinishedLineLength).toBe(10);
+  });
 });
