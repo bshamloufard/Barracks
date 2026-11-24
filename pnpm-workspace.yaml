@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - tests/*
 
 # Dependencies' install scripts are a supply-chain risk, so pnpm runs none
 # unless they are listed here as allowed. These three come in through the Pi
