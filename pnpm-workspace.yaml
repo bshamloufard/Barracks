@@ -1,3 +1,18 @@
 packages:
   - apps/*
   - packages/*
+
+# Dependencies' install scripts are a supply-chain risk, so pnpm runs none
+# unless they are listed here as allowed. These three come in through the Pi
+# agent (the first two) and tsx and Vite (esbuild). None of their scripts is
+# needed, so they are recorded as reviewed and denied, which also keeps
+# `pnpm install` from warning about them:
+# - @google/genai: its only script is a preinstall that echoes "no-op".
+# - protobufjs: its postinstall only warns about mismatched version ranges.
+# - esbuild: its postinstall checks the platform binary that pnpm already
+#   installs as an optional dependency, which esbuild finds without it.
+# https://pnpm.io/settings/build#allowbuilds
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false
+  esbuild: false
