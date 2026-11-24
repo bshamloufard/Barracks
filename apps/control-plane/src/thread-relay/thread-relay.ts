@@ -707,6 +707,9 @@ export class ThreadRelay {
     if (!this.#fitsInClientFrame(supervisor.connection, event)) {
       return;
     }
+    // The clone's events count as activity as the agent's do: a sandbox
+    // cloning is at work for its thread. A clone outlasting the idle period
+    // with no message waiting may still be stopped, and is redone on waking.
     await this.#threadActivity.recordAgentActivity(this.threadId);
     try {
       const outcome = await this.#threadEventLog.appendSupervisorEvent(this.threadId, event, {
