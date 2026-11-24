@@ -1,6 +1,7 @@
 import type { ThreadSandbox, ThreadSummary } from "@barrack/protocol";
 import { threadPageAddress } from "../page-address";
 import { useThreadList } from "../thread-list/use-thread-list";
+import { AccountBar } from "./account-bar";
 
 const createdAtFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -14,6 +15,7 @@ export function ThreadListPage() {
     <div className="page">
       <header className="page-header thread-list-header">
         <h1>Barrack</h1>
+        <AccountBar />
         <button
           type="button"
           className="primary-button"

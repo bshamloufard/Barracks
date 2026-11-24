@@ -1,5 +1,6 @@
 import { threadListAddress } from "../page-address";
 import { useThread } from "../use-thread";
+import { AccountBar } from "./account-bar";
 import { Conversation } from "./conversation";
 import { MessageComposer } from "./message-composer";
 import { StatusLine } from "./status-line";
@@ -26,6 +27,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
           <span className="thread-name">{threadId}</span>
         </h1>
         <StatusLine state={state} />
+        <AccountBar />
       </header>
       <main>
         {record.name === "found" && record.sandbox.state === "failed" && (
