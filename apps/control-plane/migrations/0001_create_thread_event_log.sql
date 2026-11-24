@@ -35,7 +35,9 @@ alter table thread_sequence_counters enable row level security;
 -- can contain U+0000 (a binary file printed to the terminal, say), and a
 -- rejected append would disconnect the thread's supervisor. History is only
 -- ever read back whole, in sequence order, so nothing needs `jsonb`'s
--- indexing or operators.
+-- indexing or operators. Even `json`'s operators, such as `event->>'type'`,
+-- fail on a row containing U+0000, so a query that needs something from
+-- inside events should get it from a column of its own.
 --   https://www.postgresql.org/docs/current/datatype-json.html
 create table thread_events (
   thread_id text not null check (thread_id ~ '^[A-Za-z0-9_-]{1,64}$'),
