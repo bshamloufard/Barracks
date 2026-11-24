@@ -1,14 +1,18 @@
-import { parseThreadIdFromAddress } from "../thread-address";
+import { parsePageAddress } from "../page-address";
+import { ThreadListPage } from "./thread-list-page";
 import { ThreadView } from "./thread-view";
 
 export function App() {
-  const threadId = parseThreadIdFromAddress(window.location.search);
-  if (!threadId.ok) {
+  const address = parsePageAddress(window.location.search);
+  if (!address.ok) {
     return (
       <main className="page">
-        <p className="error-notice">{threadId.errorMessage}</p>
+        <p className="error-notice">{address.errorMessage}</p>
       </main>
     );
   }
-  return <ThreadView threadId={threadId.value} />;
+  if (address.value.page === "thread-list") {
+    return <ThreadListPage />;
+  }
+  return <ThreadView threadId={address.value.threadId} />;
 }

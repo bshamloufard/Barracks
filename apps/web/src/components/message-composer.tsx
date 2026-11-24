@@ -1,5 +1,6 @@
 import { maximumUserMessageLength } from "@barrack/protocol";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
+import { describeWhySendingIsBlocked } from "../presentation/describe-agent-availability";
 import type { ThreadState } from "../thread-state/thread-state";
 
 type MessageComposerProperties = {
@@ -63,16 +64,6 @@ export function MessageComposer({
       </div>
     </form>
   );
-}
-
-function describeWhySendingIsBlocked(state: ThreadState): string | undefined {
-  if (state.connection.name !== "connected") {
-    return "Waiting for the connection to the control plane.";
-  }
-  if (!state.isSupervisorConnected) {
-    return "The agent is not connected. Start its sandbox supervisor to send messages.";
-  }
-  return undefined;
 }
 
 /** Checked here so an over-long message is caught before the control plane refuses it. */

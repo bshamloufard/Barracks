@@ -372,6 +372,46 @@ describe("the supervisor connection status", () => {
 
     expect(disconnected.isSupervisorConnected).toBe(false);
   });
+
+  it("remembers that the supervisor has connected since the page opened, even after it goes", () => {
+    const neverConnected = stateAfter(
+      received({ type: "supervisor_connection_status", isSupervisorConnected: false }),
+    );
+    const connectedThenGone = stateAfter(
+      received({ type: "supervisor_connection_status", isSupervisorConnected: true }),
+      received({ type: "supervisor_connection_status", isSupervisorConnected: false }),
+    );
+
+    expect(neverConnected.hasSeenSupervisorConnected).toBe(false);
+    expect(connectedThenGone.hasSeenSupervisorConnected).toBe(true);
+  });
+});
+
+describe("the thread's record", () => {
+  it("is loading until the control plane's record arrives", () => {
+    expect(initialThreadState.record).toEqual({ name: "loading" });
+  });
+
+  it("holds the sandbox's state as the latest record tells it", () => {
+    const thread = { threadId: "thread-1", createdAt: "2026-11-24T09:00:00.000Z" };
+
+    const failed = stateAfter(
+      { type: "thread_record_loaded", thread: { ...thread, sandbox: { state: "creating" } } },
+      {
+        type: "thread_record_loaded",
+        thread: { ...thread, sandbox: { state: "failed", reason: "No quota left" } },
+      },
+    );
+
+    expect(failed.record).toEqual({
+      name: "found",
+      sandbox: { state: "failed", reason: "No quota left" },
+    });
+  });
+
+  it("says when the control plane has no such thread", () => {
+    expect(stateAfter({ type: "thread_record_missing" }).record).toEqual({ name: "not_found" });
+  });
 });
 
 describe("rejections", () => {

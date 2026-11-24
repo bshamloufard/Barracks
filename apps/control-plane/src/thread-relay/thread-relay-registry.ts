@@ -5,15 +5,14 @@ import { ThreadRelay } from "./thread-relay.js";
 
 /**
  * Hands out the one relay for each thread, creating it the first time a
- * supervisor or client connects. Milestone 1 has no thread records, so any
- * valid thread identifier names a thread.
+ * supervisor or client connects. The WebSocket endpoints admit connections
+ * only to threads the thread store holds, so nothing here checks that again.
  *
  * A relay is dropped as soon as it has no supervisor, no clients and no
- * queued work. Otherwise anyone able to open a connection could grow this
- * map without limit by naming ever-new threads. The history lives in the
- * event log, so dropping a relay loses at most the text of a message that was
- * still streaming when its supervisor went away, which is not part of the
- * record (see `InProgressAssistantText`).
+ * queued work, so the map holds only threads someone is connected to. The
+ * history lives in the event log, so dropping a relay loses at most the text
+ * of a message that was still streaming when its supervisor went away, which
+ * is not part of the record (see `InProgressAssistantText`).
  *
  * Peers attach through the registry, which finds or creates the relay and
  * attaches the peer in one synchronous step. A relay is therefore never

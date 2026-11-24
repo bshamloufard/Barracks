@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import type { ControlPlaneToClientMessage } from "@barrack/protocol";
 import { createSandboxProvider } from "@barrack/sandbox-providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,14 +9,17 @@ import {
 } from "./support/docker-environment.js";
 import { type RunningControlPlane, startControlPlane } from "./support/local-system.js";
 import { TestClient } from "./support/test-client.js";
+import { createThread, waitUntilSandboxIsReady } from "./support/threads-api.js";
 
 /**
- * One thread whose sandbox is a real Docker container from the sandbox
- * image, created by the Docker provider, with the real control plane running
- * from its sources on the host. The supervisor inside the container (with
- * the fake agent) must connect out by itself, carry a user's message to the
- * agent and back, and connect again by itself after the sandbox is stopped
- * and started.
+ * One thread created through the real control plane's API, whose sandbox
+ * the control plane creates as a real Docker container from the sandbox
+ * image, with the control plane running from its sources on the host. The
+ * supervisor inside the container (with the fake agent) must connect out by
+ * itself with the token it was given, carry a user's message to the agent
+ * and back, and connect again by itself after the sandbox is stopped and
+ * started. The control plane cannot stop or start sandboxes yet, so the
+ * test does that through the provider directly.
  *
  * The control plane listens on the host's address on Docker's default bridge
  * network, which containers reach as host.docker.internal. That address is
@@ -42,13 +45,36 @@ function supervisorIs(isConnected: boolean) {
   };
 }
 
+/** The Docker provider labels each sandbox's container with its thread. */
+function findSandboxIdOf(threadId: string): string {
+  const containerIds = execFileSync(
+    "docker",
+    [
+      "container",
+      "ls",
+      "--all",
+      "--no-trunc",
+      "--quiet",
+      "--filter",
+      `label=barrack.thread-id=${threadId}`,
+    ],
+    { encoding: "utf8" },
+  )
+    .split("\n")
+    .filter((line) => line !== "");
+  const [sandboxId] = containerIds;
+  if (sandboxId === undefined || containerIds.length !== 1) {
+    throw new Error(`Expected one sandbox for thread ${threadId}, found ${containerIds.length}.`);
+  }
+  return sandboxId;
+}
+
 if (unavailableReason !== undefined) {
   describe.skip(`a thread in a Docker sandbox (skipped: ${unavailableReason})`, () => {
     it("is not tested here", () => {});
   });
 } else {
   describe("a thread in a Docker sandbox", { timeout: dockerTestTimeoutInMilliseconds }, () => {
-    const threadId = `docker-${randomUUID()}`;
     const provider = createSandboxProvider({
       kind: "docker",
       docker: {
@@ -66,7 +92,10 @@ if (unavailableReason !== undefined) {
     let client: TestClient | undefined;
 
     beforeAll(async () => {
-      controlPlane = await startControlPlane(findDockerBridgeGateway());
+      controlPlane = await startControlPlane({
+        host: findDockerBridgeGateway(),
+        sandboxes: { kind: "docker", image: sandboxImage },
+      });
     }, dockerTestTimeoutInMilliseconds);
 
     // Runs whether or not the test passed, so no container is left behind.
@@ -75,23 +104,16 @@ if (unavailableReason !== undefined) {
       if (sandboxId !== undefined) {
         await provider.destroy(sandboxId);
       }
-      await controlPlane?.process.stop();
+      await controlPlane?.stop();
     }, dockerTestTimeoutInMilliseconds);
 
-    it("relays a message through the sandbox's supervisor, which reconnects by itself after a stop and start", async () => {
+    it("creates the thread's sandbox, whose supervisor relays a message and reconnects by itself after a stop and start", async () => {
       if (controlPlane === undefined) {
         throw new Error("The control plane did not start.");
       }
-      const port = new URL(controlPlane.webSocketBaseUrl).port;
-      ({ sandboxId } = await provider.create({
-        threadId,
-        supervisorEnvironment: {
-          BARRACK_CONTROL_PLANE_URL: `ws://host.docker.internal:${port}`,
-          BARRACK_THREAD_ID: threadId,
-          BARRACK_SUPERVISOR_TOKEN: controlPlane.supervisorToken,
-          BARRACK_AGENT_HARNESS: "fake",
-        },
-      }));
+      const { threadId } = await createThread(controlPlane.httpBaseUrl);
+      await waitUntilSandboxIsReady(controlPlane.httpBaseUrl, threadId);
+      sandboxId = findSandboxIdOf(threadId);
       client = await TestClient.connect(controlPlane.webSocketBaseUrl, threadId, 0);
 
       await client.waitUntil("the sandbox's supervisor has connected", supervisorIs(true));

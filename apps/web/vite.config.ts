@@ -14,6 +14,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
+      "/api": { target: controlPlaneUrl },
       "/threads": { target: controlPlaneUrl, ws: true },
       "/health": { target: controlPlaneUrl },
     },

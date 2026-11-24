@@ -1,29 +1,31 @@
 import { buildSupervisorEndpointPath, closeCodes } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TestControlPlane, testSupervisorToken } from "../test-support/test-control-plane.js";
+import { TestControlPlane, type TestThread } from "../test-support/test-control-plane.js";
 import { attemptUpgrade } from "../test-support/test-socket.js";
 
-const threadId = "thread-1";
-
 let controlPlane: TestControlPlane;
+let thread: TestThread;
 
 beforeEach(async () => {
   controlPlane = await TestControlPlane.start();
+  thread = await controlPlane.createThread();
 });
 
 afterEach(async () => {
   await controlPlane.close();
 });
 
-function supervisorUrl(): string {
+function supervisorUrl(threadId = thread.threadId): string {
   return `${controlPlane.baseUrl}${buildSupervisorEndpointPath({ threadId })}`;
 }
 
+function bearer(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
 describe("the supervisor endpoint", () => {
-  it("accepts a supervisor that presents the token", async () => {
-    const outcome = await attemptUpgrade(supervisorUrl(), {
-      Authorization: `Bearer ${testSupervisorToken}`,
-    });
+  it("accepts a supervisor that presents its thread's token", async () => {
+    const outcome = await attemptUpgrade(supervisorUrl(), bearer(thread.supervisorToken));
 
     expect(outcome).toEqual({ opened: true });
   });
@@ -35,9 +37,30 @@ describe("the supervisor endpoint", () => {
   });
 
   it("refuses a supervisor with the wrong token with HTTP 401", async () => {
-    const outcome = await attemptUpgrade(supervisorUrl(), {
-      Authorization: `Bearer ${testSupervisorToken}-but-wrong`,
-    });
+    const outcome = await attemptUpgrade(
+      supervisorUrl(),
+      bearer(`${thread.supervisorToken}-but-wrong`),
+    );
+
+    expect(outcome).toMatchObject({ opened: false, statusCode: 401 });
+  });
+
+  it("refuses another thread's token with HTTP 401, so one sandbox cannot pass itself off as another's", async () => {
+    const otherThread = await controlPlane.createThread();
+
+    const outcome = await attemptUpgrade(
+      supervisorUrl(otherThread.threadId),
+      bearer(thread.supervisorToken),
+    );
+
+    expect(outcome).toMatchObject({ opened: false, statusCode: 401 });
+  });
+
+  it("refuses a supervisor for a thread that does not exist with HTTP 401", async () => {
+    const outcome = await attemptUpgrade(
+      supervisorUrl("thread-that-was-never-created"),
+      bearer(thread.supervisorToken),
+    );
 
     expect(outcome).toMatchObject({ opened: false, statusCode: 401 });
   });
@@ -45,7 +68,7 @@ describe("the supervisor endpoint", () => {
   it("refuses a supervisor that speaks another protocol version with HTTP 400", async () => {
     const url = supervisorUrl().replace("protocolVersion=1", "protocolVersion=999");
 
-    const outcome = await attemptUpgrade(url, { Authorization: `Bearer ${testSupervisorToken}` });
+    const outcome = await attemptUpgrade(url, bearer(thread.supervisorToken));
 
     expect(outcome).toMatchObject({
       opened: false,
@@ -55,18 +78,19 @@ describe("the supervisor endpoint", () => {
   });
 
   it("refuses an upgrade for a path that is not an endpoint with HTTP 404", async () => {
-    const outcome = await attemptUpgrade(`${controlPlane.baseUrl}/somewhere-else`, {
-      Authorization: `Bearer ${testSupervisorToken}`,
-    });
+    const outcome = await attemptUpgrade(
+      `${controlPlane.baseUrl}/somewhere-else`,
+      bearer(thread.supervisorToken),
+    );
 
     expect(outcome).toMatchObject({ opened: false, statusCode: 404 });
   });
 
   it("closes the previous supervisor of a thread when a newer one connects", async () => {
-    const olderSupervisor = await controlPlane.connectSupervisor(threadId);
+    const olderSupervisor = await controlPlane.connectSupervisor(thread);
 
-    const newerSupervisor = await controlPlane.connectSupervisor(threadId);
-    const client = await controlPlane.connectClient(threadId);
+    const newerSupervisor = await controlPlane.connectSupervisor(thread);
+    const client = await controlPlane.connectClient(thread.threadId);
     client.interruptAgent();
 
     expect((await olderSupervisor.closed).closeCode).toBe(closeCodes.supersededByNewerSupervisor);
@@ -80,7 +104,7 @@ describe("the supervisor endpoint", () => {
   });
 
   it("closes a supervisor that sends an invalid message", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
 
     supervisor.sendRawFrame(JSON.stringify({ type: "agent_event", event: { type: "made_up" } }));
 
@@ -88,7 +112,7 @@ describe("the supervisor endpoint", () => {
   });
 
   it("closes a supervisor that sends a frame that is not JSON", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
 
     supervisor.sendRawFrame("{ not json");
 

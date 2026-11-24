@@ -21,8 +21,9 @@ const nameColumnWidth = "control-plane".length;
  * One service run by `pnpm dev`, as a child process leading a process group
  * of its own. The terminal sends Ctrl-C to its foreground process group, so
  * keeping services out of it lets `pnpm dev` choose the order they stop in.
- * It also means anything a service starts (the supervisor starts Pi) can be
- * killed along with it, and nothing is left behind.
+ * It also means anything a service starts (the control plane starts
+ * supervisors, which start Pi) can be killed along with it, and nothing is
+ * left behind.
  */
 export class ServiceProcess {
   readonly name: string;

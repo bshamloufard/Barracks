@@ -1,10 +1,9 @@
-import { readConfiguration } from "./configuration.js";
+import { createSandboxProvider } from "@barrack/sandbox-providers";
+import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
-import {
-  type OpenThreadEventLog,
-  openThreadEventLog,
-} from "./thread-event-log/open-thread-event-log.js";
+import { type OpenStorage, openStorage } from "./storage/open-storage.js";
+import { ThreadCreator } from "./threads/thread-creator.js";
 
 async function main(): Promise<void> {
   const configurationResult = readConfiguration(process.env);
@@ -22,25 +21,61 @@ async function main(): Promise<void> {
   if (configuration.webClientDirectory !== undefined) {
     logger.info({ webClientDirectory: configuration.webClientDirectory }, "Serving the web client");
   }
+  describeSandboxes(configuration, logger);
   // The database is migrated before the server listens, so nothing is
   // accepted that could not be recorded.
-  const openLog = await openThreadEventLog(configuration.database, logger);
-  const server = await startControlPlaneServer({
-    configuration,
-    threadEventLog: openLog.threadEventLog,
+  const storage = await openStorage(configuration.database, logger);
+  const threadCreator = new ThreadCreator({
+    threadStore: storage.threadStore,
+    sandboxProvider: createSandboxProvider(configuration.sandboxProvider),
+    sandboxProviderName: configuration.sandboxProvider.kind,
+    supervisorEnvironment: configuration.supervisorEnvironment,
     logger,
   });
-  shutDownOnSignal(server, openLog, logger);
+  const server = await startControlPlaneServer({
+    configuration,
+    threadEventLog: storage.threadEventLog,
+    threadStore: storage.threadStore,
+    threadCreator,
+    logger,
+  });
+  shutDownOnSignal(server, threadCreator, storage, logger);
+}
+
+/** Says where agents will run and with what, naming credentials but never their values. */
+function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Logger): void {
+  const { sandboxProvider, supervisorEnvironment } = configuration;
+  logger.info(
+    {
+      sandboxProvider: sandboxProvider.kind,
+      controlPlaneUrlForSandboxes: supervisorEnvironment.controlPlaneUrlForSandboxes,
+      agent: supervisorEnvironment.agent,
+      forwardedModelCredentials: Object.keys(supervisorEnvironment.modelCredentials),
+    },
+    "Creating thread sandboxes",
+  );
+  if (sandboxProvider.kind === "local-process") {
+    logger.warn(
+      "The local-process sandbox provider runs every agent on this machine, as this user, with NO isolation. It is for development only.",
+    );
+  }
+  if (supervisorEnvironment.agent.harness === "pi") {
+    logger.warn(
+      "Model provider keys in this environment are forwarded to every thread's sandbox, where the agent can read them. This stands in for per-user model access until it is built.",
+    );
+  }
 }
 
 /**
  * The first SIGINT or SIGTERM closes every connection with "going away" so
- * peers know to reconnect elsewhere, then closes the event log; a second one
- * exits at once, for when a peer is slow to finish closing.
+ * peers know to reconnect elsewhere, lets sandbox creations under way finish
+ * so none is left unrecorded, then closes storage; a second signal exits at
+ * once, for when a peer or a provider is slow to finish.
  */
 function shutDownOnSignal(
   server: RunningControlPlaneServer,
-  openLog: OpenThreadEventLog,
+  threadCreator: ThreadCreator,
+  storage: OpenStorage,
   logger: Logger,
 ): void {
   let isShuttingDown = false;
@@ -53,7 +88,8 @@ function shutDownOnSignal(
     logger.info({ signal }, "Shutting down");
     server
       .close()
-      .then(() => openLog.close())
+      .then(() => threadCreator.whenSandboxCreationsSettle())
+      .then(() => storage.close())
       .then(
         () => logger.info("Shut down cleanly"),
         (error: unknown) => {

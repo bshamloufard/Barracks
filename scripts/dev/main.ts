@@ -1,33 +1,29 @@
 import path from "node:path";
-import {
-  type LocalThreadSettings,
-  prepareAgentDirectories,
-  readLocalThreadSettings,
-} from "./local-thread-settings.js";
+import { type DevSettings, prepareSandboxesDirectory, readDevSettings } from "./dev-settings.js";
 import { labelOutputLine, ServiceProcess } from "./service-process.js";
 import {
   controlPlaneHealthUrl,
   controlPlaneService,
-  supervisorService,
   webClientService,
   webClientUrl,
 } from "./services.js";
 import { waitUntilReachable } from "./wait-until-reachable.js";
 
 /**
- * `pnpm dev`: the whole system on this machine for one thread. It starts the
- * control plane, then a sandbox supervisor and the web client's dev server,
- * and prints the address to open. Ctrl-C stops all three; if any of them
- * stops on its own, the others are stopped too and this exits with an error.
+ * `pnpm dev`: the whole system on this machine. It starts the control
+ * plane, which creates a sandbox (here a plain directory and supervisor
+ * process) for each thread created from the web page, then the web
+ * client's dev server, and prints the address to open. Ctrl-C stops both;
+ * if either stops on its own, the other is stopped too and this exits with
+ * an error.
  */
 
-/** The supervisor gives Pi several seconds to finish, so it gets longer than the rest. */
-const supervisorGracePeriodInMilliseconds = 15_000;
-const gracePeriodInMilliseconds = 5_000;
+/** The control plane stops the supervisors it started, which give Pi a moment to finish. */
+const controlPlaneGracePeriodInMilliseconds = 15_000;
+const webClientGracePeriodInMilliseconds = 5_000;
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 let controlPlane: ServiceProcess | undefined;
-let supervisor: ServiceProcess | undefined;
 let webClient: ServiceProcess | undefined;
 let isStopping = false;
 
@@ -35,20 +31,22 @@ async function main(): Promise<void> {
   if (process.platform === "win32") {
     throw new Error("pnpm dev needs process groups, which Windows lacks; run it under WSL.");
   }
-  const settings = readLocalThreadSettings(process.env, repositoryRoot);
-  await prepareAgentDirectories(settings.agent);
+  const settings = readDevSettings(process.env, repositoryRoot);
+  await prepareSandboxesDirectory(settings);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => void stopEverything(0, `received ${signal}`));
   }
   report(describeAgent(settings));
+  report(
+    `Each thread's sandbox is a directory in ${settings.sandboxesDirectory} with NO isolation: the agent can do anything your user can.`,
+  );
 
   controlPlane = startService(new ServiceProcess(controlPlaneService(settings)));
   await waitUntilReachable(controlPlaneHealthUrl(settings));
-  supervisor = startService(new ServiceProcess(supervisorService(settings)));
   webClient = startService(new ServiceProcess(webClientService(settings)));
   await waitUntilReachable(webClientUrl(settings));
 
-  report(`Open ${webClientUrl(settings)}`);
+  report(`Open ${webClientUrl(settings)} and create a thread.`);
   report("Press Ctrl-C to stop.");
 }
 
@@ -62,11 +60,7 @@ function startService(service: ServiceProcess): ServiceProcess {
   return service;
 }
 
-/**
- * Stops the supervisor first, so the agent's last events still reach the
- * control plane, then the control plane and the web client together. A
- * second Ctrl-C does not wait.
- */
+/** Stops both services together. A second Ctrl-C does not wait. */
 async function stopEverything(exitCode: number, reason: string): Promise<void> {
   if (isStopping) {
     report("Stopping without waiting.");
@@ -74,11 +68,10 @@ async function stopEverything(exitCode: number, reason: string): Promise<void> {
   }
   isStopping = true;
   report(`Stopping, because ${reason}.`);
-  const supervisorExit = await supervisor?.stop(supervisorGracePeriodInMilliseconds);
-  const otherExits = await Promise.all(
-    [controlPlane, webClient].map((service) => service?.stop(gracePeriodInMilliseconds)),
-  );
-  const exits = [supervisorExit, ...otherExits];
+  const exits = await Promise.all([
+    controlPlane?.stop(controlPlaneGracePeriodInMilliseconds),
+    webClient?.stop(webClientGracePeriodInMilliseconds),
+  ]);
   const hasEveryServiceStoppedCleanly = exits.every((exit) => exit?.wasSuccessful ?? true);
   if (exitCode === 0 && !hasEveryServiceStoppedCleanly) {
     report("Not every service stopped cleanly; see its output above.");
@@ -86,12 +79,12 @@ async function stopEverything(exitCode: number, reason: string): Promise<void> {
   process.exit(hasEveryServiceStoppedCleanly ? exitCode : 1);
 }
 
-function describeAgent(settings: LocalThreadSettings): string {
+function describeAgent(settings: DevSettings): string {
   const { agent } = settings;
   if (agent.kind === "fake") {
     return "Using the fake agent. Set BARRACK_MODEL (and your model provider's key) to use Pi.";
   }
-  return `Using Pi with ${agent.model}, working in ${agent.workspaceDirectory}.`;
+  return `Using Pi with ${agent.model}.`;
 }
 
 function report(message: string): void {

@@ -5,6 +5,8 @@ import type {
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
   ReplayAnnouncement,
+  ThreadSandbox,
+  ThreadSummary,
   ToolArguments,
   ToolOutput,
 } from "@barrack/protocol";
@@ -81,34 +83,54 @@ export type ConnectionState =
   /** The page has given up reconnecting, because doing so would not help. */
   | { name: "stopped"; reason: string };
 
+/** What the control plane's record of the thread says, fetched over HTTP. */
+export type ThreadRecordState =
+  | { name: "loading" }
+  | { name: "not_found" }
+  | { name: "found"; sandbox: ThreadSandbox };
+
 export type ThreadState = {
+  record: ThreadRecordState;
   /** The sequence of the newest thread event applied, or 0 for none. Sent when reconnecting. */
   lastSeenSequence: number;
   entries: ConversationEntry[];
   /** A run has started and has not yet settled or failed. */
   isAgentWorking: boolean;
   isSupervisorConnected: boolean;
+  /**
+   * Whether this page has seen the supervisor connected since it opened.
+   * Until it has, a sandbox that exists may still be starting its supervisor.
+   */
+  hasSeenSupervisorConnected: boolean;
   connection: ConnectionState;
   /** Why the control plane refused the last thing this page sent, until the user dismisses it. */
   rejectionReason: string | undefined;
 };
 
 export type ThreadAction =
+  | { type: "thread_record_loaded"; thread: ThreadSummary }
+  | { type: "thread_record_missing" }
   | { type: "message_received"; message: ControlPlaneToClientMessage }
   | { type: "connection_changed"; connection: ConnectionState }
   | { type: "rejection_dismissed" };
 
 export const initialThreadState: ThreadState = {
+  record: { name: "loading" },
   lastSeenSequence: 0,
   entries: [],
   isAgentWorking: false,
   isSupervisorConnected: false,
+  hasSeenSupervisorConnected: false,
   connection: { name: "connecting" },
   rejectionReason: undefined,
 };
 
 export function reduceThreadState(state: ThreadState, action: ThreadAction): ThreadState {
   switch (action.type) {
+    case "thread_record_loaded":
+      return { ...state, record: { name: "found", sandbox: action.thread.sandbox } };
+    case "thread_record_missing":
+      return { ...state, record: { name: "not_found" } };
     case "message_received":
       return applyControlPlaneMessage(state, action.message);
     case "connection_changed":
@@ -130,7 +152,12 @@ export function applyControlPlaneMessage(
     case "stream_fragment":
       return applyAssistantTextFragment(state, message.fragment);
     case "supervisor_connection_status":
-      return { ...state, isSupervisorConnected: message.isSupervisorConnected };
+      return {
+        ...state,
+        isSupervisorConnected: message.isSupervisorConnected,
+        hasSeenSupervisorConnected:
+          state.hasSeenSupervisorConnected || message.isSupervisorConnected,
+      };
     case "client_message_rejected":
       return { ...state, rejectionReason: message.reason };
   }

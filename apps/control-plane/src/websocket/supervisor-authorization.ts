@@ -1,4 +1,5 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { supervisorTokenMatches } from "../threads/supervisor-token.js";
+import type { ThreadStore } from "../threads/thread-store.js";
 
 export type SupervisorCredentials = {
   threadId: string;
@@ -6,25 +7,29 @@ export type SupervisorCredentials = {
   authorizationHeader: string | undefined;
 };
 
-/** Decides whether a supervisor may connect for the thread it names. */
-export type SupervisorAuthorization = (credentials: SupervisorCredentials) => boolean;
+/**
+ * Decides whether a supervisor may connect for the thread it names. Rejects
+ * when the decision cannot be made (the thread store is unreachable), which
+ * is not the same as refusing.
+ */
+export type SupervisorAuthorization = (credentials: SupervisorCredentials) => Promise<boolean>;
 
 /**
- * Milestone 1 has one token shared by every supervisor, so the thread is not
- * consulted yet. Per-thread tokens, which stop one sandbox from impersonating
- * another, replace this when real sandboxes arrive; callers already pass the
- * thread for that reason.
+ * A supervisor may connect only with the token minted for the thread it
+ * names, so a sandbox holding one thread's token cannot pass itself off as
+ * another thread's supervisor. A thread that does not exist is refused the
+ * same way as a wrong token, so the answer does not say which it was.
  */
-export function authorizeWithSharedToken(sharedToken: string): SupervisorAuthorization {
-  const expectedTokenDigest = digestOf(sharedToken);
-  return ({ authorizationHeader }) => {
+export function authorizeWithThreadTokens(threadStore: ThreadStore): SupervisorAuthorization {
+  return async ({ threadId, authorizationHeader }) => {
     const presentedToken = bearerTokenFrom(authorizationHeader);
     if (presentedToken === undefined) {
       return false;
     }
-    // Comparing fixed-length digests in constant time reveals neither the
-    // token's length nor how much of a guess was right.
-    return timingSafeEqual(digestOf(presentedToken), expectedTokenDigest);
+    const thread = await threadStore.find(threadId);
+    return (
+      thread !== undefined && supervisorTokenMatches(presentedToken, thread.supervisorTokenDigest)
+    );
   };
 }
 
@@ -32,8 +37,4 @@ export function authorizeWithSharedToken(sharedToken: string): SupervisorAuthori
 function bearerTokenFrom(authorizationHeader: string | undefined): string | undefined {
   const match = /^Bearer +(\S+)\s*$/i.exec(authorizationHeader ?? "");
   return match?.[1];
-}
-
-function digestOf(token: string): Buffer {
-  return createHash("sha256").update(token).digest();
 }
