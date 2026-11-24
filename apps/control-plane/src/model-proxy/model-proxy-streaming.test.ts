@@ -27,7 +27,7 @@ import { redactedSecretMarker } from "./secret-redaction.js";
  * agent's upload, echo the key it was sent, or redirect elsewhere.
  */
 
-const ownersKey = "sk-ant-owner-real-key-0000000001";
+const ownersKey = "fake-anthropic-key-of-the-owner-0001";
 
 type UpstreamHandler = (request: IncomingMessage, response: ServerResponse) => void;
 

@@ -19,7 +19,7 @@ import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
 /** The proxy's parts that decide what crosses it, each on its own. */
 
-const secret = "sk-real-key-0123456789";
+const secret = "fake-key-of-the-owner-0123456789";
 
 describe("where a relayed request may go", () => {
   it("goes only to the provider's own address, at the path its format uses", () => {

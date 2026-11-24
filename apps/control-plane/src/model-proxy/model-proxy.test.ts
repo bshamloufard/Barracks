@@ -47,11 +47,11 @@ const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@exampl
 const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
 
 const keys = {
-  adasAnthropic: "sk-ant-ada-real-key-000000000001",
-  adasOpenAi: "sk-openai-ada-real-key-0000000002",
-  adasGroq: "gsk-ada-real-key-00000000000003",
-  gracesAnthropic: "sk-ant-grace-real-key-0000000004",
-  adasReplacement: "sk-ant-ada-replaced-key-00000005",
+  adasAnthropic: "fake-anthropic-key-of-ada-0001",
+  adasOpenAi: "fake-openai-key-of-ada-0002",
+  adasGroq: "fake-groq-key-of-ada-0003",
+  gracesAnthropic: "fake-anthropic-key-of-grace-0004",
+  adasReplacement: "fake-anthropic-key-of-ada-replaced-0005",
 };
 
 let modelServer: MockModelServer;

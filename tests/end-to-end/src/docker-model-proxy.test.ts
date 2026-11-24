@@ -58,11 +58,11 @@ const unavailableReason = describeWhyDockerTestCannotRun();
 const piAgentDirectory = "/var/lib/barrack/state/pi/agent";
 
 const keys = {
-  firstUsersAnthropic: "sk-ant-first-user-real-key-000000001",
-  firstUsersReplacement: "sk-ant-first-user-replaced-key-0000002",
-  firstUsersOpenAi: "sk-first-user-openai-real-key-000003",
+  firstUsersAnthropic: "fake-anthropic-key-of-first-user-0001",
+  firstUsersReplacement: "fake-anthropic-key-of-first-user-replaced-0002",
+  firstUsersOpenAi: "fake-openai-key-of-first-user-0003",
   firstUsersMock: "first-user-mock-key-in-sandbox-00004",
-  secondUsersAnthropic: "sk-ant-second-user-real-key-0000005",
+  secondUsersAnthropic: "fake-anthropic-key-of-second-user-0005",
 };
 
 const anthropicModel = "anthropic/claude-haiku-4-5";
