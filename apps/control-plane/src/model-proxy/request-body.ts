@@ -56,13 +56,17 @@ export function inspectRequestBody(format: ProviderApiFormat, received: Buffer):
       "its fallback models are not a list of models",
     );
   }
+  const isStreamed = parsed.stream === true;
+  if (format === "openai_chat_completions" && isStreamed) {
+    askForStreamedUsage(parsed);
+  }
   return {
     kind: "relayable",
     body: {
       bytes: Buffer.from(JSON.stringify(parsed)),
       model,
       fallbackModels,
-      isStreamed: parsed.stream === true,
+      isStreamed,
       maximumOutputTokens: readMaximumOutputTokens(format, parsed),
     },
   };
@@ -95,6 +99,21 @@ function parseJsonObject(received: Buffer): JsonObject | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A streamed Chat Completions answer reports its usage only when asked
+ * (`stream_options.include_usage`); without it the proxy could count only
+ * the visible text, missing hidden reasoning. The pinned agent asks for it
+ * of every relayed provider already (pi-ai's `openai-completions.js`, whose
+ * detection sets `supportsUsageInStreaming` for all of them), so this
+ * changes only a request something else in the sandbox wrote.
+ * https://platform.openai.com/docs/api-reference/chat/create#chat-create-stream_options
+ */
+function askForStreamedUsage(body: JsonObject): void {
+  const options = body.stream_options;
+  const isObject = typeof options === "object" && options !== null && !Array.isArray(options);
+  body.stream_options = { ...(isObject ? options : {}), include_usage: true };
 }
 
 /**

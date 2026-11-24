@@ -14,6 +14,7 @@ import {
   readPresentedToken,
 } from "./proxy-headers.js";
 import { findRelayedRoute } from "./relayed-routes.js";
+import { inspectRequestBody } from "./request-body.js";
 import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
 /** The proxy's parts that decide what crosses it, each on its own. */
@@ -63,6 +64,41 @@ describe("where a relayed request may go", () => {
     expect(lookup.kind === "found" && lookup.route.upstreamUrl.href).toBe(
       "http://127.0.0.1:4010/v1/responses",
     );
+  });
+});
+
+describe("what the proxy changes in a request's body", () => {
+  function relayedJson(format: Parameters<typeof inspectRequestBody>[0], body: object): unknown {
+    const inspection = inspectRequestBody(format, Buffer.from(JSON.stringify(body)));
+    return inspection.kind === "relayable"
+      ? JSON.parse(inspection.body.bytes.toString("utf8"))
+      : inspection.kind;
+  }
+
+  it("asks for a streamed Chat Completions answer's usage, whatever the request said", () => {
+    const streamed = { model: "m", stream: true, messages: [] };
+
+    expect(relayedJson("openai_chat_completions", streamed)).toEqual({
+      ...streamed,
+      stream_options: { include_usage: true },
+    });
+    expect(
+      relayedJson("openai_chat_completions", {
+        ...streamed,
+        stream_options: { include_usage: false, other: 1 },
+      }),
+    ).toEqual({ ...streamed, stream_options: { include_usage: true, other: 1 } });
+    expect(
+      relayedJson("openai_chat_completions", { ...streamed, stream_options: "nonsense" }),
+    ).toEqual({ ...streamed, stream_options: { include_usage: true } });
+  });
+
+  it("changes nothing else, and nothing in other formats or in an answer not streamed", () => {
+    const notStreamed = { model: "m", messages: [], max_tokens: 5 };
+    const anthropic = { model: "m", stream: true, max_tokens: 5, messages: [] };
+
+    expect(relayedJson("openai_chat_completions", notStreamed)).toEqual(notStreamed);
+    expect(relayedJson("anthropic_messages", anthropic)).toEqual(anthropic);
   });
 });
 
