@@ -4,6 +4,13 @@ import type { AgentEvent, DeliverUserMessage, StreamFragment } from "@barrack/pr
  * The boundary around "an agent the supervisor can run". Everything a
  * harness reports is already in Barrack's vocabulary, so nothing outside a
  * harness's own folder knows which agent is behind it.
+ *
+ * Every `agent_run_started` a harness reports is followed by exactly one
+ * `agent_run_settled` or `agent_failed`, whatever happens, because a thread's
+ * status depends on runs ending:
+ * - a run in progress when the harness is stopped settles as interrupted;
+ * - an agent process that ends unexpectedly is reported as `agent_failed`,
+ *   which ends the run in progress, if any.
  */
 export interface AgentHarness {
   /**
@@ -26,7 +33,11 @@ export interface AgentHarness {
    */
   interrupt(): Promise<void>;
 
-  /** Shuts the agent down for good. Resolves once its process has ended. */
+  /**
+   * Shuts the agent down for good, settling a run in progress as
+   * interrupted. Resolves once its process has ended and every event has
+   * been reported; user messages delivered after this are ignored.
+   */
   stop(): Promise<void>;
 }
 

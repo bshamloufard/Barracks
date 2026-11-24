@@ -1,7 +1,7 @@
 import { agentEventSchema, streamFragmentSchema } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import { RecordingObserver } from "../test-support/recording-observer.js";
-import { waitUntil } from "../test-support/wait-until.js";
+import { pause, waitUntil } from "../test-support/wait-until.js";
 import { FakeAgentHarness, fakeAgentTriggers } from "./fake-agent-harness.js";
 
 function createHarness(stepDelayInMilliseconds = 1) {
@@ -110,6 +110,34 @@ describe("FakeAgentHarness", () => {
     ]);
     expect(observer.events[1]).toMatchObject({ endReason: "interrupted" });
     expect(observer.events[2]).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+  });
+
+  it("settles the run as interrupted when stopped in the middle of it", async () => {
+    const { observer, harness } = createHarness(20);
+
+    harness.deliverUserMessage({ messageId: "user-1", text: "a long answer please" });
+    await waitUntil(() => observer.outputTypes.includes("fragment"), "the first fragment arrives");
+    await harness.stop();
+
+    expect(observer.eventTypes).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+    ]);
+    expect(observer.events.at(-1)).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+    expect(observer.processEndings).toEqual([
+      { wasExpected: true, description: expect.any(String) },
+    ]);
+  });
+
+  it("ignores user messages once stopped", async () => {
+    const { observer, harness } = createHarness();
+
+    await harness.stop();
+    harness.deliverUserMessage({ messageId: "user-1", text: "anyone there?" });
+    await pause(20);
+
+    expect(observer.outputs).toEqual([]);
   });
 
   it("does nothing when interrupted while idle", async () => {

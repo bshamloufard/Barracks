@@ -17,6 +17,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * - containing `REJECT_KEY`: an invalid key error, which Pi does not retry;
  * - containing `OVERFLOW_ONCE`: a context overflow error the first time, so
  *   Pi compacts the conversation (when it has enough to compact) and retries;
+ * - containing `REPLY_SLOWLY`: a long reply, one word every 100 ms, so a test
+ *   can act while the agent is busy;
  * - anything else: "Hello there.".
  * A tool result gets the reply "Done.".
  */
@@ -27,7 +29,11 @@ export const mockModelTriggers = {
   persistentFailure: "FAIL_ALWAYS",
   invalidKey: "REJECT_KEY",
   contextOverflow: "OVERFLOW_ONCE",
+  slowReply: "REPLY_SLOWLY",
 } as const;
+
+const slowReplyWordCount = 50;
+const slowReplyWordDelayInMilliseconds = 100;
 
 type MockFailure = { statusCode: number; message: string };
 
@@ -49,6 +55,7 @@ export type MockModelServer = {
 };
 
 type ChunkWriter = (delta: object, finishReason: string | null) => void;
+type ReplyWriter = { writeChunk: ChunkWriter; hasClientLeft: () => boolean };
 
 export async function startMockModelServer(): Promise<MockModelServer> {
   const receivedConversations: ChatMessage[][] = [];
@@ -95,7 +102,10 @@ async function answerRequest(
     };
     response.write(`data: ${JSON.stringify(chunk)}\n\n`);
   };
-  writeReply(body.messages.at(-1), writeChunk);
+  await writeReply(body.messages.at(-1), {
+    writeChunk,
+    hasClientLeft: () => response.destroyed,
+  });
   response.end("data: [DONE]\n\n");
 }
 
@@ -129,20 +139,38 @@ function describeUserMessage(message: ChatMessage | undefined): string {
   return message?.role === "user" ? JSON.stringify(message.content) : "";
 }
 
-function writeReply(lastMessage: ChatMessage | undefined, writeChunk: ChunkWriter): void {
+async function writeReply(
+  lastMessage: ChatMessage | undefined,
+  replyWriter: ReplyWriter,
+): Promise<void> {
   const lastUserText = describeUserMessage(lastMessage);
+  const { writeChunk } = replyWriter;
   if (lastUserText.includes(mockModelTriggers.toolExecution)) {
     writeBashCall(writeChunk, "echo hi");
   } else if (lastUserText.includes(mockModelTriggers.crash)) {
     writeBashCall(writeChunk, "kill -9 $PPID");
+  } else if (lastUserText.includes(mockModelTriggers.slowReply)) {
+    const words = Array.from({ length: slowReplyWordCount }, (_, index) => `word${index} `);
+    await writeTextReply(replyWriter, words, slowReplyWordDelayInMilliseconds);
   } else {
-    writeTextReply(writeChunk, lastMessage?.role === "tool" ? ["Done", "."] : ["Hello", " there."]);
+    const words = lastMessage?.role === "tool" ? ["Done", "."] : ["Hello", " there."];
+    await writeTextReply(replyWriter, words, 0);
   }
 }
 
-function writeTextReply(writeChunk: ChunkWriter, words: string[]): void {
+async function writeTextReply(
+  { writeChunk, hasClientLeft }: ReplyWriter,
+  words: string[],
+  wordDelayInMilliseconds: number,
+): Promise<void> {
   writeChunk({ role: "assistant", content: "" }, null);
   for (const word of words) {
+    if (wordDelayInMilliseconds > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wordDelayInMilliseconds));
+    }
+    if (hasClientLeft()) {
+      return;
+    }
     writeChunk({ content: word }, null);
   }
   writeChunk({}, "stop");

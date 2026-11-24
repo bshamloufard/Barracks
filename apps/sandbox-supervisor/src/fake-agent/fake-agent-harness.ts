@@ -67,6 +67,10 @@ export class FakeAgentHarness implements AgentHarness {
     await this.#currentRun?.finished;
   }
 
+  /**
+   * Refuses new messages first, then interrupts, so a run in progress still
+   * reports that it settled before the agent is gone.
+   */
   async stop(): Promise<void> {
     this.#isStopped = true;
     await this.interrupt();
@@ -191,9 +195,6 @@ export class FakeAgentHarness implements AgentHarness {
   }
 
   #emitTextFragment(messageId: string, appendedText: string): void {
-    if (this.#isStopped) {
-      return;
-    }
     this.#observer.onStreamFragment({
       type: "assistant_text_fragment",
       messageId,
@@ -204,9 +205,6 @@ export class FakeAgentHarness implements AgentHarness {
   }
 
   #emitEvent(event: AgentEvent): void {
-    if (this.#isStopped) {
-      return;
-    }
     this.#observer.onAgentEvent(event);
   }
 

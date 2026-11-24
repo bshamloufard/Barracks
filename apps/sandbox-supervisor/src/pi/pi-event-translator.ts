@@ -96,10 +96,25 @@ export function translatePiEvent(
 }
 
 /**
- * Records a held errored message now, for when no more events will come
- * because Pi's process has ended.
+ * Pi's process has ended, so nothing more will come from it: a held error
+ * is recorded, and a run still open is settled as interrupted when the
+ * supervisor asked Pi to stop. Pi writes no `agent_settled` when its input
+ * closes mid-run, and none at all when it is killed. After an unexpected
+ * exit the caller reports `agent_failed`, which ends the run instead.
  */
-export function releaseHeldErroredMessage(state: TranslationState): Translation {
+export function translatePiExit(state: TranslationState, wasRequested: boolean): Translation {
+  const released = { ...releaseHeldErroredMessage(state), state: initialTranslationState };
+  if (!(wasRequested && state.isRunActive)) {
+    return released;
+  }
+  const runSettled = emit(initialTranslationState, {
+    type: "agent_run_settled",
+    wasInterrupted: true,
+  });
+  return { ...released, messages: [...released.messages, ...runSettled.messages] };
+}
+
+function releaseHeldErroredMessage(state: TranslationState): Translation {
   const held = state.heldErroredMessage;
   if (held === undefined) {
     return nothing(state);

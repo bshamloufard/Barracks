@@ -6,9 +6,9 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   initialTranslationState,
-  releaseHeldErroredMessage,
   type TranslationState,
   translatePiEvent,
+  translatePiExit,
 } from "./pi-event-translator.js";
 import { type PiEvent, parsePiRecord } from "./pi-records.js";
 
@@ -317,7 +317,7 @@ describe("translatePiEvent", () => {
     ]);
   });
 
-  it("gives up a held error when Pi's process ends", () => {
+  it("records a held error when Pi's process ends", () => {
     const { state } = translateAll([
       { type: "agent_start" },
       {
@@ -326,12 +326,33 @@ describe("translatePiEvent", () => {
       },
     ]);
 
-    const released = releaseHeldErroredMessage(state);
+    const translation = translatePiExit(state, false);
 
-    expect(agentEvents(released.messages)).toEqual([
+    expect(agentEvents(translation.messages)).toEqual([
       expect.objectContaining({ endReason: "errored", errorMessage: "503" }),
     ]);
-    expect(released.state.heldErroredMessage).toBeUndefined();
+    expect(translation.state).toEqual(initialTranslationState);
+  });
+
+  it("settles an open run as interrupted when Pi stops because it was asked to", () => {
+    const { state } = translateAll([{ type: "agent_start" }]);
+
+    const translation = translatePiExit(state, true);
+
+    expect(agentEvents(translation.messages)).toEqual([
+      { type: "agent_run_settled", wasInterrupted: true },
+    ]);
+    expect(translation.state).toEqual(initialTranslationState);
+  });
+
+  it("leaves ending the run to agent_failed when Pi exits unexpectedly", () => {
+    const { state } = translateAll([{ type: "agent_start" }]);
+
+    expect(translatePiExit(state, false).messages).toEqual([]);
+  });
+
+  it("reports nothing when Pi stops while idle", () => {
+    expect(translatePiExit(initialTranslationState, true).messages).toEqual([]);
   });
 
   it("produces only messages that satisfy the protocol", () => {

@@ -9,10 +9,10 @@ import type { Logger } from "../logger.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
   initialTranslationState,
-  releaseHeldErroredMessage,
   type Translation,
   type TranslationState,
   translatePiEvent,
+  translatePiExit,
 } from "./pi-event-translator.js";
 import { type PiExit, PiProcess } from "./pi-process.js";
 import { type PiEvent, type PiExtensionUiRequest, parsePiState } from "./pi-records.js";
@@ -330,8 +330,7 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   #handlePiExit(exit: PiExit): void {
-    this.#applyTranslation(releaseHeldErroredMessage(this.#translationState));
-    this.#translationState = initialTranslationState;
+    this.#applyTranslation(translatePiExit(this.#translationState, exit.wasRequested));
     if (exit.wasRequested) {
       this.#logger.info({ description: exit.description }, "Pi stopped");
       this.#observer.onAgentProcessEnded({ wasExpected: true, description: exit.description });

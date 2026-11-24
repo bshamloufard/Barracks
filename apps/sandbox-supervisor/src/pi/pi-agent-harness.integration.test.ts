@@ -155,15 +155,45 @@ describe("PiAgentHarness with the real Pi", () => {
     harness.deliverUserMessage({ messageId: "user-2", text: "Are you back?" });
     await waitUntil(hasEnded(2), "the next run settles", piTimeoutInMilliseconds);
 
-    expect(observer.eventTypes).toContain("agent_failed");
-    expect(observer.processEndings[0]).toMatchObject({ wasExpected: false });
-    expect(observer.eventTypes.slice(-3)).toEqual([
+    // The crash ends the first run with agent_failed alone, and the second
+    // run is a new one.
+    expect(observer.eventTypes).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "tool_execution_started",
+      "agent_failed",
       "agent_run_started",
       "assistant_message",
       "agent_run_settled",
     ]);
+    expect(observer.processEndings[0]).toMatchObject({ wasExpected: false });
     const lastConversation = JSON.stringify(modelServer.receivedConversations.at(-1));
     expect(lastConversation).toContain(mockModelTriggers.crash);
+  });
+
+  it("settles the run as interrupted when stopped in the middle of it", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.slowReply}`,
+    });
+    await waitUntil(
+      () => observer.outputTypes.includes("fragment"),
+      "the reply starts",
+      piTimeoutInMilliseconds,
+    );
+
+    await harness.stop();
+
+    expect(observer.eventTypes[0]).toBe("agent_run_started");
+    expect(observer.events.at(-1)).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+    expect(observer.countEvents("agent_run_settled")).toBe(1);
+    expect(observer.countEvents("agent_failed")).toBe(0);
+    expect(observer.processEndings).toEqual([
+      { wasExpected: true, description: expect.any(String) },
+    ]);
   });
 
   it("records no error when a failed model request succeeds on Pi's retry", {
