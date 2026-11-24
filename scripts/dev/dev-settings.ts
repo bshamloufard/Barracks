@@ -1,79 +1,46 @@
-import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 /**
- * What `pnpm dev` runs: one thread, served by a control plane and a sandbox
- * supervisor on this machine, viewed through the web client's dev server.
+ * What `pnpm dev` runs: a control plane that creates each thread's sandbox
+ * as a directory and a supervisor process on this machine (the
+ * local-process provider, which isolates nothing), viewed through the web
+ * client's dev server.
  */
-export type LocalThreadSettings = {
+export type DevSettings = {
   repositoryRoot: string;
-  /** The thread the web page shows when it is opened without `?thread=`. */
-  threadId: string;
-  /** Freshly generated for every run and shared by the control plane and the supervisor only. */
-  supervisorToken: string;
+  /** Where each thread's sandbox gets a directory with its workspace and state. */
+  sandboxesDirectory: string;
   controlPlanePort: number;
   webClientPort: number;
   agent: AgentChoice;
 };
 
-export type AgentChoice =
-  | { kind: "fake" }
-  | {
-      kind: "pi";
-      /** In Pi's `provider/model` form. */
-      model: string;
-      workspaceDirectory: string;
-      stateDirectory: string;
-      /** True when the workspace is the default one that `pnpm dev` looks after. */
-      isDefaultWorkspace: boolean;
-    };
+/** The model is in Pi's `provider/model` form. */
+export type AgentChoice = { kind: "fake" } | { kind: "pi"; model: string };
 
 const defaultControlPlanePort = 8787;
 /** Vite's default port, which the control plane allows as a client origin by default. */
 const webClientPort = 5173;
-/** Git-ignored, so nothing the agent does there can end up in Barrack's own history. */
-const localDirectoryName = ".barrack-dev";
 
-/**
- * The fake agent runs unless the developer names a model, which opts in to
- * the real Pi agent. The developer's own variables can move Pi's workspace
- * and state elsewhere; otherwise both live under `.barrack-dev/`.
- */
-export function readLocalThreadSettings(
+/** The fake agent runs unless the developer names a model, which opts in to the real Pi agent. */
+export function readDevSettings(
   environment: NodeJS.ProcessEnv,
   repositoryRoot: string,
-): LocalThreadSettings {
+): DevSettings {
+  const { BARRACK_MODEL: model } = environment;
   return {
     repositoryRoot,
-    threadId: "local",
-    supervisorToken: randomBytes(32).toString("hex"),
+    // Git-ignored, so nothing an agent does there can end up in Barrack's own history.
+    sandboxesDirectory: path.join(repositoryRoot, ".barrack-dev", "sandboxes"),
     controlPlanePort: readControlPlanePort(environment),
     webClientPort,
-    agent: chooseAgent(environment, repositoryRoot),
+    agent: model === undefined || model === "" ? { kind: "fake" } : { kind: "pi", model },
   };
 }
 
-function chooseAgent(environment: NodeJS.ProcessEnv, repositoryRoot: string): AgentChoice {
-  const { BARRACK_MODEL: model } = environment;
-  if (model === undefined || model === "") {
-    return { kind: "fake" };
-  }
-  const localDirectory = path.join(repositoryRoot, localDirectoryName);
-  const {
-    BARRACK_WORKSPACE_DIRECTORY: workspaceDirectory,
-    BARRACK_STATE_DIRECTORY: stateDirectory,
-  } = environment;
-  return {
-    kind: "pi",
-    model,
-    workspaceDirectory: path.resolve(workspaceDirectory ?? path.join(localDirectory, "workspace")),
-    stateDirectory: path.resolve(stateDirectory ?? path.join(localDirectory, "state")),
-    isDefaultWorkspace: workspaceDirectory === undefined,
-  };
+export async function prepareSandboxesDirectory(settings: DevSettings): Promise<void> {
+  await mkdir(settings.sandboxesDirectory, { recursive: true });
 }
 
 function readControlPlanePort(environment: NodeJS.ProcessEnv): number {
@@ -86,22 +53,4 @@ function readControlPlanePort(environment: NodeJS.ProcessEnv): number {
     throw new Error(`BARRACK_CONTROL_PLANE_PORT must be a port number, got "${portText}".`);
   }
   return port;
-}
-
-/**
- * Creates Pi's directories. The default workspace sits inside this
- * repository, so it is made a Git repository of its own: otherwise Git
- * commands the agent runs there would act on Barrack's repository instead.
- */
-export async function prepareAgentDirectories(agent: AgentChoice): Promise<void> {
-  if (agent.kind === "fake") {
-    return;
-  }
-  await mkdir(agent.workspaceDirectory, { recursive: true });
-  await mkdir(agent.stateDirectory, { recursive: true });
-  const needsOwnRepository =
-    agent.isDefaultWorkspace && !existsSync(path.join(agent.workspaceDirectory, ".git"));
-  if (needsOwnRepository) {
-    await promisify(execFile)("git", ["init", "--quiet"], { cwd: agent.workspaceDirectory });
-  }
 }
