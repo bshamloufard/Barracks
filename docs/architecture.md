@@ -130,7 +130,7 @@ The messages are defined once, as zod schemas in [`packages/protocol`](../packag
 
 | Connection                 | Direction                  | Messages                                                                                                                                 |
 | -------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Supervisor ⇄ control plane | Supervisor → control plane | Hello; a numbered agent or workspace event; a stream fragment; user messages delivered; a credential request; a bundle that failed      |
+| Supervisor ⇄ control plane | Supervisor → control plane | Hello; a numbered agent or workspace event; a stream fragment; user messages delivered; a credential request; a bundle that failed       |
 |                            | Control plane → supervisor | Welcome; prepare the workspace; agent events recorded; deliver a user message; interrupt the agent; a credential; make a bundle          |
 | Client ⇄ control plane     | Client → control plane     | Authenticate (first, and again with each refreshed token); send a user message; interrupt the agent                                      |
 |                            | Control plane → client     | Replay announcement; a recorded thread event; a stream fragment; supervisor connection status; user message delivery status; a rejection |
