@@ -105,6 +105,7 @@ describe("the supervisor endpoint", () => {
     ).toEqual({ type: "interrupt_agent" });
     expect(olderSupervisor.inbox.messages.map((message) => message.type)).toEqual([
       "supervisor_welcome",
+      "prepare_workspace",
     ]);
   });
 

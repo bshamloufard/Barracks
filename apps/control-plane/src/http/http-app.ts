@@ -2,11 +2,14 @@ import {
   type ClientAuthenticationConfiguration,
   type ClientConfiguration,
   clientConfigurationPath,
+  githubCallbackPagePath,
 } from "@barrack/protocol";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Authenticator } from "../authentication/authenticator.js";
 import { respondWithApiError } from "./api-error.js";
+import { addGithubRoutes, type GithubRoutesDependencies } from "./github-routes.js";
+import { addPublicationRoutes, type PublicationRoutesDependencies } from "./publication-routes.js";
 import { refuseDisallowedOrigins, refuseHostsOtherThanLoopback } from "./request-guards.js";
 import { requireSignedInUser, type SignedInEnvironment } from "./require-signed-in-user.js";
 import { addThreadsRoutes, type ThreadsRoutesDependencies } from "./threads-routes.js";
@@ -17,6 +20,8 @@ export type HttpAppOptions = {
   clientAuthentication: ClientAuthenticationConfiguration;
   allowedClientOrigins: ReadonlySet<string>;
   threads: ThreadsRoutesDependencies;
+  github: GithubRoutesDependencies;
+  publication: PublicationRoutesDependencies;
   /** Where the built web client is; when set, it is served from `/`. */
   webClientDirectory: string | undefined;
   /** Answer only requests addressed to loopback, as development mode must. */
@@ -31,7 +36,9 @@ export type HttpAppOptions = {
 export const publicApiPaths: ReadonlySet<string> = new Set([clientConfigurationPath]);
 
 /**
- * The plain HTTP routes. WebSocket upgrades never reach this app; they are
+ * The plain HTTP routes. Outside `/api`, besides `/health` and the web
+ * client's files, there is one more: where a supervisor uploads a
+ * publication bundle, authenticated by its thread's token instead. WebSocket upgrades never reach this app; they are
  * handled on the server's `upgrade` event (see `websocket/route-upgrade.ts`).
  *
  * The order matters: the loopback check, when on, comes before every route,
@@ -53,10 +60,18 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
   };
   app.get(clientConfigurationPath, (context) => context.json(clientConfiguration));
   addThreadsRoutes(app, options.threads);
+  addGithubRoutes(app, options.github);
+  addPublicationRoutes(app, options.publication);
   app.all("/api/*", (context) =>
     respondWithApiError(context, 404, "not_found", "There is no such API route."),
   );
   if (options.webClientDirectory !== undefined) {
+    // GitHub sends users back to this page of the web client, which has no
+    // file of its own: the client reads the address and finishes the link.
+    app.get(
+      githubCallbackPagePath,
+      serveStatic({ root: options.webClientDirectory, path: "index.html" }),
+    );
     app.use("/*", serveStatic({ root: options.webClientDirectory }));
   }
   return app;

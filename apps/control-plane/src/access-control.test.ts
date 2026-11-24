@@ -10,6 +10,7 @@ import {
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { PostgresThreadRepositoryStore } from "./repositories/postgres-thread-repository-store.js";
 import { agentRunStarted, toolExecutionStarted } from "./test-support/example-agent-events.js";
 import {
   browserHeaders,
@@ -196,6 +197,7 @@ describe("each user's threads", () => {
       expect(adaClient.threadEvents).toEqual([]);
       expect(supervisor.inbox.messages).toEqual([
         { type: "supervisor_welcome", lastRecordedEventNumber: 0 },
+        { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
       ]);
     },
   );
@@ -434,6 +436,7 @@ describeWithTestDatabase("a user's first requests, stored in Postgres", () => {
     await start({
       userStore: new PostgresUserStore(pool, schema),
       threadStore: new PostgresThreadStore(pool, schema),
+      threadRepositoryStore: new PostgresThreadRepositoryStore(pool, schema),
     });
     const token = await signIn(ada);
 

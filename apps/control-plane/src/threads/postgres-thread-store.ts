@@ -1,4 +1,5 @@
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
+import { insertThreadRepository } from "../repositories/postgres-thread-repository-store.js";
 import { databaseSchema } from "../thread-event-log/postgres-thread-event-log.js";
 import {
   type AdmissionOutcome,
@@ -54,11 +55,13 @@ const threadColumns = `thread_id, owner_user_id, created_at, sandbox_provider,
  */
 export class PostgresThreadStore implements ThreadStore {
   readonly #pool: Pool;
+  readonly #schema: string;
   readonly #table: string;
   readonly #admissionLockName: string;
 
   constructor(pool: Pool, schema: string = databaseSchema) {
     this.#pool = pool;
+    this.#schema = schema;
     this.#table = `${escapeIdentifier(schema)}.threads`;
     this.#admissionLockName = `${schema}.sandbox_admission`;
   }
@@ -89,6 +92,9 @@ export class PostgresThreadStore implements ThreadStore {
           options.leaseExpiresAt,
         ],
       );
+      if (thread.repository !== undefined) {
+        await insertThreadRepository(client, this.#schema, thread.threadId, thread.repository);
+      }
       return { kind: "changed", thread: toThreadRecord(requireRow(result.rows[0])) };
     });
   }

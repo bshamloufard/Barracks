@@ -7,7 +7,12 @@ import {
 } from "../database/database-keep-alive.js";
 import { createDatabasePool } from "../database/database-pool.js";
 import { migrateOnceDatabaseIsReachable } from "../database/prepare-database.js";
+import type { GithubConnectionStore } from "../github/github-connection-store.js";
+import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
+import { PostgresGithubConnectionStore } from "../github/postgres-github-connection-store.js";
 import type { Logger } from "../logger.js";
+import { PostgresThreadRepositoryStore } from "../repositories/postgres-thread-repository-store.js";
+import type { ThreadRepositoryStore } from "../repositories/thread-repository-store.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import {
   databaseSchema,
@@ -26,6 +31,9 @@ export type OpenStorage = {
   threadEventLog: ThreadEventLog;
   threadStore: ThreadStore;
   userStore: UserStore;
+  /** The repository each thread started from; written with the thread by `threadStore`. */
+  threadRepositoryStore: ThreadRepositoryStore;
+  githubConnectionStore: GithubConnectionStore;
   /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
@@ -54,10 +62,13 @@ export async function openStorage(
     logger.warn(
       "BARRACK_DATABASE_URL is not set, so threads and their history are kept in memory and LOST whenever the control plane stops. That suits local development only; never deploy without a database.",
     );
+    const threadStore = new InMemoryThreadStore();
     return {
       threadEventLog: new InMemoryThreadEventLog(),
-      threadStore: new InMemoryThreadStore(),
+      threadStore,
       userStore: new InMemoryUserStore(),
+      threadRepositoryStore: threadStore.repositories,
+      githubConnectionStore: new InMemoryGithubConnectionStore(),
       close: async () => undefined,
     };
   }
@@ -84,6 +95,8 @@ export async function openStorage(
     threadEventLog: new PostgresThreadEventLog(pool),
     threadStore: new PostgresThreadStore(pool),
     userStore: new PostgresUserStore(pool),
+    threadRepositoryStore: new PostgresThreadRepositoryStore(pool),
+    githubConnectionStore: new PostgresGithubConnectionStore(pool),
     close: async () => {
       await keepAlive?.stop();
       await pool.end();

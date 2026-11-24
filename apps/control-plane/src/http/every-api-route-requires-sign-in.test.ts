@@ -7,15 +7,20 @@ import {
   DevelopmentSingleUserVerifier,
   developmentAccessToken,
 } from "../authentication/development-single-user.js";
+import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
+import { assembleRepositoryServices } from "../repositories/assemble-repository-services.js";
 import { assembleThreadServices } from "../sandbox-lifecycle/assemble-thread-services.js";
 import {
+  testGithubSettings,
   testLifecycleSettings,
   testSupervisorEnvironment,
 } from "../test-support/test-control-plane.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
+import { authorizeWithThreadTokens } from "../websocket/supervisor-authorization.js";
 import { createHttpApp, publicApiPaths } from "./http-app.js";
+import { publicationBundleUploadRoute } from "./publication-routes.js";
 
 /**
  * Guards against a route added later answering without a token: every
@@ -28,7 +33,14 @@ const logger = pino({ level: "silent" });
 function createApp() {
   const threadStore = new InMemoryThreadStore();
   const threadEventLog = new InMemoryThreadEventLog();
-  const { sandboxLifecycle } = assembleThreadServices({
+  const repositoryServices = assembleRepositoryServices({
+    threadStore,
+    repositories: threadStore.repositories,
+    connections: new InMemoryGithubConnectionStore(),
+    github: testGithubSettings,
+    logger,
+  });
+  const { sandboxLifecycle, relays } = assembleThreadServices({
     threadStore,
     threadEventLog,
     sandboxProvider: new FakeSandboxProvider(),
@@ -50,7 +62,24 @@ function createApp() {
       accessToken: developmentAccessToken,
     },
     allowedClientOrigins: new Set(),
-    threads: { threadStore, threadEventLog, sandboxLifecycle, logger },
+    threads: {
+      threadStore,
+      threadEventLog,
+      sandboxLifecycle,
+      repositories: {
+        requests: repositoryServices.requests,
+        store: repositoryServices.repositories,
+        isGithubAvailable: false,
+      },
+      logger,
+    },
+    github: { githubConnections: repositoryServices.githubConnections, logger },
+    publication: {
+      publisher: repositoryServices.createPublisher(relays),
+      uploads: repositoryServices.uploads,
+      authorizeSupervisor: authorizeWithThreadTokens(threadStore),
+      logger,
+    },
     webClientDirectory: undefined,
   });
 }
@@ -73,6 +102,12 @@ describe("the HTTP API's access control", () => {
         "POST /api/threads/some-identifier/stop",
         "POST /api/threads/some-identifier/resume",
         "DELETE /api/threads/some-identifier",
+        "POST /api/threads/some-identifier/publication",
+        "GET /api/github/connection",
+        "POST /api/github/connection",
+        "DELETE /api/github/connection",
+        "POST /api/github/connection-attempts",
+        "PUT /threads/some-identifier/supervisor/publication-bundles/some-identifier",
       ]),
     );
   });
@@ -86,21 +121,26 @@ describe("the HTTP API's access control", () => {
         body: method === "GET" ? null : "{}",
       });
 
-      const isPublic = publicApiPaths.has(path) || !path.startsWith("/api/");
+      const isPublic = publicApiPaths.has(path) || path === "/health";
       if (isPublic) {
         expect(response.status).toBe(200);
       } else {
         expect(response.status).toBe(401);
         expect(response.headers.get("WWW-Authenticate")).toMatch(/^Bearer/);
+      }
+      if (path.startsWith("/api/") && !isPublic) {
         expect(await response.json()).toMatchObject({ error: { code: "unauthorized" } });
       }
     },
   );
 
-  it("keeps the public paths outside the API to the health check", () => {
+  it("keeps the paths outside the API to the health check and the supervisor's bundle upload", () => {
     const outsideApi = registeredRoutes().filter((route) => !route.path.startsWith("/api/"));
 
-    expect(outsideApi.map((route) => route.path)).toEqual(["/health"]);
+    expect(outsideApi.map((route) => route.path)).toEqual([
+      "/health",
+      publicationBundleUploadRoute.replaceAll(/:[A-Za-z]+/g, "some-identifier"),
+    ]);
   });
 
   it("answers an unknown API path without a token with 401, not 404, so routes cannot be probed", async () => {

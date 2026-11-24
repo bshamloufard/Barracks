@@ -16,6 +16,11 @@ import {
   describeProblems,
   toDatabaseConfiguration,
 } from "./database/database-configuration.js";
+import {
+  type GithubSettings,
+  githubVariableNames,
+  readGithubSettings,
+} from "./github/github-settings.js";
 import type { SandboxLifecycleSettings } from "./sandbox-lifecycle/lifecycle-settings.js";
 import { readModelCredentials } from "./threads/model-credentials.js";
 import { readPiSettings } from "./threads/pi-settings.js";
@@ -123,6 +128,7 @@ type Settings = z.infer<typeof environmentSchema>;
 export const controlPlaneVariableNames = [
   ...Object.keys(environmentSchema.shape),
   ...authenticationVariableNames,
+  ...githubVariableNames,
 ];
 
 export type LogLevel = (typeof logLevels)[number];
@@ -144,6 +150,8 @@ export type ControlPlaneConfiguration = {
   supervisorEnvironment: SupervisorEnvironmentSettings;
   /** When sandboxes stop by themselves, and how many may run at once. */
   sandboxLifecycle: SandboxLifecycleSettings;
+  /** The GitHub App, if any, and which repository URLs are accepted. Holds the App's key: never log it. */
+  github: GithubSettings;
 };
 
 export type ConfigurationResult =
@@ -155,12 +163,14 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
   const validation = environmentSchema.safeParse(environment);
   const authentication = readAuthenticationConfiguration(environment);
   const sandboxProvider = readSandboxProviderConfiguration(environment);
+  const github = readGithubSettings(environment);
   const problems = [
     ...(validation.success ? [] : describeProblems(validation.error)),
     ...(authentication.ok ? [] : authentication.problems),
     ...(sandboxProvider.ok ? [] : sandboxProvider.problems),
+    ...(github.ok ? [] : github.problems),
   ];
-  if (!validation.success || !authentication.ok || !sandboxProvider.ok) {
+  if (!validation.success || !authentication.ok || !sandboxProvider.ok || !github.ok) {
     return { ok: false, problems };
   }
   const settings = validation.data;
@@ -178,6 +188,7 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
       settings,
       authentication.configuration,
       sandboxProvider.configuration,
+      github.settings,
       environment,
     ),
   };
@@ -187,6 +198,7 @@ function toConfiguration(
   settings: Settings,
   authentication: AuthenticationConfiguration,
   sandboxProvider: SandboxProviderConfiguration,
+  github: GithubSettings,
   environment: NodeJS.ProcessEnv,
 ): ControlPlaneConfiguration {
   return {
@@ -212,6 +224,7 @@ function toConfiguration(
       },
       checkIntervalInMilliseconds: settings.BARRACK_SANDBOX_CHECK_SECONDS * 1000,
     },
+    github,
   };
 }
 

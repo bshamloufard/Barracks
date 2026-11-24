@@ -1,4 +1,4 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type { RecordedThreadEvent, SupervisorEvent, ThreadEvent } from "@barrack/protocol";
 import { DatabaseError, escapeIdentifier, type Pool } from "pg";
 import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
 import type {
@@ -82,7 +82,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
    */
   async appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     try {

@@ -1,4 +1,4 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type { RecordedThreadEvent, SupervisorEvent, ThreadEvent } from "@barrack/protocol";
 
 /**
  * The durable, ordered history of every thread. It is the only place that
@@ -35,7 +35,7 @@ export interface ThreadEventLog {
    */
   appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome>;
 

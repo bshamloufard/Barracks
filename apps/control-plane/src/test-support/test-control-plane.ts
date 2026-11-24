@@ -14,7 +14,16 @@ import {
 import { SupabaseAccessTokenVerifier } from "../authentication/supabase-access-token-verifier.js";
 import type { UserAdmission } from "../authentication/user-admission.js";
 import { startControlPlaneServer } from "../control-plane-server.js";
+import type { GithubConnectionStore } from "../github/github-connection-store.js";
+import type { GithubSettings } from "../github/github-settings.js";
+import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
 import type { Logger } from "../logger.js";
+import {
+  assembleRepositoryServices,
+  type RepositoryServices,
+} from "../repositories/assemble-repository-services.js";
+import type { CredentialRequestLimits } from "../repositories/repository-credentials.js";
+import type { ThreadRepositoryStore } from "../repositories/thread-repository-store.js";
 import {
   assembleThreadServices,
   type ThreadServices,
@@ -35,6 +44,14 @@ import {
 } from "./test-peers.js";
 
 export const allowedTestOrigin = "http://localhost:5173";
+
+/** No GitHub App, and only https:// repositories: what an installation that set nothing up has. */
+export const testGithubSettings: GithubSettings = {
+  app: undefined,
+  webUrl: "https://github.com",
+  apiUrl: "https://api.github.com",
+  allowPlainHttp: false,
+};
 
 export const testSupervisorEnvironment: SupervisorEnvironmentSettings = {
   controlPlaneUrlForSandboxes: "ws://control-plane.test:8787",
@@ -77,6 +94,14 @@ export type TestControlPlaneOptions = {
   threadStore?: ThreadStore;
   /** Defaults to an in-memory store. */
   userStore?: UserStore;
+  /** Required with a thread store that is not the in-memory one, whose own it is by default. */
+  threadRepositoryStore?: ThreadRepositoryStore;
+  /** Defaults to an in-memory store. */
+  githubConnectionStore?: GithubConnectionStore;
+  /** No GitHub App by default (`testGithubSettings`). */
+  github?: GithubSettings;
+  credentialRequestLimits?: CredentialRequestLimits;
+  maximumBundleSizeInBytes?: number;
   /** Defaults to an empty controllable log. */
   threadEventLog?: ControllableThreadEventLog;
   /** Defaults to a fake provider, which runs no supervisor of its own. */
@@ -116,6 +141,7 @@ export class TestControlPlane {
   readonly threadStore: ThreadStore;
   readonly sandboxProvider: FakeSandboxProvider;
   readonly threadServices: ThreadServices;
+  readonly repositoryServices: RepositoryServices;
   /** Every line the control plane logged, at every level. */
   readonly logLines: string[];
   readonly #closeServer: () => Promise<void>;
@@ -127,6 +153,7 @@ export class TestControlPlane {
     threadStore: ThreadStore;
     sandboxProvider: FakeSandboxProvider;
     threadServices: ThreadServices;
+    repositoryServices: RepositoryServices;
     logLines: string[];
     closeServer: () => Promise<void>;
   }) {
@@ -136,6 +163,7 @@ export class TestControlPlane {
     this.threadStore = fields.threadStore;
     this.sandboxProvider = fields.sandboxProvider;
     this.threadServices = fields.threadServices;
+    this.repositoryServices = fields.repositoryServices;
     this.logLines = fields.logLines;
     this.#closeServer = fields.closeServer;
   }
@@ -146,6 +174,20 @@ export class TestControlPlane {
     const threadEventLog = options.threadEventLog ?? new ControllableThreadEventLog();
     const threadStore = options.threadStore ?? new InMemoryThreadStore();
     const sandboxProvider = options.sandboxProvider ?? new FakeSandboxProvider();
+    const repositoryServices = assembleRepositoryServices({
+      threadStore,
+      repositories: options.threadRepositoryStore ?? repositoryStoreOf(threadStore),
+      connections: options.githubConnectionStore ?? new InMemoryGithubConnectionStore(),
+      github: options.github ?? testGithubSettings,
+      logger,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+      ...(options.credentialRequestLimits === undefined
+        ? {}
+        : { credentialRequestLimits: options.credentialRequestLimits }),
+      ...(options.maximumBundleSizeInBytes === undefined
+        ? {}
+        : { maximumBundleSizeInBytes: options.maximumBundleSizeInBytes }),
+    });
     const threadServices = assembleThreadServices({
       threadStore,
       threadEventLog,
@@ -153,6 +195,7 @@ export class TestControlPlane {
       sandboxProviderName: "fake",
       supervisorEnvironment: options.supervisorEnvironment ?? testSupervisorEnvironment,
       settings: { ...testLifecycleSettings, ...options.lifecycleSettings },
+      workspaces: repositoryServices.workspaces,
       logger,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
       timing: {
@@ -176,6 +219,8 @@ export class TestControlPlane {
       threadStore,
       relays: threadServices.relays,
       sandboxLifecycle: threadServices.sandboxLifecycle,
+      repositoryServices,
+      publisher: repositoryServices.createPublisher(threadServices.relays),
       ...authentication,
       logger,
       ...(options.clientAuthenticationTimeoutInMilliseconds === undefined
@@ -191,6 +236,7 @@ export class TestControlPlane {
       threadStore,
       sandboxProvider,
       threadServices,
+      repositoryServices,
       logLines,
       closeServer: async () => {
         await server.close();
@@ -319,6 +365,15 @@ export class TestControlPlane {
     await Promise.all(this.#peers.map((peer) => peer.close()));
     await this.#closeServer();
   }
+}
+
+function repositoryStoreOf(threadStore: ThreadStore): ThreadRepositoryStore {
+  if (!(threadStore instanceof InMemoryThreadStore)) {
+    throw new Error(
+      "A test control plane on another thread store needs its threadRepositoryStore.",
+    );
+  }
+  return threadStore.repositories;
 }
 
 /** What a browser on the allowed origin sends with a JSON request, as the user the token is for. */

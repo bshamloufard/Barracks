@@ -8,9 +8,14 @@ import {
   threadIdSchema,
   threadsApiPath,
 } from "@barrack/protocol";
-import type { Context, Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
+import type { Context, Hono } from "hono";
 import type { Logger } from "../logger.js";
+import { describePublishing } from "../publication/publishing-availability.js";
+import type { RepositoryRequests } from "../repositories/repository-requests.js";
+import type {
+  ThreadRepositoryRecord,
+  ThreadRepositoryStore,
+} from "../repositories/thread-repository-store.js";
 import type {
   LifecycleRequestOutcome,
   SandboxLifecycle,
@@ -18,6 +23,7 @@ import type {
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ThreadRecord, ThreadSandboxRecord, ThreadStore } from "../threads/thread-store.js";
 import { respondWithApiError } from "./api-error.js";
+import { limitBodySize, readJsonBody, respondUnavailable } from "./request-bodies.js";
 import { requireJsonBody } from "./request-guards.js";
 import { type SignedInEnvironment, signedInUserOf } from "./require-signed-in-user.js";
 
@@ -25,7 +31,16 @@ export type ThreadsRoutesDependencies = {
   threadStore: ThreadStore;
   threadEventLog: ThreadEventLog;
   sandboxLifecycle: SandboxLifecycle;
+  repositories: ThreadRepositoriesDependencies;
   logger: Logger;
+};
+
+/** What creating threads on repositories, and describing them, needs. */
+export type ThreadRepositoriesDependencies = {
+  requests: RepositoryRequests;
+  store: ThreadRepositoryStore;
+  /** Whether this installation has a GitHub App, without which nothing can be published. */
+  isGithubAvailable: boolean;
 };
 
 /**
@@ -33,9 +48,6 @@ export type ThreadsRoutesDependencies = {
  * keeps before deleting some.
  */
 const listedThreadLimit = 100;
-
-/** A request's body is `{}`; anything much larger is not a request this API understands. */
-const maximumRequestBodyInBytes = 16 * 1024;
 
 type ThreadAction = "stop" | "resume";
 
@@ -67,29 +79,33 @@ export function addThreadsRoutes(
   );
 }
 
-function limitBodySize(): MiddlewareHandler {
-  return bodyLimit({
-    maxSize: maximumRequestBodyInBytes,
-    onError: (context) =>
-      respondWithApiError(context, 413, "payload_too_large", "The request body is too large."),
-  });
-}
-
 async function createThread(
   context: Context<SignedInEnvironment>,
   dependencies: ThreadsRoutesDependencies,
 ): Promise<Response> {
-  if (!createThreadRequestSchema.safeParse(await readJsonBody(context)).success) {
+  const request = createThreadRequestSchema.safeParse(await readJsonBody(context));
+  if (!request.success) {
     return respondWithApiError(
       context,
       400,
       "bad_request",
-      "A new thread is created with an empty JSON object, {}, as the body.",
+      'A new thread is created with {} as the body, or { "repository": { "url", "access", "baseBranch" } } to start from a repository.',
     );
   }
   const { userId } = signedInUserOf(context);
   try {
-    const outcome = await dependencies.sandboxLifecycle.createThread(userId);
+    const { repository } = request.data;
+    const resolved =
+      repository === undefined
+        ? undefined
+        : await dependencies.repositories.requests.resolve(userId, repository);
+    if (resolved?.kind === "invalid") {
+      return respondWithApiError(context, 400, "bad_request", resolved.message);
+    }
+    if (resolved?.kind === "not_allowed") {
+      return respondWithApiError(context, 403, "repository_not_allowed", resolved.message);
+    }
+    const outcome = await dependencies.sandboxLifecycle.createThread(userId, resolved?.choice);
     return await respondToLifecycleRequest(context, outcome, 201, "", dependencies);
   } catch (error) {
     dependencies.logger.error({ err: error, userId }, "Could not create a thread");
@@ -108,7 +124,7 @@ async function listThreads(
       listedThreadLimit,
     );
     const response: ThreadListResponse = {
-      threads: await toThreadSummaries(threads, dependencies.threadEventLog),
+      threads: await toThreadSummaries(threads, dependencies),
     };
     return context.json(response);
   } catch (error) {
@@ -212,24 +228,43 @@ async function respondWithThread(
   status: 200 | 201 | 202,
   dependencies: ThreadsRoutesDependencies,
 ): Promise<Response> {
-  const [summary] = await toThreadSummaries([thread], dependencies.threadEventLog);
-  const response: ThreadResponse = { thread: summary ?? toThreadSummary(thread, false) };
+  const [summary] = await toThreadSummaries([thread], dependencies);
+  const response: ThreadResponse = {
+    thread: summary ?? toThreadSummary(thread, false, undefined, false),
+  };
   return context.json(response, status);
 }
 
-/** Whether each agent is working is read for all of them at once, without reading events. */
+/**
+ * Whether each agent is working, and each thread's repository, are read for
+ * all of them at once, without reading events.
+ */
 async function toThreadSummaries(
   threads: ThreadRecord[],
-  threadEventLog: ThreadEventLog,
+  dependencies: Pick<ThreadsRoutesDependencies, "threadEventLog" | "repositories">,
 ): Promise<ThreadSummary[]> {
-  const working = await threadEventLog.findThreadsWithOpenRuns(
-    threads.map((thread) => thread.threadId),
+  const threadIds = threads.map((thread) => thread.threadId);
+  const [working, repositories] = await Promise.all([
+    dependencies.threadEventLog.findThreadsWithOpenRuns(threadIds),
+    dependencies.repositories.store.findMany(threadIds),
+  ]);
+  return threads.map((thread) =>
+    toThreadSummary(
+      thread,
+      working.has(thread.threadId),
+      repositories.get(thread.threadId),
+      dependencies.repositories.isGithubAvailable,
+    ),
   );
-  return threads.map((thread) => toThreadSummary(thread, working.has(thread.threadId)));
 }
 
 /** What clients may see of a thread: never its token digest, owner, provider or sandbox identifier. */
-function toThreadSummary(thread: ThreadRecord, isAgentWorking: boolean): ThreadSummary {
+function toThreadSummary(
+  thread: ThreadRecord,
+  isAgentWorking: boolean,
+  repository: ThreadRepositoryRecord | undefined,
+  isGithubAvailable: boolean,
+): ThreadSummary {
   return {
     threadId: thread.threadId,
     createdAt: thread.createdAt.toISOString(),
@@ -237,6 +272,16 @@ function toThreadSummary(thread: ThreadRecord, isAgentWorking: boolean): ThreadS
     title: thread.title ?? null,
     isAgentWorking,
     sandbox: toSandboxSummary(thread.sandbox),
+    repository:
+      repository === undefined
+        ? null
+        : {
+            url: repository.url,
+            access: repository.access,
+            baseBranch: repository.baseBranch ?? null,
+            workBranch: repository.workBranch,
+            publishing: describePublishing(repository, isGithubAvailable),
+          },
   };
 }
 
@@ -260,18 +305,4 @@ function toSandboxSummary(sandbox: ThreadSandboxRecord): ThreadSandbox {
 
 function respondThreadNotFound(context: Context, threadId: string): Response {
   return respondWithApiError(context, 404, "not_found", `There is no thread "${threadId}".`);
-}
-
-/** The parsed body, or undefined when it is not JSON, which the schema then refuses. */
-async function readJsonBody(context: Context): Promise<unknown> {
-  try {
-    const body: unknown = await context.req.json();
-    return body;
-  } catch {
-    return undefined;
-  }
-}
-
-function respondUnavailable(context: Context, message: string): Response {
-  return respondWithApiError(context, 503, "unavailable", `${message} Try again later.`);
 }

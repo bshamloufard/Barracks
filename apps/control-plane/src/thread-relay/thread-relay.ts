@@ -5,10 +5,13 @@ import type {
   ClientCommand,
   ClientMessageRejected,
   ControlPlaneToClientMessage,
+  ControlPlaneWorkspaceMessage,
   RecordedThreadEvent,
+  RepositoryEvent,
   SupervisorConnectionStatus,
   SupervisorHello,
   SupervisorToControlPlaneMessage,
+  SupervisorWorkspaceMessage,
   ThreadEvent,
   ThreadEventMessage,
   UserMessageDeliveryStatus,
@@ -26,6 +29,11 @@ import { InProgressAssistantText } from "./in-progress-assistant-text.js";
 import { findMissedRange, type MissedRange, readMissedEvents } from "./read-missed-events.js";
 import { SerialTaskQueue } from "./serial-task-queue.js";
 import type { ThreadActivity } from "./thread-activity.js";
+import {
+  emptyThreadWorkspaces,
+  isSupervisorWorkspaceMessage,
+  type ThreadWorkspaces,
+} from "./thread-workspaces.js";
 
 /** The messages that must still reach a client once its replay is over. */
 type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
@@ -71,6 +79,8 @@ export type ThreadRelayOptions = {
   threadId: string;
   threadEventLog: ThreadEventLog;
   threadActivity: ThreadActivity;
+  /** What the thread's workspace holds; empty when omitted. */
+  workspaces?: ThreadWorkspaces;
   logger: Logger;
   /**
    * Called whenever the relay is left with no supervisor, no clients and no
@@ -106,6 +116,7 @@ export class ThreadRelay {
   readonly threadId: string;
   readonly #threadEventLog: ThreadEventLog;
   readonly #threadActivity: ThreadActivity;
+  readonly #workspaces: ThreadWorkspaces;
   readonly #logger: Logger;
   readonly #whenUnused: () => void;
   readonly #queue = new SerialTaskQueue();
@@ -122,6 +133,7 @@ export class ThreadRelay {
     this.threadId = options.threadId;
     this.#threadEventLog = options.threadEventLog;
     this.#threadActivity = options.threadActivity;
+    this.#workspaces = options.workspaces ?? emptyThreadWorkspaces;
     this.#logger = options.logger;
     this.#whenUnused = options.whenUnused;
   }
@@ -144,11 +156,18 @@ export class ThreadRelay {
    * Messages from a supervisor that is no longer this thread's supervisor
    * are ignored. That covers one superseded by a newer supervisor, and one
    * dropped because an event it sent could not be recorded.
+   *
+   * Workspace requests are answered outside the queue: minting a credential
+   * waits on GitHub, and must not hold up the thread's events.
    */
   receiveFromSupervisor(
     connection: SupervisorConnection,
     message: SupervisorToControlPlaneMessage,
   ): void {
+    if (isSupervisorWorkspaceMessage(message)) {
+      this.#forwardWorkspaceRequest(connection, message);
+      return;
+    }
     this.#enqueue(`handle ${message.type} from the supervisor`, async () => {
       if (message.type === "supervisor_hello") {
         await this.#greetSupervisor(connection, message);
@@ -264,6 +283,31 @@ export class ThreadRelay {
     return promise;
   }
 
+  /**
+   * Sends a workspace message to the attached supervisor; returns false if
+   * there is none, or its connection is closing.
+   */
+  sendWorkspaceMessage(message: ControlPlaneWorkspaceMessage): boolean {
+    return this.#supervisor?.connection.send(message) ?? false;
+  }
+
+  /**
+   * Records an event about the thread's repository that the control plane
+   * itself observed (publishing), in sequence with everything else.
+   */
+  recordRepositoryEvent(event: RepositoryEvent): Promise<void> {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    this.#enqueue(`record ${event.type}`, async () => {
+      try {
+        await this.#recordAndBroadcast(event);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return promise;
+  }
+
   /** The thread was deleted: everyone attached is disconnected, and its supervisor forgotten. */
   disconnectEveryone(): void {
     for (const client of [...this.#clientPhases.keys()]) {
@@ -369,11 +413,51 @@ export class ThreadRelay {
       "Supervisor attached",
     );
     this.#broadcastSupervisorConnectionStatus();
+    if (!(await this.#describeWorkspace(supervisor))) {
+      return;
+    }
     this.#advanceUserMessagesDeliveredThrough(resumePoint.userMessagesDeliveredThrough);
     if (claimedDelivery > resumePoint.userMessagesDeliveredThrough) {
       await this.#recordUserMessagesDelivered(claimedDelivery);
     }
     await this.#sendUserMessagesUpTo(supervisor, resumePoint.newestSequence);
+  }
+
+  /**
+   * Tells a supervisor that has just been welcomed what its workspace should
+   * hold, before it is handed any user message, so the agent never starts
+   * without the repository. Returns false, having closed the connection, if
+   * that cannot be read; the supervisor then tries again.
+   */
+  async #describeWorkspace(supervisor: AttachedSupervisor): Promise<boolean> {
+    try {
+      const preparation = await this.#workspaces.describe(this.threadId, {
+        agentHasWorkedBefore: supervisor.deliveryCursor > 0,
+      });
+      supervisor.connection.send(preparation);
+      return true;
+    } catch (error) {
+      this.#logger.error({ err: error }, "Could not read what the thread's workspace should hold");
+      this.#forgetSupervisor();
+      supervisor.connection.close(
+        standardCloseCodes.internalError,
+        "The control plane could not read the thread's workspace",
+      );
+      return false;
+    }
+  }
+
+  #forwardWorkspaceRequest(
+    connection: SupervisorConnection,
+    message: SupervisorWorkspaceMessage,
+  ): void {
+    if (this.#supervisor?.connection !== connection) {
+      this.#ignoreUnattachedSupervisorMessage(connection, message.type);
+      return;
+    }
+    this.#workspaces.handleSupervisorRequest(this.threadId, message, (answer) =>
+      connection.send(answer),
+    );
   }
 
   async #readResumePoint(

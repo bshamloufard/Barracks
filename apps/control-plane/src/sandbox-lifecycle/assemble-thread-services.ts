@@ -2,6 +2,7 @@ import type { SandboxProvider } from "@barrack/sandbox-providers";
 import type { Logger } from "../logger.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { ThreadRelayRegistry } from "../thread-relay/thread-relay-registry.js";
+import type { ThreadWorkspaces } from "../thread-relay/thread-workspaces.js";
 import type { SupervisorEnvironmentSettings } from "../threads/supervisor-environment.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import { IdleSandboxShutdown } from "./idle-sandbox-shutdown.js";
@@ -23,6 +24,8 @@ export type ThreadServicesOptions = {
   sandboxProviderName: string;
   supervisorEnvironment: SupervisorEnvironmentSettings;
   settings: SandboxLifecycleSettings;
+  /** What threads' workspaces hold; empty when omitted. */
+  workspaces?: ThreadWorkspaces;
   logger: Logger;
   /** The real time unless a test controls it. */
   clock?: Clock;
@@ -58,6 +61,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
       admitUserMessage: (threadId, text) => lifecycleOf().admitUserMessage(threadId, text),
       recordAgentActivity: (threadId) => lifecycleOf().recordAgentActivity(threadId),
     },
+    ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
     logger,
   });
   const operations = new SandboxOperations({

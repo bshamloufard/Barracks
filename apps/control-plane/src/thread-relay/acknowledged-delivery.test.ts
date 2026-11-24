@@ -179,6 +179,7 @@ describe("agent events from a supervisor", () => {
     expect(await recordedEvents(threadEventLog)).toEqual([agentRunStarted]);
     expect(reconnection.inbox.messages).toEqual([
       { type: "supervisor_welcome", lastRecordedEventNumber: 1 },
+      { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
       { type: "agent_events_recorded", throughEventNumber: 1 },
     ]);
   });

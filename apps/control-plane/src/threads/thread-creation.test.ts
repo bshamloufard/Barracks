@@ -136,6 +136,7 @@ describe("creating a thread", () => {
       title: null,
       isAgentWorking: false,
       sandbox: { state: "running" },
+      repository: null,
     });
   });
 

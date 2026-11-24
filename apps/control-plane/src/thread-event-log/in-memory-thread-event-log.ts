@@ -1,4 +1,4 @@
-import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type { RecordedThreadEvent, SupervisorEvent, ThreadEvent } from "@barrack/protocol";
 import { runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
@@ -36,7 +36,7 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
 
   async appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     const history = this.#historyOf(threadId);
