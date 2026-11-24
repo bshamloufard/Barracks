@@ -168,6 +168,29 @@ describeWithTestDatabase("the control plane's migrations", () => {
     await pool.end();
   });
 
+  it("apply on a fresh database in numeric order, those written alongside one another included", async () => {
+    const schema = schemas.reserveName();
+
+    const applied = await applyPendingMigrations({ pool, schema, logger: silentLogger });
+
+    expect(applied).toEqual([...applied].sort());
+    expect(applied.map((name) => name.slice(0, 4))).toEqual(
+      expect.arrayContaining(["0030", "0040", "0050", "0060", "0070"]),
+    );
+    const columns = await pool.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+        where table_schema = $1 and table_name in ('threads', 'thread_events')
+        and column_name in ('taken_over_supervisor_token_digests', 'user_message_id', 'publication_id')
+        order by column_name`,
+      [schema],
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual([
+      "publication_id",
+      "taken_over_supervisor_token_digests",
+      "user_message_id",
+    ]);
+  });
+
   it("turn on row level security, with no policies, for every table they create", async () => {
     const schema = await schemas.createMigrated();
 
