@@ -181,6 +181,7 @@ describeWithTestDatabase("the control plane's migrations", () => {
       { name: "schema_migrations", has_row_security: true },
       { name: "thread_events", has_row_security: true },
       { name: "thread_sequence_counters", has_row_security: true },
+      { name: "threads", has_row_security: true },
     ]);
     expect(policies.rows).toEqual([]);
   });
@@ -193,5 +194,19 @@ describeWithTestDatabase("the control plane's migrations", () => {
         `insert into ${escapeIdentifier(schema)}.thread_sequence_counters values ('../etc', 1)`,
       ),
     ).rejects.toThrow("violates check constraint");
+  });
+
+  it("refuse a ready thread without a sandbox and a failed one without a reason", async () => {
+    const schema = await schemas.createMigrated();
+    const insertThread = (state: string) =>
+      pool.query(
+        `insert into ${escapeIdentifier(schema)}.threads
+          (thread_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state)
+          values ('thread-1', now(), 'fake', $1, $2)`,
+        [Buffer.alloc(32), state],
+      );
+
+    await expect(insertThread("ready")).rejects.toThrow("violates check constraint");
+    await expect(insertThread("failed")).rejects.toThrow("violates check constraint");
   });
 });
