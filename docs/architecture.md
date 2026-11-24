@@ -52,7 +52,7 @@ The control plane sees only the `SandboxProvider` interface ([`packages/sandbox-
 
 ## Inside a sandbox: two users
 
-In the sandbox image, the supervisor runs as `barrack-supervisor` and starts Pi as `barrack-agent` through `run-as-agent`, a copy of `setpriv` that alone carries the capabilities to change user and only the supervisor's group may run. Linux shows a process's environment and memory, and lets it be signalled or traced, only to its own user, so the agent cannot reach the token through the supervisor's process. The agent owns its workspace and Pi's state; the supervisor's run and log directories are closed to it. What remains open is listed in the [sandbox image's README](../sandbox-image/README.md#what-the-agent-can-still-reach) and the [decision log](decisions.md). Under `pnpm dev` both run as the developer's user.
+In the sandbox image, the supervisor runs as `barrack-supervisor` and starts Pi as `barrack-agent` through `run-as-agent`, a copy of `setpriv` that alone carries the capabilities to change user and only the supervisor's group may run. Linux shows a process's environment and memory, and lets it be signalled or traced, only to its own user, so the agent cannot reach the token through the supervisor's process. The agent owns its workspace and Pi's state; the supervisor's run, log and state directories are closed to it, so the agent cannot rewrite the supervisor's record of how far it has been handed user messages. What remains open is listed in the [sandbox image's README](../sandbox-image/README.md#what-the-agent-can-still-reach) and the [decision log](decisions.md). Under `pnpm dev` both run as the developer's user.
 
 ## History
 
