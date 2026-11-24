@@ -85,12 +85,15 @@ RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 # still exists. So the agent's group, which holds the supervisor, may search
 # these directories (0710) but not list them, and the agent's home is closed
 # (0700). The supervisor's own directories are closed to the agent (0750):
-# its process ID file, the lock that serialises starting it, and its log.
+# its process ID file, the lock that serialises starting it, its log, and
+# the state it keeps across its own restarts (how far the agent has been
+# handed user messages), which the agent must not be able to rewrite.
 RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
       /workspace /var/lib/barrack/state \
       /var/lib/barrack/state/pi /var/lib/barrack/state/pi/agent /var/lib/barrack/state/pi/sessions \
  && chmod 0700 /home/barrack-agent \
- && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 /run/barrack /var/log/barrack \
+ && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 \
+      /run/barrack /var/log/barrack /var/lib/barrack/supervisor \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /run/barrack/ensure-supervisor.lock \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /var/log/barrack/supervisor.log
 
@@ -100,6 +103,7 @@ COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ens
 
 ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_STATE_DIRECTORY=/var/lib/barrack/state \
+    BARRACK_SUPERVISOR_STATE_DIRECTORY=/var/lib/barrack/supervisor \
     BARRACK_SUPERVISOR_USER=barrack-supervisor \
     BARRACK_AGENT_USER=barrack-agent
 
