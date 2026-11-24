@@ -43,8 +43,13 @@ export type ControlPlaneConnectionSettings = {
   timing?: Partial<ConnectionTiming>;
 };
 
-/** Upgrade refusals that mean this supervisor's credentials are not accepted. */
-const credentialRefusalStatusCodes = [401, 403];
+/**
+ * The client errors that say "not now" rather than "never": a request that
+ * timed out, and being asked to slow down. Every other 4xx answer to the
+ * upgrade (wrong credentials, a protocol version the control plane does not
+ * speak, an endpoint that does not exist) will be the same on every retry.
+ */
+const retryableClientErrorStatusCodes = [408, 429];
 const handshakeTimeoutInMilliseconds = 10_000;
 const closeTimeoutInMilliseconds = 2_000;
 const normalClosureCode = 1000;
@@ -191,16 +196,18 @@ export class ControlPlaneConnection {
   }
 
   /**
-   * The control plane answered the upgrade with an HTTP error. Wrong
-   * credentials will stay wrong, so those end the supervisor; anything else
-   * (the control plane starting up, a proxy hiccup) is retried.
+   * The control plane answered the upgrade with an HTTP error. A refusal
+   * that can never turn into a yes ends the supervisor; anything else (the
+   * control plane starting up, a proxy hiccup) is retried.
    */
   #handleRefusal(socket: WebSocket, response: IncomingMessage): void {
     const statusCode = response.statusCode ?? 0;
     this.#logger.warn({ statusCode }, "The control plane refused the connection");
-    if (credentialRefusalStatusCodes.includes(statusCode)) {
+    if (isPermanentRefusal(statusCode)) {
       this.#fail(
-        new Error(`The control plane refused this supervisor's credentials (HTTP ${statusCode}).`),
+        new Error(
+          `The control plane refused this supervisor's connection (HTTP ${statusCode}), and retrying cannot change that.`,
+        ),
       );
     }
     // Aborts the handshake; `close` follows and decides whether to retry.
@@ -271,4 +278,9 @@ export class ControlPlaneConnection {
     this.#logger.error({ err: error }, "The control plane connection failed for good");
     this.#settings.onFatalError(error);
   }
+}
+
+function isPermanentRefusal(statusCode: number): boolean {
+  const isClientError = statusCode >= 400 && statusCode < 500;
+  return isClientError && !retryableClientErrorStatusCodes.includes(statusCode);
 }

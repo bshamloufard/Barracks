@@ -145,7 +145,8 @@ describe("ControlPlaneConnection", () => {
     expect(fatalErrors[0]?.message).toMatch(/newer supervisor/);
   });
 
-  it.each([401, 403])(
+  // 400 is how the control plane refuses a protocol version it does not speak.
+  it.each([400, 401, 403, 404, 410])(
     "stops for good, without reconnecting, when the control plane answers %i",
     async (statusCode) => {
       await connect({ refuseWith: statusCode });
@@ -158,10 +159,23 @@ describe("ControlPlaneConnection", () => {
     },
   );
 
-  it("keeps retrying while the control plane is unavailable", async () => {
-    await connect({ refuseWith: 503 });
+  it.each([408, 429, 500, 502, 503])(
+    "keeps retrying while the control plane answers %i",
+    async (statusCode) => {
+      await connect({ refuseWith: statusCode });
 
-    await waitUntil(() => controlPlane.upgradeRequests.length >= 3, "the supervisor retries");
+      await waitUntil(() => controlPlane.upgradeRequests.length >= 3, "the supervisor retries");
+
+      expect(fatalErrors).toEqual([]);
+    },
+  );
+
+  it("keeps retrying while nothing is listening at the control plane's address", async () => {
+    await connect();
+    await waitUntil(() => controlPlane.connections.length === 1, "the supervisor connects");
+    await controlPlane.close();
+
+    await pause(200);
 
     expect(fatalErrors).toEqual([]);
   });
