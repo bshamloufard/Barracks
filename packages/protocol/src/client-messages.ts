@@ -24,6 +24,14 @@ import { recordedThreadEventSchema, userMessageTextSchema } from "./thread-event
  * thread event after the client's last seen sequence, up to the newest one
  * stored. When the client has missed nothing, the range is empty and
  * `lastSequence` is `firstSequence - 1`.
+ *
+ * A client can claim a last seen sequence newer than anything the control
+ * plane holds, for example after the control plane lost its history in a
+ * restart. The control plane then replays the thread from sequence 1, so
+ * the announcement starts at or before the client's last seen sequence. A
+ * client receiving such an announcement must discard every thread event it
+ * holds and rebuild from the replay, because what it held is no longer the
+ * thread's history.
  */
 export const replayAnnouncementSchema = z
   .strictObject({

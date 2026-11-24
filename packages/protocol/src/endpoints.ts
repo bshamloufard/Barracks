@@ -18,7 +18,11 @@ export const lastSeenSequenceQueryParameter = "lastSeenSequence";
 
 export type SupervisorEndpointParameters = { threadId: string };
 
-/** `lastSeenSequence` is the sequence of the last thread event the client holds, or 0 for none. */
+/**
+ * `lastSeenSequence` is the sequence of the last thread event the client
+ * holds, or 0 for none. If the control plane does not hold that event, it
+ * replays the whole thread instead (see `replayAnnouncementSchema`).
+ */
 export type ClientEndpointParameters = { threadId: string; lastSeenSequence: number };
 
 const supervisorEndpointName = "supervisor";
