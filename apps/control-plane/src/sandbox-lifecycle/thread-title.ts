@@ -1,5 +1,5 @@
 /** Long enough to tell threads apart in a list, short enough for one line on a phone. */
-export const derivedTitleMaximumLength = 80;
+const derivedTitleMaximumLength = 80;
 
 /**
  * A thread's title is derived from its first user message: the first line

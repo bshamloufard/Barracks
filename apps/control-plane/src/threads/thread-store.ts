@@ -149,10 +149,6 @@ export function isLegalSandboxTransition(from: SandboxState, to: SandboxState): 
   return legalSandboxTransitions[from].includes(to);
 }
 
-export function isOperatingState(state: SandboxState): boolean {
-  return (operatingStates as readonly SandboxState[]).includes(state);
-}
-
 export function isPlaceOccupyingState(state: SandboxState): boolean {
   return (placeOccupyingStates as readonly SandboxState[]).includes(state);
 }
