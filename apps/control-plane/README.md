@@ -4,20 +4,31 @@ The service between thread sandboxes and clients. It creates threads: each new t
 
 Users sign in with Supabase Auth, and the control plane verifies every access token itself: each user sees and controls only their own threads (see [Signing users in](#signing-users-in)). With Supabase authentication it may listen on any address. In development mode (`BARRACK_AUTHENTICATION=development-single-user`, which `pnpm dev` uses) there is no sign-in and every client is one fixed user, so it refuses to listen anywhere but a loopback address. Either way it checks the `Origin` header of browsers' requests, so other websites cannot use it through your browser.
 
-> **Not yet ready for strangers.** Sign-in is in place, but nothing has been deployed or run against a real Supabase project, sandboxes are never stopped, and model provider keys in the control plane's environment reach every sandbox (see below). Admit only people you trust.
+> **Not yet ready for strangers.** Sign-in is in place, but nothing has been deployed or run against a real Supabase project or Daytona, and model provider keys in the control plane's environment reach every sandbox (see below). Admit only people you trust.
 
 Threads and their history are stored in Postgres when `BARRACK_DATABASE_URL` is set, and survive restarts. Without it, they are kept in memory and lost when the process stops, which suits local development only; the control plane says so in a warning at startup.
 
 ## Threads and their sandboxes
 
-1. `POST /api/threads` mints a thread identifier (a UUID) and a supervisor token (32 random bytes), records the thread with the token's SHA-256 digest and its sandbox `creating`, and answers `201` at once.
+1. `POST /api/threads` mints a thread identifier (a UUID) and a supervisor token (32 random bytes), records the thread with the token's SHA-256 digest and its sandbox `creating`, if the user has a place under the limit on running sandboxes, and answers `201` at once.
 2. In the background it asks the provider to create the sandbox, with the supervisor's environment: `BARRACK_CONTROL_PLANE_URL` (from `BARRACK_SANDBOX_CONTROL_PLANE_URL`), `BARRACK_THREAD_ID`, `BARRACK_SUPERVISOR_TOKEN`, `BARRACK_AGENT_HARNESS`, and for Pi `BARRACK_MODEL`, the model provider keys and the Pi settings described below. The token goes nowhere else: it is never stored, logged or returned.
-3. When the provider answers, the thread's sandbox is recorded `ready`; if it refuses, or stays unavailable after two more tries (1 s and 5 s later), it is recorded `failed` with a reason the user is shown. If the sandbox was created but cannot be recorded, it is destroyed, so none is left running unrecorded. A provider that reports the sandbox already exists on a retry is taken to have created it on the earlier attempt.
+3. When the provider answers, the thread's sandbox is recorded `running`; if it refuses, or stays unavailable after two more tries (1 s and 5 s later), it is recorded `failed` with a reason the user is shown. A provider that reports the sandbox already exists on a retry is taken to have created it on the earlier attempt.
 4. The supervisor's WebSocket upgrade is accepted only with the token minted for the thread in its URL, compared by digest in constant time: another thread's valid token gets `401`. Clients can connect only to their own threads, after authenticating (see [Signing users in](#signing-users-in)).
 
-A client learns that the sandbox failed, and why, from the thread's `sandbox` field, fetching `GET /api/threads/{threadId}` until it leaves `creating`; whether the agent is reachable right now it learns from the thread's WebSocket, as before.
+### The sandbox's lifecycle
 
-**After a restart**, a thread whose sandbox was still being created when the control plane stopped is marked `failed` at startup, with a reason saying so. A sandbox the provider may have made for it was never recorded, so it is not destroyed: the log names each such thread, and for Docker its container is labelled `barrack.thread-id=<thread>`. This assumes one control plane per database. Stopping, resuming and reconciling sandboxes properly come with the thread lifecycle in Milestone 3.
+The control plane decides when each thread's sandbox runs ([`src/sandbox-lifecycle/`](src/sandbox-lifecycle)); providers hold no policy. Every thread records its sandbox as `creating`, `running`, `stopping`, `stopped`, `starting`, `failed` (with a reason, and resumable if the sandbox still exists) or `deleting`. Each change is a conditional update on the version the change was decided from, so of two requests or two control planes acting at once exactly one succeeds. While a provider operation is under way, the control plane doing it holds a lease it renews; an operation whose lease runs out (its control plane was killed) is taken over by the next sweep and carried on, which is safe because every provider operation can be repeated.
+
+- **Stop** (`POST /api/threads/{threadId}/stop`): the agent is interrupted and handed no more messages, the run ends as the agent reports it (or, after 5 s, the sandbox is stopped anyway and the run is closed in history as cut short), and the sandbox is stopped with its files kept.
+- **Resume** (`POST /api/threads/{threadId}/resume`): the sandbox starts again; its supervisor reattaches as a new process and Pi reopens its session, so the conversation carries on.
+- **A message to a stopped sandbox** wakes it, and waits in history until the agent is back; one sent while it is stopping wakes it once it has stopped.
+- **Idle shutdown**: a running sandbox with no user message and no agent event for `BARRACK_SANDBOX_IDLE_MINUTES`, whose agent has no run open and no message waiting, is stopped. A client merely watching does not count. `SandboxLifecycle.recordAgentActivity` is where other activity, such as the desktop view to come, would be noted.
+- **The limit**: creating, resuming or waking a sandbox is refused (`409 sandbox_limit_reached`, or a rejected message) when the user already has `BARRACK_RUNNING_SANDBOXES_PER_USER` sandboxes creating, running, starting or stopping, or the installation `BARRACK_RUNNING_SANDBOXES_IN_TOTAL`; the message names the user's running threads.
+- **Delete** (`DELETE /api/threads/{threadId}`): the sandbox is destroyed, then the thread's history and record are removed for good.
+- **Reconciliation**, at startup and every `BARRACK_SANDBOX_CHECK_SECONDS`: operations whose lease expired are taken over, and each running sandbox (at startup each stopped and failed one too) is compared with what the provider reports. One the provider stopped, failed or lost is recorded so, and the run it left open is closed; one recorded stopped that runs is recorded running.
+- **A provider that fails** part way leaves the state the provider then reports, with a reason the user is shown (`problem` on a running or stopped sandbox, `reason` on a failed one), never a state that is no longer under way.
+
+A client learns all this from the thread's `sandbox` field (`GET /api/threads/{threadId}`); whether the agent is reachable right now it learns from the thread's WebSocket, as before.
 
 ### Model provider keys (temporary)
 
@@ -33,14 +44,17 @@ JSON in and out, with shapes defined in [`@barrack/protocol`](../../packages/pro
 
 Every `/api` request but the client configuration needs `Authorization: Bearer <access token>`: without a valid one it answers `401 unauthorized`, and for a signed-in user the installation does not admit, `403 not_allowed`. A browser request whose `Origin` is not allowed answers `403 forbidden_origin`; one without `Origin` (a native app) is let through to authenticate. Requests see only the signed-in user's threads: another user's thread answers `404` exactly as a missing one does.
 
-| Request                         | Answer                                                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/client-configuration` | `200 { "authentication": … }`: the Supabase URL and publishable key to sign in with, or development mode's token. Public. |
-| `POST /api/threads` with `{}`   | `201 { "thread": Thread }`, owned by the user. Needs `Content-Type: application/json` (`415`).                            |
-| `GET /api/threads`              | `200 { "threads": [Thread, …] }`, the user's own, newest first, at most 100.                                              |
-| `GET /api/threads/{threadId}`   | `200 { "thread": Thread }`, or `404`.                                                                                     |
+| Request                                         | Answer                                                                                                                                      |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/client-configuration`                 | `200 { "authentication": … }`: the Supabase URL and publishable key to sign in with, or development mode's token. Public.                   |
+| `POST /api/threads` with `{}`                   | `201 { "thread": Thread }`, owned by the user, or `409 sandbox_limit_reached`. Needs `Content-Type: application/json` (`415`).              |
+| `GET /api/threads`                              | `200 { "threads": [Thread, …] }`, the user's own, the most recently active first, at most 100.                                              |
+| `GET /api/threads/{threadId}`                   | `200 { "thread": Thread }`, or `404`.                                                                                                       |
+| `POST /api/threads/{threadId}/stop` with `{}`   | `202 { "thread": Thread }` now stopping, `409 conflict` unless running, or `404`.                                                           |
+| `POST /api/threads/{threadId}/resume` with `{}` | `202 { "thread": Thread }` now starting, `409 conflict` unless stopped (or failed with its sandbox), `409 sandbox_limit_reached`, or `404`. |
+| `DELETE /api/threads/{threadId}`                | `202 { "thread": Thread }` now deleting, then gone; `409 conflict` while starting or stopping; or `404`.                                    |
 
-A `Thread` is `{ "threadId": "…", "createdAt": "2026-11-24T09:00:00.000Z", "sandbox": { "state": "creating" | "ready" } | { "state": "failed", "reason": "…" } }`. When the store cannot be reached, requests answer `503`.
+A `Thread` is `{ "threadId", "createdAt", "lastActiveAt", "title" (from the first message, or null), "isAgentWorking", "sandbox": { "state": … } }`, as [`threads-api.ts`](../../packages/protocol/src/threads-api.ts) defines. When the store cannot be reached, requests answer `503`.
 
 ## Signing users in
 
@@ -69,7 +83,8 @@ Threads created before sign-in existed have no owner and are shown to nobody; gi
 | `src/http/`                   | `GET /health`, the client configuration, the threads API, the sign-in middleware and origin check, and the built web client when configured (Hono).          |
 | `src/authentication/`         | Sign-in settings, verifying Supabase's (and development mode's) access tokens, the allow-list, and the `Authenticator` both transports use.                  |
 | `src/users/`                  | The `UserStore` interface and its implementations.                                                                                                           |
-| `src/threads/`                | The `ThreadStore` interface and its implementations, creating threads and their sandboxes, supervisor tokens.                                                |
+| `src/threads/`                | The `ThreadStore` interface, its guarded state changes and implementations, supervisor tokens and environment.                                               |
+| `src/sandbox-lifecycle/`      | Creating, stopping, resuming, waking and deleting sandboxes, idle shutdown, reconciliation, the running-sandbox limit, thread titles.                        |
 | `src/storage/`                | Opens Postgres (migrated) or memory for the thread store and the event log.                                                                                  |
 | `src/database/`               | Database settings, the connection pool, the migration runner, and waiting for the database at startup (`pg`).                                                |
 | `migrations/`                 | The SQL migrations, applied in name order.                                                                                                                   |
@@ -99,6 +114,10 @@ The endpoints and messages are defined in [`@barrack/protocol`](../../packages/p
 | `BARRACK_ALLOWED_CLIENT_ORIGINS`      | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to use the API and open the client endpoint.                                                                                                                          |
 | `BARRACK_WEB_CLIENT_DIRECTORY`        | unset                                                                                     | Directory of the built web client (`apps/web/dist`). When set, the control plane serves it.                                                                                                                   |
 | `BARRACK_LOG_LEVEL`                   | `info`                                                                                    | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.                                                                                                                                               |
+| `BARRACK_SANDBOX_IDLE_MINUTES`        | `10`                                                                                      | A running sandbox with no message or agent activity this long, no run open and nothing to deliver, is stopped. Fractions allowed.                                                                             |
+| `BARRACK_RUNNING_SANDBOXES_PER_USER`  | `3`                                                                                       | How many sandboxes one user may have creating, running, starting or stopping at once.                                                                                                                         |
+| `BARRACK_RUNNING_SANDBOXES_IN_TOTAL`  | unset: no limit                                                                           | The same for the whole installation, for a provider account's own limits.                                                                                                                                     |
+| `BARRACK_SANDBOX_CHECK_SECONDS`       | `30`                                                                                      | How often sandboxes are reconciled with the provider and checked for idleness. An operation's lease lasts twice this.                                                                                         |
 | `BARRACK_DATABASE_URL`                | unset: history in memory                                                                  | `postgres://user:password@host:port/database`, with no query parameters. Never logged; logs name only the host, port and database.                                                                            |
 | `BARRACK_DATABASE_TLS`                | `verify-full`                                                                             | `verify-full` encrypts and checks the server's certificate and host name. `disable` sends everything in the clear; see below for when that is fine.                                                           |
 | `BARRACK_DATABASE_CA_CERTIFICATE`     | unset: the authorities Node trusts                                                        | PEM text of the certificate authority to trust instead. Required for Supabase.                                                                                                                                |

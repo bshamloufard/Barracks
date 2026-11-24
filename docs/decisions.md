@@ -181,6 +181,7 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Recovery when the control plane restarts mid-task belongs to Milestone 7.
 - **What we did:** At startup, every thread still marked `creating` is marked failed, with a reason saying the control plane restarted while its sandbox was being created, and logged. A sandbox the provider may have made for it was never recorded, so it is not destroyed. This assumes one control plane per database.
 - **Why:** Otherwise such a thread would show as starting for ever; finding and finishing them properly comes with the thread lifecycle.
+- **Superseded** by "Operations under way hold a lease, and one whose lease lapses is taken over" below.
 
 ## 2026-11-24: A local-process sandbox provider for development
 
@@ -403,3 +404,57 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Nothing specific; our migration runner requires the applied migrations to be exactly the build's first ones, in name order.
 - **What we did:** Acknowledged delivery added `0010` and sign-in added `0020`, each on its own branch. They touch different tables (`0010` the event log and its counters, `0020` users and threads' owners), so each applies on a fresh database in numeric order regardless of which was written first, and neither was changed when they were merged: changing an applied migration stops the control plane. A database that ran the sign-in branch before the merge has `0001`, `0002` and `0020` applied and no `0010`, and the control plane refuses to start on it, naming both. Only development and test databases can be in that state, so there is no automatic repair. Its operator either drops the schema (`drop schema barrack cascade;`, losing its threads) and lets the control plane migrate afresh, or keeps its threads by applying `0010` by hand and recording it, as the [control plane's README](../apps/control-plane/README.md#migrations-written-in-parallel) shows. A database that ran the acknowledged-delivery branch has `0010` and simply gains `0020`.
 - **Why:** Numbering `0010` and `0020` kept the two names from colliding, but not the order check, which exists so that two databases with the same migrations applied always have the same schema. Relaxing it to allow out-of-order application for this one case would weaken that for every later migration.
+
+## 2026-11-24: The control plane records each sandbox's state, and changes it only by compare-and-set
+
+- **What the plan said:** Stopping and resuming threads, automatic shutdown of idle sandboxes and a limit on how many run (Milestone 3); the control plane should own when a sandbox stops; recovery when the control plane restarts mid-task (Milestone 7).
+- **What we did:** Each thread records its sandbox as `creating`, `running`, `stopping`, `stopped`, `starting`, `failed` (with a reason; resumable if it still has a sandbox) or `deleting`, with a version. The legal changes are one table in `thread-store.ts`, and every change is an update conditional on the version its caller read and on the current state being one the change is legal from. A destroyed sandbox has no state of its own: deleting removes the thread. A provider operation that fails records the state `getStatus` then reports, with the failure as a `problem` the page shows, and only if that cannot be read is the sandbox recorded `failed`.
+- **Why:** Railway may run two instances at once during a redeploy, and a user can press Stop twice; a conditional update lets exactly one of them act, without locks held across slow provider calls. Recording what the provider reports after a failure keeps the record truthful, so the user always has something to do: stop again, resume, or delete.
+
+## 2026-11-24: Operations under way hold a lease, and one whose lease lapses is taken over
+
+- **What the plan said:** Recovery after a control plane restart (Milestone 7).
+- **What we did:** `creating`, `starting`, `stopping` and `deleting` carry a lease of two check intervals (60 s by default), renewed four times a lease by the control plane doing the provider call. At startup and every check, an operation whose lease has expired is taken over by compare-and-set and carried on from its provider step. This replaces failing every thread still creating at startup. A creation taken over mints a new token and records its digest before asking for a sandbox; if the provider says the sandbox exists (the first attempt made it), it is adopted and the earlier digest recorded again.
+- **Why:** Failing whatever is `creating` at startup failed the creations an old instance was still doing during a redeploy's overlap. A lease an alive instance renews cannot lapse under it, while a killed one's lapses within a minute or two, and every provider operation is safe to repeat, so finishing is better than failing. Timeouts were rejected: a Daytona start from archive can take minutes, and nothing could tell a slow operation from an abandoned one.
+
+## 2026-11-24: Reconciliation trusts the provider for settled sandboxes
+
+- **What the plan said:** Nothing specific.
+- **What we did:** Every check compares each `running` sandbox with `getStatus`; at startup, `stopped` and `failed` ones too. A running one the provider reports stopped is recorded stopped, failed is recorded failed (resumable), missing is recorded failed without a sandbox; a stopped or failed one the provider runs is recorded running, with a fresh idle period. Any run a sandbox that stopped by itself left open is closed in history. Transitional provider states are left until they settle.
+- **Why:** Running sandboxes cost money and can stop by themselves (a crashed supervisor, a host restart), so they are checked often; nothing but the control plane starts a stopped one, so once at startup is enough. Recording a running sandbox as running, rather than stopping it again, never kills work a lost answer hid, and idle shutdown stops it if it is idle.
+
+## 2026-11-24: A sandbox idle for ten minutes, with no run open and nothing to deliver, is stopped
+
+- **What the plan said:** Automatic shutdown of idle sandboxes; an open question asks for the right idle period.
+- **What we did:** Idle means no user message and no agent event for `BARRACK_SANDBOX_IDLE_MINUTES` (default 10), and right now no run open and no user message waiting to be delivered. Activity is noted in the thread's row before the message or event is recorded (agent events at most once a minute, or a quarter of the idle period, per thread). A client merely watching is not activity. The stop is a compare-and-set that also requires the last activity to be the one read. `SandboxLifecycle.recordAgentActivity` is where the live desktop will count as activity.
+- **Why:** Ten minutes is Open-Inspect's default and covers a short break, while waking costs seconds (Docker) to a minute or two (Daytona restoring an archive) and loses nothing: files and Pi's session are kept and history is in the control plane. An open run is never cut short, since a build can print nothing for minutes; a hung agent therefore keeps its sandbox until stopped by hand, which is the safer error. Counting a watching client, as Open-Inspect does, would let a forgotten tab keep a sandbox billing for ever, and watching needs only the control plane. Deciding from the database alone makes it survive restarts and work with two instances.
+
+## 2026-11-24: A message wakes a stopped sandbox
+
+- **What the plan said:** The per-thread computers wake when there is work.
+- **What we did:** Before a user message is recorded, the lifecycle admits it: a stopped sandbox is moved to `starting` and started, a stopping one is asked (a flag on the thread) to start again once it has stopped, and the message waits in history and is delivered when the supervisor attaches. While a sandbox is stopping, its supervisor is handed no new messages, which it would only lose. A message to a thread being deleted is refused. A failed sandbox is not woken by a message; the user resumes it.
+- **Why:** The user should never have to press Resume first. Holding messages back from a supervisor being stopped means each reaches an agent that will answer it.
+
+## 2026-11-24: At most three running sandboxes per user, and optionally per installation
+
+- **What the plan said:** A limit on how many run concurrently; per-user concurrency limits (Milestone 7).
+- **What we did:** Creating, resuming and waking a sandbox are refused when the user already has `BARRACK_RUNNING_SANDBOXES_PER_USER` (default 3) sandboxes creating, running, starting or stopping, or the installation `BARRACK_RUNNING_SANDBOXES_IN_TOTAL` (unset by default). The refusal is `409 sandbox_limit_reached`, or a rejected message, naming the user's sandboxes taking a place, so the user knows which to stop. The count and the change are one transaction behind an advisory lock.
+- **Why:** Three is what Milestone 3 must show running at once, and about what the smallest Daytona tier's storage holds. A stopping sandbox still holds its resources for a moment, so it counts, and the message says to wait for it. The installation-wide limit is the smallest honest answer to a provider account's own limits shared by several users: without it, the provider's refusal would surface only as a failed creation.
+
+## 2026-11-24: A thread's title is its first message's first line
+
+- **What the plan said:** A thread list.
+- **What we did:** The first line with any text of the first user message, whitespace collapsed, cut at a word boundary to 80 characters with an ellipsis, stored on the thread when that message arrives. Until then the page calls it "New thread". The list shows the title, the sandbox's state, whether the agent is working (from the event log's counter row) and when it was last active, most recently active first.
+- **Why:** The first line is usually the task's summary, and storing it means listing threads reads no events. The list's query is one indexed read of the user's threads and one of their counter rows.
+
+## 2026-11-24: Deleting a thread removes it and its history for good
+
+- **What the plan said:** Nothing specific; stopped Daytona sandboxes still cost storage until archived and count against quota.
+- **What we did:** `DELETE /api/threads/{threadId}` (from running, stopped or failed) moves the thread to `deleting`, destroys its sandbox, then removes its history and its record, and disconnects anyone watching. The client confirms first. Deleting while a sandbox is starting or stopping is refused until that finishes. A destroy that fails leaves the state the provider reports, with the reason.
+- **Why:** Users need a way to free storage and quota. Refusing while another operation is under way keeps two provider operations from racing on one sandbox; destroying first, and removing the record last, means a crash leaves a `deleting` thread whose lease lapses and whose deletion is finished, never a sandbox nobody knows of.
+
+## 2026-11-24: Local-process sandboxes outlive the control plane's process
+
+- **What the plan said:** The provider boundary: create, start, stop, destroy, and their state.
+- **What we did:** The interface is unchanged; the contract suite gains a guarantee every provider meets: a provider made afresh finds, stops and starts sandboxes an earlier one created. Docker and Daytona met it already. The local-process provider now keeps each sandbox's record and its supervisor's process identifier in the sandbox's directory, and the fake can be reopened over the same sandboxes.
+- **Why:** Reconciliation asks the provider what is true; the local-process provider kept everything in memory and, after a restart, reported every sandbox missing, which would have failed threads whose supervisors were still running.
