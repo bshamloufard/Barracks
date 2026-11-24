@@ -16,8 +16,8 @@ export type SupervisorCredentials = {
 export type SupervisorAuthorization = (credentials: SupervisorCredentials) => Promise<boolean>;
 
 /**
- * A supervisor may connect only with the token minted for the thread it
- * names, so a sandbox holding one thread's token cannot pass itself off as
+ * A supervisor may connect only with a token minted for the thread it
+ * names (see `ThreadRecord.supervisorTokenDigests`), so a sandbox holding one thread's token cannot pass itself off as
  * another thread's supervisor. A thread that does not exist is refused the
  * same way as a wrong token, so the answer does not say which it was.
  */
@@ -28,8 +28,7 @@ export function authorizeWithThreadTokens(threadStore: ThreadStore): SupervisorA
       return false;
     }
     const thread = await threadStore.find(threadId);
-    return (
-      thread !== undefined && supervisorTokenMatches(presentedToken, thread.supervisorTokenDigest)
-    );
+    const acceptedDigests = thread?.supervisorTokenDigests ?? [];
+    return acceptedDigests.some((digest) => supervisorTokenMatches(presentedToken, digest));
   };
 }

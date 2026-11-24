@@ -127,9 +127,10 @@ export function describeThreadStoreContract(
 
       const created = await createThread(store, "thread-a");
 
+      const { supervisorTokenDigest: _digest, ...threadWithoutDigest } = thread;
       expect(created).toEqual({
-        ...thread,
-        supervisorTokenDigest: expect.any(Buffer),
+        ...threadWithoutDigest,
+        supervisorTokenDigests: [expect.any(Buffer)],
         createdAt: startTime,
         lastActivityAt: startTime,
         sandbox: { state: "creating", leaseExpiresAt: secondsAfterStart(60) },
@@ -140,25 +141,26 @@ export function describeThreadStoreContract(
       expect(await store.find("thread-a")).toEqual(created);
     });
 
-    it("keeps the supervisor token digest byte for byte, and replaces it only when told", async () => {
+    it("keeps the supervisor token digests byte for byte, and adds one only when told, keeping the earlier", async () => {
       const store = await createEmptyStore();
       const created = await createThread(store, "thread-a");
-      const newDigest = randomBytes(32);
+      const [firstDigest] = created.supervisorTokenDigests;
+      const addedDigest = randomBytes(32);
 
       await store.transition({
         threadId: "thread-a",
         fromVersion: created.version,
         to: exampleSandbox("running"),
         at: startTime,
-        supervisorTokenDigest: newDigest,
+        addedSupervisorTokenDigest: addedDigest,
       });
       const running = await store.find("thread-a");
       const stopping =
         running === undefined ? undefined : await changeTo(store, running, "stopping");
 
-      expect(created.supervisorTokenDigest).not.toEqual(newDigest);
-      expect(running?.supervisorTokenDigest).toEqual(newDigest);
-      expect(stopping?.supervisorTokenDigest).toEqual(newDigest);
+      expect(created.supervisorTokenDigests).toHaveLength(1);
+      expect(running?.supervisorTokenDigests).toEqual([firstDigest, addedDigest]);
+      expect(stopping?.supervisorTokenDigests).toEqual([firstDigest, addedDigest]);
     });
 
     it("refuses a second thread with the same identifier", async () => {

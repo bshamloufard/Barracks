@@ -204,9 +204,16 @@ export type SandboxAdmission = {
   maximumInInstallation: number | undefined;
 };
 
-export type ThreadRecord = Omit<NewThread, "ownerUserId"> & {
+export type ThreadRecord = Omit<NewThread, "ownerUserId" | "supervisorTokenDigest"> & {
   /** Undefined only for a thread created before sign-in existed, which nobody may see. */
   ownerUserId: string | undefined;
+  /**
+   * SHA-256 of every token the thread's supervisor may hold: the one minted
+   * with the thread, then one for each time its creation was taken over. A
+   * sandbox the provider turns up during a take-over was made by some
+   * earlier attempt, and nothing says which, so each is accepted.
+   */
+  supervisorTokenDigests: Buffer[];
   createdAt: Date;
   sandbox: ThreadSandboxRecord;
   /** Moves on with every change of `sandbox`; changes are made only at the version their caller read. */
@@ -228,8 +235,8 @@ export type ThreadRecord = Omit<NewThread, "ownerUserId"> & {
  *   counting this thread.
  * - `onlyIfLastActiveAt`: for idle shutdown: the change is made only if no
  *   activity was recorded since the thread was read.
- * - `supervisorTokenDigest`: replaces the digest, for a creation taken over
- *   that gave the sandbox a new token.
+ * - `addedSupervisorTokenDigest`: accepted from now on besides the earlier
+ *   ones, for a creation taken over that gives the sandbox a new token.
  */
 export type SandboxTransition = {
   threadId: string;
@@ -238,7 +245,7 @@ export type SandboxTransition = {
   at: Date;
   admission?: SandboxAdmission;
   onlyIfLastActiveAt?: Date;
-  supervisorTokenDigest?: Buffer;
+  addedSupervisorTokenDigest?: Buffer;
 };
 
 export type FinishStoppingRequest = {
@@ -327,8 +334,8 @@ export function findBrokenLimit(
 
 /**
  * The record a state change leaves: the new sandbox state, the next
- * version, no wake request (unless a stop is only being taken over), and,
- * entering `running`, activity now.
+ * version, no wake request (unless a stop is only being taken over), any
+ * token digest added, and, entering `running`, activity now.
  */
 export function applyTransition(
   current: ThreadRecord,
@@ -342,6 +349,9 @@ export function applyTransition(
     version: current.version + 1,
     isWakeRequested: isStopTakenOver && current.isWakeRequested,
     lastActivityAt: transition.to.state === "running" ? transition.at : current.lastActivityAt,
-    supervisorTokenDigest: transition.supervisorTokenDigest ?? current.supervisorTokenDigest,
+    supervisorTokenDigests:
+      transition.addedSupervisorTokenDigest === undefined
+        ? current.supervisorTokenDigests
+        : [...current.supervisorTokenDigests, transition.addedSupervisorTokenDigest],
   };
 }

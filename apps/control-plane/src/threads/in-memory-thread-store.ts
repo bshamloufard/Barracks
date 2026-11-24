@@ -35,9 +35,10 @@ export class InMemoryThreadStore implements ThreadStore {
     if (limitReached !== undefined) {
       return limitReached;
     }
+    const { supervisorTokenDigest, ...threadWithoutDigest } = thread;
     const record: ThreadRecord = {
-      ...thread,
-      supervisorTokenDigest: Buffer.from(thread.supervisorTokenDigest),
+      ...threadWithoutDigest,
+      supervisorTokenDigests: [Buffer.from(supervisorTokenDigest)],
       createdAt: options.at,
       sandbox: { state: "creating", leaseExpiresAt: options.leaseExpiresAt },
       version: 1,
@@ -211,7 +212,7 @@ function mostRecentlyActiveFirst(records: ThreadRecord[]): ThreadRecord[] {
 function copyOf(record: ThreadRecord): ThreadRecord {
   return {
     ...record,
-    supervisorTokenDigest: Buffer.from(record.supervisorTokenDigest),
+    supervisorTokenDigests: record.supervisorTokenDigests.map((digest) => Buffer.from(digest)),
     createdAt: new Date(record.createdAt),
     lastActivityAt: new Date(record.lastActivityAt),
     sandbox: { ...record.sandbox },

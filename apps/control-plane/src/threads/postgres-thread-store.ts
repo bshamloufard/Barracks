@@ -25,6 +25,7 @@ type ThreadRow = {
   created_at: Date;
   sandbox_provider: string;
   supervisor_token_digest: Buffer;
+  taken_over_supervisor_token_digests: Buffer[];
   sandbox_state: SandboxState;
   sandbox_id: string | null;
   sandbox_failure_reason: string | null;
@@ -38,7 +39,7 @@ type ThreadRow = {
 };
 
 const threadColumns = `thread_id, owner_user_id, created_at, sandbox_provider,
-  supervisor_token_digest, sandbox_state, sandbox_id, sandbox_failure_reason, sandbox_problem,
+  supervisor_token_digest, taken_over_supervisor_token_digests, sandbox_state, sandbox_id, sandbox_failure_reason, sandbox_problem,
   lease_expires_at, state_version, title, last_activity_at, wake_requested`;
 
 /**
@@ -263,7 +264,10 @@ export class PostgresThreadStore implements ThreadStore {
           state_version = state_version + 1,
           wake_requested = wake_requested and sandbox_state = 'stopping' and $3 = 'stopping',
           last_activity_at = case when $3 = 'running' then $8 else last_activity_at end,
-          supervisor_token_digest = coalesce($9, supervisor_token_digest)
+          taken_over_supervisor_token_digests = case
+            when $9::bytea is null then taken_over_supervisor_token_digests
+            else array_append(taken_over_supervisor_token_digests, $9::bytea)
+          end
         where thread_id = $1 and state_version = $2
           and sandbox_state = any($10::text[])
           and ($11::timestamptz is null or last_activity_at = $11)
@@ -277,7 +281,7 @@ export class PostgresThreadStore implements ThreadStore {
         "problem" in to ? (to.problem ?? null) : null,
         "leaseExpiresAt" in to ? to.leaseExpiresAt : null,
         transition.at,
-        transition.supervisorTokenDigest ?? null,
+        transition.addedSupervisorTokenDigest ?? null,
         statesThatMayBecome(to.state),
         transition.onlyIfLastActiveAt ?? null,
       ],
@@ -356,7 +360,10 @@ function toThreadRecord(row: ThreadRow): ThreadRecord {
     ownerUserId: row.owner_user_id ?? undefined,
     createdAt: row.created_at,
     sandboxProvider: row.sandbox_provider,
-    supervisorTokenDigest: row.supervisor_token_digest,
+    supervisorTokenDigests: [
+      row.supervisor_token_digest,
+      ...row.taken_over_supervisor_token_digests,
+    ],
     sandbox: toSandboxRecord(row),
     version: Number(row.state_version),
     title: row.title ?? undefined,

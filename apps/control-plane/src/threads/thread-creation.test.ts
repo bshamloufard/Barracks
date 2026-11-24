@@ -22,6 +22,7 @@ import {
   type TestControlPlaneOptions,
   testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
+import { authorizeWithThreadTokens } from "../websocket/supervisor-authorization.js";
 import { InMemoryThreadStore } from "./in-memory-thread-store.js";
 
 let controlPlane: TestControlPlane;
@@ -267,6 +268,80 @@ describe("a sandbox that cannot be created", () => {
       "create",
       "start",
     ]);
+  });
+});
+
+describe("a creation taken over from a control plane that has gone", () => {
+  /** Whether the control plane would let a supervisor holding `token` connect for the thread. */
+  function acceptsSupervisorToken(threadId: string, token: string): Promise<boolean> {
+    return authorizeWithThreadTokens(controlPlane.threadStore)({
+      threadId,
+      authorizationHeader: `Bearer ${token}`,
+    });
+  }
+
+  /** Makes the next `count` records of a sandbox running fail, as a control plane dying just then would. */
+  function loseRecordsOfRunning(threadStore: InMemoryThreadStore, count: number): void {
+    const recordTransition = threadStore.transition.bind(threadStore);
+    let remaining = count;
+    vi.spyOn(threadStore, "transition").mockImplementation(async (transition) => {
+      if (transition.to.state === "running" && remaining > 0) {
+        remaining -= 1;
+        throw new Error("The control plane stopped before recording this");
+      }
+      return recordTransition(transition);
+    });
+  }
+
+  async function takeOverLapsedOperations(clock: ControllableClock): Promise<void> {
+    clock.advanceBy(testLifecycleSettings.checkIntervalInMilliseconds * 3);
+    await controlPlane.threadServices.reconciler.reconcile({ includeSettledSandboxes: false });
+    await controlPlane.whenOperationsSettle();
+  }
+
+  it("lets in the supervisor of a sandbox it made on an attempt that seemed to fail", async () => {
+    const sandboxProvider = new FakeSandboxProvider();
+    const createSandbox = sandboxProvider.create.bind(sandboxProvider);
+    vi.spyOn(sandboxProvider, "create")
+      .mockRejectedValueOnce(new Error("The control plane stopped before asking"))
+      .mockImplementationOnce(async (request) => {
+        await createSandbox(request);
+        throw new SandboxProviderUnavailableError("create a sandbox", "the request timed out");
+      });
+    const threadStore = new InMemoryThreadStore();
+    const clock = new ControllableClock();
+    await start({ sandboxProvider, threadStore, clock: clock.now, retryDelaysInMilliseconds: [0] });
+    vi.spyOn(threadStore, "transition").mockRejectedValueOnce(
+      new Error("The control plane stopped before recording this"),
+    );
+
+    const { threadId } = await createThreadThroughApi();
+    await controlPlane.whenOperationsSettle();
+    await takeOverLapsedOperations(clock);
+
+    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "running" });
+    expect(sandboxProvider.sandboxIds()).toHaveLength(1);
+    expect(
+      await acceptsSupervisorToken(threadId, controlPlane.supervisorTokenGivenFor(threadId)),
+    ).toBe(true);
+  });
+
+  it("lets in the supervisor of the first attempt's sandbox when an earlier take-over was cut short too", async () => {
+    const threadStore = new InMemoryThreadStore();
+    const clock = new ControllableClock();
+    await start({ threadStore, clock: clock.now });
+    loseRecordsOfRunning(threadStore, 2);
+
+    const { threadId } = await createThreadThroughApi();
+    await controlPlane.whenOperationsSettle();
+    const firstAttemptsToken = controlPlane.supervisorTokenGivenFor(threadId);
+    await takeOverLapsedOperations(clock);
+    await takeOverLapsedOperations(clock);
+
+    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "running" });
+    expect(controlPlane.sandboxProvider.sandboxIds()).toHaveLength(1);
+    expect(await acceptsSupervisorToken(threadId, firstAttemptsToken)).toBe(true);
+    expect(await acceptsSupervisorToken(threadId, "a token nobody was given")).toBe(false);
   });
 });
 

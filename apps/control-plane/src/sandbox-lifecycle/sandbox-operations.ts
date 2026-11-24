@@ -122,11 +122,12 @@ export class SandboxOperations {
 
   /**
    * A creation taken over from a control plane that has gone lost the token
-   * that control plane minted, so it mints another and records its digest
-   * before asking for a sandbox, so that a supervisor made with it can
-   * connect at once. A sandbox an earlier attempt made after all has the
-   * earlier token; it is taken as the thread's, and the earlier digest is
-   * recorded again.
+   * that control plane minted, so it mints another and adds its digest to
+   * those the thread accepts before asking for a sandbox, so that a
+   * supervisor made with it can connect at once. A sandbox that turns up
+   * already made holds the token of whichever attempt made it (this one's,
+   * if a request that seemed to fail went through, or an earlier one's),
+   * and every one of those is still accepted.
    */
   async #create(
     handedOver: ThreadRecord,
@@ -153,18 +154,11 @@ export class SandboxOperations {
       });
       return;
     }
-    const recorded = await this.#recordTransition(
-      {
-        threadId: thread.threadId,
-        fromVersion: thread.version,
-        to: { state: "running", sandboxId: outcome.sandboxId, problem: undefined },
-        at: this.#options.clock(),
-        ...(isTakenOver && outcome.wasMadeEarlier
-          ? { supervisorTokenDigest: handedOver.supervisorTokenDigest }
-          : {}),
-      },
-      logger,
-    );
+    const recorded = await this.#record(thread, logger, {
+      state: "running",
+      sandboxId: outcome.sandboxId,
+      problem: undefined,
+    });
     if (recorded.kind === "changed") {
       logger.info({ sandboxId: outcome.sandboxId }, "The thread's sandbox is running");
       return;
@@ -172,7 +166,7 @@ export class SandboxOperations {
     await this.#removeUnrecordedSandbox(thread.threadId, outcome, logger);
   }
 
-  /** Returns the thread as recorded with the new token's digest, or undefined if it moved on. */
+  /** Returns the thread as recorded accepting the new token, or undefined if it moved on. */
   async #recordNewToken(
     thread: ThreadRecord,
     token: MintedSupervisorToken,
@@ -184,7 +178,7 @@ export class SandboxOperations {
         fromVersion: thread.version,
         to: { state: "creating", leaseExpiresAt: this.leaseExpiry() },
         at: this.#options.clock(),
-        supervisorTokenDigest: token.digest,
+        addedSupervisorTokenDigest: token.digest,
       },
       logger,
     );
@@ -565,7 +559,11 @@ export class SandboxOperations {
 
 type SandboxRequestOutcome = {
   sandboxId: string;
-  /** The sandbox was made by an earlier attempt, and already has the recorded token. */
+  /**
+   * The sandbox already existed when asked for: an earlier attempt, or a
+   * request of this one that seemed to fail, made it, with a token the
+   * thread already accepts.
+   */
   wasMadeEarlier: boolean;
 };
 
