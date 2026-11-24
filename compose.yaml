@@ -1,0 +1,139 @@
+# Barrack on one machine: Postgres, the control plane (serving the web
+# client) and a Docker socket proxy, with each thread's sandbox a sibling
+# container that the control plane starts on this machine's Docker.
+# See docs/deployment.md, "On one machine with Docker Compose".
+#
+#   pnpm sandbox-image:build        # the sandbox image, barrack-sandbox:dev
+#   docker compose up --build --detach
+#
+# Settings come from a `.env` file beside this one: BARRACK_DATABASE_PASSWORD
+# is required; the agent's settings and model keys are read from it too.
+#
+# THERE IS NO USER SIGN-IN YET. Anyone who can open the control plane's port
+# can create threads and command their agents, so it is published on
+# 127.0.0.1 only. Do not change that until sign-in exists.
+#
+# DOCKER ACCESS IS HOST ACCESS. Whoever can create containers through the
+# Docker API can start one that is privileged or mounts the host's files,
+# and so controls this machine as root. The control plane needs to create
+# containers, so a flaw in it could be turned into control of the host. The
+# socket proxy below narrows what it can ask Docker for to the few calls the
+# Docker provider makes (it cannot list, exec into, read the logs of, or
+# build anything, nor touch images, volumes or networks), keeps the socket
+# itself out of the control plane's container, and refuses every other
+# container on the network. It does not inspect what a create asks for, so
+# it does not remove that risk. Run this only on a machine you would trust
+# the control plane with.
+#
+# Networks, and so who can reach what:
+#   database    Postgres and the control plane. Internal: no other route.
+#   docker-api  The socket proxy and the control plane. Internal.
+#   sandboxes   The control plane and every sandbox, with internet access.
+# A sandbox can reach the control plane (by the name `control-plane`) and
+# the internet, but neither Postgres nor the socket proxy, whose networks it
+# never joins. Sandboxes can reach each other, as on Docker's default bridge.
+
+name: barrack
+
+services:
+  database:
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+    environment:
+      POSTGRES_USER: barrack
+      POSTGRES_DB: barrack
+      POSTGRES_PASSWORD: ${BARRACK_DATABASE_PASSWORD:?set BARRACK_DATABASE_PASSWORD (letters and digits) in .env}
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "barrack", "--dbname", "barrack"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # https://github.com/wollomatic/socket-proxy: a small proxy, from an image
+  # with nothing in it but itself, that forwards only the requests matching
+  # these patterns (anchored at both ends) and only from `control-plane`.
+  docker-api:
+    image: wollomatic/socket-proxy:1.13.2@sha256:ff95d6ff6c27853005ef85eb8f4ab5923dc3d2f1e055f98fb6aeeaceec3fe848
+    command:
+      - -listenip=0.0.0.0
+      - -allowfrom=control-plane
+      - -allowhealthcheck
+      - -shutdowngracetime=5
+      # The docker CLI checks the API version first.
+      - -allowHEAD=(/v[0-9.]+)?/_ping
+      - -allowGET=(/v[0-9.]+)?/_ping
+      # Inspect a sandbox by its name or full ID; never list containers.
+      - -allowGET=(/v[0-9.]+)?/containers/(barrack-thread-[A-Za-z0-9_-]+|[0-9a-f]{64})/json
+      # Create, start and stop a sandbox; `docker run --detach` also asks to
+      # wait for the container's exit. Pulling is not allowed, so the
+      # sandbox image must already be on this machine.
+      - -allowPOST=(/v[0-9.]+)?/containers/create
+      - -allowPOST=(/v[0-9.]+)?/containers/[0-9a-f]{64}/(start|stop|wait)
+      # Remove a sandbox.
+      - -allowDELETE=(/v[0-9.]+)?/containers/[0-9a-f]{64}
+    # Root in this container only to open the socket, which belongs to root
+    # and the host's docker group, whose number differs between machines.
+    # It holds no capabilities and cannot gain any.
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  control-plane:
+    build:
+      context: .
+      target: control-plane-with-docker-cli
+    image: barrack-control-plane:compose
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BARRACK_DATABASE_URL: postgres://barrack:${BARRACK_DATABASE_PASSWORD}@database:5432/barrack
+      # Postgres is reachable only on the internal `database` network.
+      BARRACK_DATABASE_TLS: disable
+      BARRACK_SANDBOX_PROVIDER: docker
+      BARRACK_DOCKER_IMAGE: ${BARRACK_DOCKER_IMAGE:-barrack-sandbox:dev}
+      BARRACK_DOCKER_NETWORK: barrack-sandboxes
+      BARRACK_SANDBOX_CONTROL_PLANE_URL: ws://control-plane:8787
+      DOCKER_HOST: tcp://docker-api:2375
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      - database
+      - docker-api
+      - sandboxes
+    depends_on:
+      database:
+        condition: service_healthy
+      docker-api:
+        condition: service_healthy
+    # Time for the graceful shutdown on SIGTERM: closing connections and
+    # letting sandbox creations under way finish, which can take a while.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+volumes:
+  database-data:
+
+networks:
+  database:
+    internal: true
+  docker-api:
+    internal: true
+  sandboxes:
+    # A fixed name, because the control plane passes it to `docker run`.
+    name: barrack-sandboxes
