@@ -41,10 +41,24 @@ RUN pnpm install --offline --frozen-lockfile --filter "@barrack/sandbox-supervis
 
 FROM ${NODE_IMAGE} AS node-runtime
 
+# --- Build run-as-agent -----------------------------------------------------
+# The helper through which the supervisor runs things as the agent
+# (run-as-agent.c), linked statically so no loader takes part while it holds
+# its capabilities. The compiler stays in this stage.
+FROM ${BASE_IMAGE} AS run-as-agent-build
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY sandbox-image/run-as-agent.c /build/
+RUN gcc -static -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector-strong \
+      -o /build/run-as-agent /build/run-as-agent.c
+
 # --- The sandbox, before its browser --------------------------------------
 FROM ${BASE_IMAGE} AS sandbox-base
 
-# Two users, so that the agent cannot read the supervisor's secrets. The
+# Two users, so that the agent cannot read the supervisor's secrets. Their
+# IDs are also compiled into run-as-agent.c, which can make its caller
+# barrack-agent alone; the supervisor checks at startup that they agree. The
 # supervisor's token is in a file only its user can read, and then in its
 # memory, which /proc shows to its own user alone; and Linux lets a process
 # signal or trace only processes of its own user. The supervisor is a member of the agent's group, for the
@@ -60,16 +74,21 @@ RUN groupadd --gid 10001 barrack-supervisor \
 # forward signals to the supervisor and reap the orphans an agent's commands
 # leave behind.
 #
-# The supervisor starts the agent through run-as-agent, a copy of setpriv
-# that alone carries the capabilities to change user, and that only the
-# supervisor's group may run (or read). It changes to the agent's user and
-# runs the agent, which ends up with no capabilities at all. Granting them to
-# this small binary keeps the supervisor's own process unprivileged.
-# libcap2-bin is needed only to grant them, so it goes again in the same layer.
+# The supervisor starts the agent through run-as-agent, which alone carries
+# the capabilities to change user, which only the supervisor's group may run
+# (or read), and which can make its caller barrack-agent and no one else,
+# with no capabilities and no way to gain any (no_new_privs). Granting them
+# to this small program keeps the supervisor's own process unprivileged, and
+# its user short of root. The ownership is set before the capabilities,
+# since changing a file's owner clears them. libcap2-bin is needed only to
+# grant them, so it goes again in the same layer. The directories are made
+# first, since COPY would give them the file's owner and mode, which would
+# close /opt/barrack, and with it Node's packages, to the agent.
+RUN install -d -m 0755 /opt/barrack /opt/barrack/bin
+COPY --from=run-as-agent-build --chown=root:barrack-supervisor --chmod=0750 \
+      /build/run-as-agent /opt/barrack/bin/run-as-agent
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends ca-certificates git libcap2-bin tini \
- && install -d -m 0755 /opt/barrack/bin \
- && install -o root -g barrack-supervisor -m 0750 /usr/bin/setpriv /opt/barrack/bin/run-as-agent \
  && setcap cap_setuid,cap_setgid=ep /opt/barrack/bin/run-as-agent \
  && apt-get purge --yes --auto-remove libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
@@ -132,10 +151,13 @@ RUN apt-get update \
 FROM firefox-from-${FIREFOX_SOURCE} AS sandbox
 
 # The capability bounding set keeps SETUID and SETGID for run-as-agent, and
-# no-new-privileges cannot be set without disarming it, so any setuid or
-# setgid program would run with those two capabilities for whoever runs it,
-# the agent included, and a flaw in one (su, passwd, mount...) would let the
-# agent become the supervisor. Nothing here needs them, so none keep the bit.
+# the container's no-new-privileges cannot be set without disarming it. Every
+# process run-as-agent starts sets no_new_privs itself, so nothing the agent
+# runs can gain privileges; but a process `docker exec` starts as the agent
+# does not have it, and any setuid or setgid program would run with those two
+# capabilities for it, and a flaw in one (su, passwd, mount...) would let it
+# become the supervisor, or root. Nothing here needs them, so none keep the
+# bit.
 RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 
 # The agent owns its workspace, its state (Pi's credentials, settings and

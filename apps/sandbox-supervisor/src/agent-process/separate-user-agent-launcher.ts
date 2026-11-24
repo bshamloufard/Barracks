@@ -19,8 +19,10 @@ const signalEveryProcessOfThisUserScript =
 
 /**
  * Runs the agent as its own unprivileged user, through `run-as-agent`, so
- * that it cannot read the supervisor's environment, signal it, or trace it:
- * Linux allows those only between processes of the same user.
+ * that it cannot read the supervisor's memory, signal it, or trace it:
+ * Linux allows those only between processes of the same user. The helper
+ * can make its caller that one user and no other; `account` is the user it
+ * is known to make (checked at startup), for the variables naming the user.
  *
  * The same rule means the supervisor cannot signal the agent either, so
  * signals are sent by a short process that runs as the agent. Signalling
@@ -44,7 +46,7 @@ export class SeparateUserAgentLauncher implements AgentProcessLauncher {
     // Node changes into the working directory before it executes the
     // helper, still as the supervisor, which therefore needs search access
     // to it (see sandbox-image/README.md).
-    const child = spawn(this.#runAsAgentPath, buildRunAsAgentArguments(this.#account, command), {
+    const child = spawn(this.#runAsAgentPath, buildRunAsAgentArguments(command), {
       cwd: request.workingDirectory,
       env: { ...request.environment, ...this.#describeUser() },
       stdio: ["pipe", "pipe", "pipe"],
@@ -54,14 +56,14 @@ export class SeparateUserAgentLauncher implements AgentProcessLauncher {
 
   launchCommand(request: AgentCommandRequest): AgentProcessStdio {
     const command = [request.executable, ...request.arguments];
-    return spawn(this.#runAsAgentPath, buildRunAsAgentArguments(this.#account, command), {
+    return spawn(this.#runAsAgentPath, buildRunAsAgentArguments(command), {
       cwd: request.workingDirectory,
       env: { ...request.environment, ...this.#describeUser() },
       stdio: ["pipe", "pipe", "pipe"],
     });
   }
 
-  /** `setpriv` leaves the environment alone, so these would still name the supervisor's user. */
+  /** `run-as-agent` leaves the environment alone, so these would still name the supervisor's user. */
   #describeUser(): NodeJS.ProcessEnv {
     return {
       HOME: this.#account.homeDirectory,
@@ -72,7 +74,7 @@ export class SeparateUserAgentLauncher implements AgentProcessLauncher {
   }
 
   async #signalEveryAgentProcess(signal: NodeJS.Signals): Promise<void> {
-    const outcome = await runAsAgent(this.#runAsAgentPath, this.#account, [
+    const outcome = await runAsAgent(this.#runAsAgentPath, [
       process.execPath,
       "-e",
       signalEveryProcessOfThisUserScript,

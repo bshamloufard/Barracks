@@ -17,6 +17,19 @@ const otherUserName = "nobody";
 let temporaryDirectory: string;
 let workspaceDirectory: string;
 
+/** The account of `nobody`, whom the stand-in helper pretends to make its caller. */
+async function lookUpOtherUser() {
+  const lookup = await lookUpUserAccount(otherUserName);
+  if (!lookup.found) {
+    throw new Error(`This test needs a user named "${otherUserName}".`);
+  }
+  return lookup.account;
+}
+
+async function writeHelpersMaking(account: { userId: number; groupId: number }) {
+  return writeFakeRunAsAgent(temporaryDirectory, account);
+}
+
 beforeEach(async () => {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "barrack-prepare-launcher-"));
   workspaceDirectory = path.join(temporaryDirectory, "workspace");
@@ -118,7 +131,7 @@ describe("prepareAgentProcessLauncher", () => {
     });
 
     it("explains a sandbox in which the helper cannot change user", async () => {
-      const { failingHelperPath } = await writeFakeRunAsAgent(temporaryDirectory);
+      const { failingHelperPath } = await writeHelpersMaking(await lookUpOtherUser());
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
@@ -131,14 +144,38 @@ describe("prepareAgentProcessLauncher", () => {
         ok: false,
         problems: [
           expect.stringContaining(
-            "(exit code 127: setpriv: setresuid failed: Operation not permitted). The sandbox must keep the SETUID and SETGID capabilities and must not set no-new-privileges.",
+            "(exit code 126: run-as-agent: setgroups failed: Operation not permitted). The sandbox must keep the SETUID and SETGID capabilities and must not set no-new-privileges.",
+          ),
+        ],
+      });
+    });
+
+    it("refuses a helper that makes its caller someone other than the agent user", async () => {
+      const otherUser = await lookUpOtherUser();
+      const { workingHelperPath } = await writeHelpersMaking({
+        userId: otherUser.userId + 1,
+        groupId: otherUser.groupId,
+      });
+
+      const preparation = await prepareAgentProcessLauncher({
+        agentUserName: otherUserName,
+        agentMayShareSupervisorUser: false,
+        agentDirectories: [workspaceDirectory],
+        runAsAgentPath: workingHelperPath,
+      });
+
+      expect(preparation).toEqual({
+        ok: false,
+        problems: [
+          expect.stringMatching(
+            /^BARRACK_AGENT_USER: .* runs processes as user \d+, .* not as "nobody" .*the helper and the image's users disagree$/,
           ),
         ],
       });
     });
 
     it("names each directory the agent could not write to", async () => {
-      const { workingHelperPath } = await writeFakeRunAsAgent(temporaryDirectory);
+      const { workingHelperPath } = await writeHelpersMaking(await lookUpOtherUser());
       const missingDirectory = path.join(temporaryDirectory, "state", "pi", "sessions");
 
       const preparation = await prepareAgentProcessLauncher({
@@ -154,12 +191,8 @@ describe("prepareAgentProcessLauncher", () => {
       });
     });
 
-    it("runs the agent as the agent user once the helper has run a process as that user", async () => {
-      const { workingHelperPath } = await writeFakeRunAsAgent(temporaryDirectory);
-      const lookup = await lookUpUserAccount(otherUserName);
-      if (!lookup.found) {
-        throw new Error(`This test needs a user named "${otherUserName}".`);
-      }
+    it("runs the agent as the agent user once the helper has run a process as that user, unable to gain privileges", async () => {
+      const { workingHelperPath } = await writeHelpersMaking(await lookUpOtherUser());
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
@@ -173,13 +206,7 @@ describe("prepareAgentProcessLauncher", () => {
         launcher: { description: 'the separate user "nobody"' },
       });
       const helperArguments = await readFile(`${workingHelperPath}.arguments`, "utf8");
-      expect(helperArguments.split("\n").slice(0, 5)).toEqual([
-        `--reuid=${lookup.account.userId}`,
-        `--regid=${lookup.account.groupId}`,
-        "--init-groups",
-        "--",
-        process.execPath,
-      ]);
+      expect(helperArguments.split("\n").slice(0, 2)).toEqual([process.execPath, "-e"]);
     });
   });
 });

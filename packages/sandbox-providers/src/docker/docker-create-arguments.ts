@@ -97,10 +97,11 @@ export function buildCreateArguments(
     "--stop-timeout",
     String(settings.stopTimeoutInSeconds),
     // Nothing in the sandbox runs as root, so it needs no capabilities beyond
-    // the two the supervisor will use to start the agent as a separate user
-    // (see sandbox-image/README.md). Those two must stay in the bounding set
-    // for that, and `no-new-privileges` would stop the supervisor's binary
-    // from receiving them, so it is not set.
+    // the two the image's run-as-agent takes from its file to start the
+    // agent as a separate user (see sandbox-image/README.md). Those two must
+    // stay in the bounding set for that, and `no-new-privileges` would stop
+    // the helper from receiving them, so it is not set here; the helper sets
+    // no_new_privs for every process of the agent's itself.
     "--cap-drop",
     "ALL",
     "--cap-add",

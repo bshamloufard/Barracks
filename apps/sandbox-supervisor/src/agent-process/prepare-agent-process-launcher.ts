@@ -24,14 +24,20 @@ export type LauncherPreparation =
   | { ok: false; problems: string[] };
 
 /**
- * Prints each directory, of those named in its arguments, that the calling
- * user cannot create files in.
+ * Prints, as JSON, the user and group IDs it runs with, whether it may still
+ * gain privileges, and each directory, of those named in its arguments, that
+ * it cannot create files in.
  */
-const listUnwritableDirectoriesScript = `
-const { accessSync, constants } = require("node:fs");
-for (const directory of process.argv.slice(1)) {
-  try { accessSync(directory, constants.W_OK | constants.X_OK); } catch { console.log(directory); }
-}`;
+const describeAgentProcessScript = `
+const { accessSync, constants, readFileSync } = require("node:fs");
+const unwritableDirectories = process.argv.slice(1).filter((directory) => {
+  try { accessSync(directory, constants.W_OK | constants.X_OK); return false; } catch { return true; }
+});
+const noNewPrivileges = /^NoNewPrivs:\\s*1$/m.test(readFileSync("/proc/self/status", "utf8"));
+console.log(JSON.stringify({
+  userId: process.getuid(), groupId: process.getgid(), groups: process.getgroups(),
+  noNewPrivileges, unwritableDirectories,
+}));`;
 
 const howToShareForDevelopment =
   "For local development only, where the agent may read it, set BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only instead.";
@@ -103,10 +109,10 @@ async function checkRunningAsAgent(
       `BARRACK_AGENT_USER: the helper ${runAsAgentPath}, which starts the agent as "${account.name}", is missing or this user may not run it`,
     ];
   }
-  const outcome = await runAsAgent(runAsAgentPath, account, [
+  const outcome = await runAsAgent(runAsAgentPath, [
     process.execPath,
     "-e",
-    listUnwritableDirectoriesScript,
+    describeAgentProcessScript,
     ...settings.agentDirectories,
   ]);
   if (outcome.exitCode !== 0) {
@@ -114,13 +120,62 @@ async function checkRunningAsAgent(
       `BARRACK_AGENT_USER: ${runAsAgentPath} could not run a process as "${account.name}" (exit code ${outcome.exitCode}: ${outcome.standardError.trim()}). The sandbox must keep the SETUID and SETGID capabilities and must not set no-new-privileges.`,
     ];
   }
-  return outcome.standardOutput
-    .split("\n")
-    .filter((directory) => directory.length > 0)
-    .map(
+  const agentProcess = parseAgentProcess(outcome.standardOutput);
+  if (agentProcess === undefined) {
+    return [`BARRACK_AGENT_USER: ${runAsAgentPath} ran a process whose report could not be read`];
+  }
+  return [
+    ...describeIdentityProblems(runAsAgentPath, account, agentProcess),
+    ...agentProcess.unwritableDirectories.map(
       (directory) =>
         `${directory}: must exist and be writable by the agent's user "${account.name}"`,
+    ),
+  ];
+}
+
+type AgentProcessReport = {
+  userId: number;
+  groupId: number;
+  groups: number[];
+  noNewPrivileges: boolean;
+  unwritableDirectories: string[];
+};
+
+function parseAgentProcess(standardOutput: string): AgentProcessReport | undefined {
+  try {
+    return JSON.parse(standardOutput) as AgentProcessReport;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The helper decides the user by itself, so the user it made must be the
+ * one `BARRACK_AGENT_USER` names, with that user's group alone, and unable
+ * to gain privileges: an image whose helper and users disagree must not
+ * start an agent that is someone else.
+ */
+function describeIdentityProblems(
+  runAsAgentPath: string,
+  account: UserAccount,
+  agentProcess: AgentProcessReport,
+): string[] {
+  const isAgent =
+    agentProcess.userId === account.userId &&
+    agentProcess.groupId === account.groupId &&
+    agentProcess.groups.every((group) => group === account.groupId);
+  const problems: string[] = [];
+  if (!isAgent) {
+    problems.push(
+      `BARRACK_AGENT_USER: ${runAsAgentPath} runs processes as user ${agentProcess.userId}, group ${agentProcess.groupId} (groups ${agentProcess.groups.join(",")}), not as "${account.name}" (${account.userId}, group ${account.groupId} alone); the helper and the image's users disagree`,
     );
+  }
+  if (!agentProcess.noNewPrivileges) {
+    problems.push(
+      `BARRACK_AGENT_USER: ${runAsAgentPath} leaves the agent able to gain privileges (no_new_privs is not set); it is not Barrack's helper`,
+    );
+  }
+  return problems;
 }
 
 /** Undefined when the current user has no entry in the password database. */

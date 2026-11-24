@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 describe("SeparateUserAgentLauncher", () => {
-  it("starts the agent's script with the supervisor's Node through the helper, as the agent's user and groups", async () => {
+  it("starts the agent's script with the supervisor's Node through the helper, naming only the program and its arguments", async () => {
     const { workingHelperPath } = await writeFakeRunAsAgent(temporaryDirectory);
     const scriptPath = path.join(temporaryDirectory, "print-environment.mjs");
     await writeFile(scriptPath, "process.stdout.write(JSON.stringify(process.env));");
@@ -53,10 +53,6 @@ describe("SeparateUserAgentLauncher", () => {
 
     const helperArguments = await readFile(`${workingHelperPath}.arguments`, "utf8");
     expect(helperArguments.trimEnd().split("\n")).toEqual([
-      "--reuid=10002",
-      "--regid=10002",
-      "--init-groups",
-      "--",
       process.execPath,
       scriptPath,
       "--approve",

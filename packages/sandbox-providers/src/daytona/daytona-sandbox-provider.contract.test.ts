@@ -69,13 +69,16 @@ async function waitUntilSupervisorRuns(daytona: DaytonaApi, sandboxId: string): 
  * the supervisor's, may not create files in it. Whether Daytona runs a
  * command as root or as the image's user has not been checked, so the
  * command becomes the agent either way: root through `setpriv`, the
- * supervisor's user through `run-as-agent`, the copy of it only that user may
- * run. The script travels base64-encoded so that no quoting is nested.
+ * supervisor's user through `run-as-agent`, which only that user may run
+ * and which makes its caller the agent and no one else. The script travels
+ * base64-encoded so that no quoting is nested.
  */
 function asAgent(shellCommand: string): string {
   const script = [
-    'if [ "$(id -u)" = 0 ]; then become=setpriv; else become=/opt/barrack/bin/run-as-agent; fi',
-    `exec "$become" --reuid=barrack-agent --regid=barrack-agent --init-groups -- sh -c '${shellCommand}'`,
+    'if [ "$(id -u)" = 0 ]; then',
+    `  exec setpriv --reuid=barrack-agent --regid=barrack-agent --init-groups -- /bin/sh -c '${shellCommand}'`,
+    "fi",
+    `exec /opt/barrack/bin/run-as-agent /bin/sh -c '${shellCommand}'`,
   ].join("\n");
   const encodedScript = Buffer.from(script).toString("base64");
   return `sh -c 'echo ${encodedScript} | base64 -d | sh'`;

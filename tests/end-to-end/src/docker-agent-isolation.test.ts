@@ -195,7 +195,7 @@ if (unavailableReason !== undefined) {
         CapPrm: "0000000000000000",
         CapEff: "0000000000000000",
         CapAmb: "0000000000000000",
-        NoNewPrivs: "0",
+        NoNewPrivs: "1",
       });
       expect(findings.supervisor).toEqual({
         userId: supervisorUserId,
