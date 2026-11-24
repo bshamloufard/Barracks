@@ -10,6 +10,7 @@ import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
 import { OwnerModelAccess } from "./model-access/owner-model-access.js";
 import { assembleModelProxy } from "./model-proxy/assemble-model-proxy.js";
+import { defaultModelProxyLimits } from "./model-proxy/model-proxy-limits.js";
 import { ModelProxyTokens } from "./model-proxy/model-proxy-tokens.js";
 import { ModelSwitchAllowances } from "./model-proxy/model-switch-allowances.js";
 import { ModelUsage } from "./model-usage/model-usage.js";
@@ -105,6 +106,7 @@ async function main(): Promise<void> {
     usage: modelUsage,
     endings: threadServices.relays,
     upstreamOrigin: configuration.modelProxyUpstreamOrigin,
+    limits: { maximumRequestBytesHeldInTotal: configuration.modelProxyRequestBodiesHeldInBytes },
     logger,
   });
   const server = await startControlPlaneServer({
@@ -188,14 +190,17 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
   describeModelAccess(configuration, logger);
 }
 
-/** Says which providers' keys stay here, and the cap on usage; never a key. */
+/** Says which providers' keys stay here, the cap on usage and the proxy's memory bounds; never a key. */
 function describeModelAccess(configuration: ControlPlaneConfiguration, logger: Logger): void {
-  const { modelUsageCap, modelProxyUpstreamOrigin } = configuration;
+  const { modelUsageCap, modelProxyUpstreamOrigin, modelProxyRequestBodiesHeldInBytes } =
+    configuration;
   logger.info(
     {
       providersWhoseKeysStayHere: relayedProviders.map((provider) => provider.providerId),
       usageCapTokens: modelUsageCap.installationCapTokens ?? null,
       usageCapWindowHours: modelUsageCap.windowHours,
+      largestRequestBodyInBytes: defaultModelProxyLimits.maximumRequestBytes,
+      requestBodiesHeldAtOnceInBytes: modelProxyRequestBodiesHeldInBytes,
     },
     "Relaying some providers' model traffic so their keys stay out of sandboxes; every other provider's key is placed in the sandbox",
   );

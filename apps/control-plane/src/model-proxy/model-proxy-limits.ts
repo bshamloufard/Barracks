@@ -22,9 +22,19 @@ export type ModelProxyLimits = {
   /** Requests one thread may start in a burst, refilled at `requestsPerSecondPerThread`. */
   requestBurstPerThread: number;
   requestsPerSecondPerThread: number;
-  /** The largest request body relayed: Anthropic's own limit for a Messages request is 32 MB. */
+  /**
+   * The largest request body relayed. Anthropic's own limit for a Messages
+   * request is 32 MB, and the pinned Pi can come close: a conversation of a
+   * million tokens is about 4 MB of text, and the computer tool sends up to
+   * six 1280x800 screenshots, each a few kilobytes of base64 for a page of
+   * text, about 0.8 MB for a smooth photograph and 4.1 MB at worst; images
+   * the agent reads from files are up to 4.5 MB each. See the decision log.
+   */
   maximumRequestBytes: number;
-  /** Request bodies held by this instance at once, each read whole before it is relayed. */
+  /**
+   * Request bodies held by this instance at once, each read whole before it
+   * is relayed; set by `BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES`.
+   */
   maximumRequestBytesHeldInTotal: number;
   /** The largest answer relayed, decompressed. */
   maximumResponseBytes: number;
@@ -47,7 +57,7 @@ export const defaultModelProxyLimits: ModelProxyLimits = {
   requestBurstPerThread: 20,
   requestsPerSecondPerThread: 2,
   maximumRequestBytes: 32 * 1024 * 1024,
-  maximumRequestBytesHeldInTotal: 512 * 1024 * 1024,
+  maximumRequestBytesHeldInTotal: 128 * 1024 * 1024,
   maximumResponseBytes: 64 * 1024 * 1024,
   firstByteTimeoutInMilliseconds: 5 * 60_000,
   idleTimeoutInMilliseconds: 5 * 60_000,

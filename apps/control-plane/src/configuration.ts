@@ -22,6 +22,7 @@ import {
   readGithubSettings,
 } from "./github/github-settings.js";
 import { parseCredentialKey } from "./model-access/credential-keyring.js";
+import { defaultModelProxyLimits } from "./model-proxy/model-proxy-limits.js";
 import type { ModelUsageCapSettings } from "./model-usage/model-usage.js";
 import type { SandboxLifecycleSettings } from "./sandbox-lifecycle/lifecycle-settings.js";
 import { readPiSettings } from "./threads/pi-settings.js";
@@ -65,6 +66,21 @@ const defaultCheckSeconds = 30;
 
 /** A day: long enough for a cap to mean a budget, short enough to recover from overnight. */
 const defaultUsageCapWindowHours = 24;
+
+/**
+ * Request bodies the model proxy holds at once, in mebibytes. Each body is
+ * held several times over while it is parsed and written out again, so
+ * 128 leaves room for the rest of a control plane in 1 GiB; see the
+ * deployment guide's sizing and the decision log.
+ */
+const defaultModelProxyRequestBodiesMebibytes = 128;
+
+const bytesPerMebibyte = 1024 * 1024;
+
+/** The largest request body the proxy relays, in mebibytes: one must always fit. */
+const largestModelProxyRequestMebibytes = Math.ceil(
+  defaultModelProxyLimits.maximumRequestBytes / bytesPerMebibyte,
+);
 
 const developmentOnlyPrefix = "development-only:";
 
@@ -134,6 +150,14 @@ const environmentSchema = z.object({
     })
     .transform((value) => value.slice(developmentOnlyPrefix.length))
     .optional(),
+  BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES: z.coerce
+    .number()
+    .int()
+    .min(largestModelProxyRequestMebibytes, {
+      error: `must be at least ${largestModelProxyRequestMebibytes}, the largest request body the model proxy relays, in mebibytes`,
+    })
+    .max(1024 * 1024)
+    .default(defaultModelProxyRequestBodiesMebibytes),
   BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM: z
     .literal("development-only", {
       error:
@@ -206,6 +230,8 @@ export type ControlPlaneConfiguration = {
    * provider's requests instead of the provider's own host.
    */
   modelProxyUpstreamOrigin: string | undefined;
+  /** How many bytes of request bodies the model proxy holds at once, past which it answers busy. */
+  modelProxyRequestBodiesHeldInBytes: number;
 };
 
 export type ConfigurationResult =
@@ -288,6 +314,8 @@ function toConfiguration(
       windowHours: settings.BARRACK_MODEL_USAGE_CAP_WINDOW_HOURS,
     },
     modelProxyUpstreamOrigin: settings.BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN,
+    modelProxyRequestBodiesHeldInBytes:
+      settings.BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES * bytesPerMebibyte,
   };
 }
 

@@ -78,7 +78,35 @@ describe("the control plane configuration", () => {
         },
         modelUsageCap: { installationCapTokens: undefined, windowHours: 24 },
         modelProxyUpstreamOrigin: undefined,
+        modelProxyRequestBodiesHeldInBytes: 128 * 1024 * 1024,
       },
+    });
+  });
+
+  it("reads how much of request bodies the model proxy may hold at once", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES: "64",
+    });
+
+    expect(result.ok && result.configuration.modelProxyRequestBodiesHeldInBytes).toBe(
+      64 * 1024 * 1024,
+    );
+  });
+
+  it("refuses to let the model proxy hold less than one request body of the largest size it relays", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES: "31",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [
+        expect.stringMatching(
+          /^BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES: .*at least 32, the largest request body the model proxy relays/,
+        ),
+      ],
     });
   });
 
