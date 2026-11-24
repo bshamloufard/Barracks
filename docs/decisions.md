@@ -287,5 +287,53 @@ Each entry records a decision, what the project plan said about it, what we actu
 ## 2026-11-24: Security gaps that remain open
 
 - **What the plan said:** Apply the security baseline from the first milestone that touches the cloud.
-- **What we did:** These are known and not yet closed. (1) The token is in the sandbox's environment (the container's, and on Daytona the sandbox's `envVars`), so anything started with `docker exec` or a provider's command interface inherits it, including as the agent's user; fix: hand it to the supervisor through a file only its user can read, or standard input. (2) `run-as-agent` can switch to any user, so the supervisor's user is effectively root in the container; fix: a helper that can only become `barrack-agent`, or the supervisor in a container of its own. (3) None of this has been examined on Daytona, whose own processes and command interface may offer the agent a way round; fix: examine and test it there before relying on it. (4) There is no user sign-in, so anyone who can reach the control plane controls every thread; fix: Supabase sign-in and per-user access checks on the server (Milestone 3), until which it stays on localhost.
+- **What we did:** These are known and not yet closed. (1) The token is in the sandbox's environment (the container's, and on Daytona the sandbox's `envVars`), so anything started with `docker exec` or a provider's command interface inherits it, including as the agent's user; fix: hand it to the supervisor through a file only its user can read, or standard input. (2) `run-as-agent` can switch to any user, so the supervisor's user is effectively root in the container; fix: a helper that can only become `barrack-agent`, or the supervisor in a container of its own. (3) None of this has been examined on Daytona, whose own processes and command interface may offer the agent a way round; fix: examine and test it there before relying on it. (4) There was no user sign-in, so anyone who could reach the control plane controlled every thread; closed by Supabase sign-in and per-user access checks on the server (see the entries below).
 - **Why:** Each fix is larger than the change that revealed it, and none matters while nothing is deployed; they are listed so none is forgotten.
+
+## 2026-11-24: Supabase Auth, with every token verified by the control plane, and only asymmetric keys
+
+- **What the plan said:** Supabase for authentication. A user can only ever see or control their own threads, enforced on the server.
+- **What we did:** The web client signs in through supabase-js; the control plane verifies each access token itself with jose against the project's published key set (`<project>/auth/v1/.well-known/jwks.json`): issuer, audience `authenticated`, ES256 or RS256 only, expiry with 30 seconds' tolerance, `role: authenticated`, not anonymous, the user being `sub`. Verification sits behind a small `AccessTokenVerifier` interface. A project still signing with the legacy shared secret publishes no keys, and the control plane refuses to start, telling the owner to rotate to an asymmetric key.
+- **Why:** Verifying locally costs no request to Supabase per call and keeps the shared secret, which can mint a token for anyone, out of the control plane. New projects sign asymmetrically by default. Accepting HS256 at all would reopen the attack that signs a token with the public key as the secret. Tests verify real tokens from a test issuer (`tests/test-identity-issuer`) through the same code, so no Supabase project is needed.
+
+## 2026-11-24: Sign-in by a six-digit code sent by email
+
+- **What the plan said:** Sign-in, with Sign in with Apple wanted for the native apps later.
+- **What we did:** One screen: email address, then the code Supabase emails, verified with `verifyOtp`; the PKCE flow is set explicitly, since supabase-js still defaults to implicit. The client asks the control plane (`GET /api/client-configuration`) for the Supabase URL and publishable key, and loads supabase-js only when the installation uses Supabase. The control plane refuses to start with a secret key in place of the publishable one.
+- **Why:** A code needs no redirect URLs, works across devices and the same way in a future SwiftUI app, and needs only one template edit in Supabase (`{{ .Token }}` in the Magic Link template). Served configuration means one built client serves any installation. Supabase's built-in mail sender reaches only the project's team members at about two emails an hour, so anyone else needs custom SMTP.
+
+## 2026-11-24: Installations admit listed email addresses, confirmed by Supabase
+
+- **What the plan said:** Nothing specific; the plan assumes the owner's own accounts.
+- **What we did:** `BARRACK_ALLOWED_USER_EMAILS` lists the addresses that may use the installation; with Supabase the control plane will not start without it, and admitting everyone takes the explicit value `anyone-who-can-sign-in`. An address counts only once Supabase confirms the user owns it: Supabase's access tokens carry an `email` claim but no trustworthy claim that it was verified (`user_metadata.email_verified` is editable by the user), so the control plane asks `/auth/v1/user` for `email_confirmed_at`, once per user and address while it runs. A refused user gets HTTP 403 `not_allowed` or close code `userNotAllowed`, and the client says why.
+- **Why:** Supabase projects accept sign-ups from anyone by default, and every user can spend the operator's sandbox budget. Refusing to start without a list makes admitting everyone a decision rather than an accident. Owners should also turn sign-ups off in Supabase once their users exist.
+
+## 2026-11-24: Users are keyed by the token's subject, with no link to Supabase's tables
+
+- **What the plan said:** Users and threads in Supabase's Postgres.
+- **What we did:** Migration 0020 adds `barrack.users` (the token's `sub` as text, and when it was first seen), recorded on a user's first authenticated request by an insert that does nothing on conflict, and `threads.owner_user_id` referencing it. There is no foreign key to `auth.users`. Threads created before sign-in have no owner and are shown to nobody; an operator can give one an owner with one `update`. Nothing had been deployed, so only development databases hold any.
+- **Why:** A foreign key to `auth.users` would tie the schema to Supabase, break the tests' plain Postgres and need privileges on Supabase's schema; and a cascade there could not stop sandboxes anyway. Deleting a thread or assigning it silently to whoever signs in first were both worse than hiding it.
+
+## 2026-11-24: A client's access token is its first WebSocket message
+
+- **What the plan said:** Authenticate clients; the transport was left open.
+- **What we did:** After the upgrade (`Origin`, when sent, must be allowed; native apps send none), the control plane accepts only an `authenticate` message within 5 seconds, then checks the thread's owner, and only then replays and goes live, so nothing about a thread reaches an unauthenticated or unauthorised client. The client re-sends each refreshed token, which must name the same user; when the newest expires the control plane closes with `accessTokenExpired` (4402), and the client refreshes and reconnects from its last seen sequence. Other new close codes: `notAuthenticated` (4401), `userNotAllowed` (4403), `threadNotFound` (4404), the same for another user's thread as for a missing one.
+- **Why:** Browsers cannot set headers on a WebSocket, and a token in the URL ends up in proxy and access logs. A first message carries no ambient credential, so another site cannot ride on the user's session, and works identically from a native app. Closing at expiry costs nothing, since a reconnect replays exactly what was missed.
+
+## 2026-11-24: Access is enforced at one point per transport
+
+- **What the plan said:** Enforce access on the server, not in the client.
+- **What we did:** HTTP: one middleware covers all of `/api/*` before any route is added, with an explicit list of public paths, and a test requests every route registered on the app without a token. WebSocket: the relay registry attaches a client only with a `ThreadAccess`, which only the ownership check can create. The thread store lists and finds threads for a user only by owner.
+- **Why:** A contributor adding a route is protected without having to remember, and a route that answers without a token fails a test; a new way of connecting clients cannot reach a relay without the ownership check.
+
+## 2026-11-24: A development mode with one fixed user, on loopback only
+
+- **What the plan said:** The local loop should need no cloud account.
+- **What we did:** `BARRACK_AUTHENTICATION=development-single-user` gives every client one fixed user, whose token the control plane hands out; `pnpm dev` sets it. The control plane refuses it unless it listens on a loopback address, and refuses no address with Supabase. Running Docker sandboxes locally therefore needs Supabase (or the tests' issuer), since the control plane must listen on Docker's bridge address, which the agents themselves can reach.
+- **Why:** The development token is no secret, so whoever can reach the control plane is the user; on loopback that is only the developer's own machine. It keeps development on the same code paths as real sign-in.
+
+## 2026-11-24: Deleting an account is not built yet
+
+- **What the plan said:** Nothing specific; the App Store requires in-app account deletion once the native apps let people create accounts.
+- **What we did:** Nothing yet. A user deleted in Supabase keeps their rows and running sandboxes here, and their last access token stays valid until it expires (at most an hour by default).
+- **Why:** Deletion must stop and destroy the user's sandboxes, delete their threads and history, delete the Supabase user with a secret key the control plane does not otherwise need, and close their connections. It is needed before the native apps (Milestone 8).
