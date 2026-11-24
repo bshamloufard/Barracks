@@ -18,7 +18,7 @@ import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import { ControllableClock } from "../test-support/controllable-clock.js";
-import { ControllableThreadEventLog } from "../test-support/controllable-thread-event-log.js";
+import { ControllableThreadEventLog, Gate } from "../test-support/controllable-thread-event-log.js";
 import {
   callModelProxy,
   type ProxyAccess,
@@ -123,6 +123,36 @@ async function readWholeAnswer(response: Response): Promise<string> {
 
 function everyKey(): string[] {
   return Object.values(keys);
+}
+
+/** A token store that counts its lookups, and how many run at once, and can hold the next. */
+class CountingTokenStore extends InMemoryModelProxyTokenStore {
+  lookups = 0;
+  peakLookupsAtOnce = 0;
+  #lookupsAtOnce = 0;
+  #gate: Gate | undefined;
+
+  holdLookups(): Gate {
+    this.#gate = new Gate();
+    return this.#gate;
+  }
+
+  reset(): void {
+    this.lookups = 0;
+    this.peakLookupsAtOnce = 0;
+  }
+
+  override async listDigests(threadId: string, providerId: string): Promise<Buffer[]> {
+    this.lookups += 1;
+    this.#lookupsAtOnce += 1;
+    this.peakLookupsAtOnce = Math.max(this.peakLookupsAtOnce, this.#lookupsAtOnce);
+    try {
+      await this.#gate?.pass();
+      return await super.listDigests(threadId, providerId);
+    } finally {
+      this.#lookupsAtOnce -= 1;
+    }
+  }
 }
 
 describe("the model proxy", () => {
@@ -658,6 +688,36 @@ describe("the model proxy", () => {
     await afterwards.arrayBuffer();
 
     expect([first.status, afterwards.status]).toEqual([200, 403]);
+  });
+
+  it("looks a remembered token up again once at a time, however many of its requests arrive due for it", async () => {
+    const clock = new ControllableClock();
+    const tokenStore = new CountingTokenStore();
+    await start({ clock: clock.now, modelProxyTokenStore: tokenStore });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    await readWholeAnswer(await callModelProxy(controlPlane, access, anthropic, "Hi"));
+    clock.advanceBy(16_000);
+    tokenStore.reset();
+    const lookup = tokenStore.holdLookups();
+
+    const requests = Array.from({ length: 100 }, () =>
+      callModelProxy(controlPlane, access, anthropic, "Hi").then(async (response) => {
+        await response.arrayBuffer();
+        return response.status;
+      }),
+    );
+    await lookup.reached;
+    // Give every other request time to arrive and find the lookup under way.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    lookup.release();
+    const statuses = await Promise.all(requests);
+
+    expect(tokenStore.peakLookupsAtOnce).toBe(1);
+    expect(tokenStore.lookups).toBe(1);
+    expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(4);
+    expect(statuses.every((status) => status === 200 || status === 429)).toBe(true);
   });
 
   it("bounds how many token lookups callers not yet authenticated cause, whatever thread they name", async () => {

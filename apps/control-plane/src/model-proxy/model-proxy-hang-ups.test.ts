@@ -7,6 +7,7 @@ import {
 } from "../authentication/development-single-user.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import type { AnswerUsage } from "../model-usage/model-usage-store.js";
+import { ControllableClock } from "../test-support/controllable-clock.js";
 import { ControllableThreadEventLog, Gate } from "../test-support/controllable-thread-event-log.js";
 import {
   callModelProxy,
@@ -157,7 +158,9 @@ type Stores = {
   events: HoldableThreadEventLog;
 };
 
-async function startThread(): Promise<{ access: ProxyAccess; stores: Stores; threadId: string }> {
+async function startThread(
+  clock?: ControllableClock,
+): Promise<{ access: ProxyAccess; stores: Stores; threadId: string }> {
   const stores: Stores = {
     tokens: new HoldableTokenStore(),
     usage: new HoldableUsageStore(),
@@ -170,6 +173,7 @@ async function startThread(): Promise<{ access: ProxyAccess; stores: Stores; thr
     threadEventLog: stores.events,
     // A cap, so its records are read for every request.
     modelUsageCap: { installationCapTokens: 10_000_000 },
+    ...(clock === undefined ? {} : { clock: clock.now }),
   });
   controlPlane = started;
   await started.saveModelCredential("anthropic", ownersKey);
@@ -270,6 +274,31 @@ describe("an agent hanging up at each point a request waits", () => {
     await lookup.reached;
     await request.hangUp();
     lookup.release();
+
+    await expectFullAllowance(access);
+  });
+
+  it("gives everything back when it hangs up while its remembered token is looked up again", async () => {
+    const clock = new ControllableClock();
+    const { access, stores } = await startThread(clock);
+    const first = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "",
+      {
+        body: bodyAsking("Hello"),
+      },
+    );
+    await first.arrayBuffer();
+    clock.advanceBy(16_000);
+    const renewal = stores.tokens.lookups.hold();
+    const request = await sendHangingUp(access, bodyAsking("Hello"));
+    await renewal.reached;
+    const waiting = await sendHangingUp(access, bodyAsking("Hello"));
+    await waiting.hangUp();
+    await request.hangUp();
+    renewal.release();
 
     await expectFullAllowance(access);
   });

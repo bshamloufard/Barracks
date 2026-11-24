@@ -124,6 +124,8 @@ export class ModelProxy {
   readonly #exchanges = new Map<string, Set<ProxyExchange>>();
   /** Each request's handling, from its arrival to the end of recording its usage. */
   readonly #handlings = new Set<Promise<void>>();
+  /** The lookup again of a remembered token under way, by thread and provider (see `#acceptToken`). */
+  readonly #renewals = new Map<string, Promise<unknown>>();
   #recordsChecksScheduled = 0;
   #isShuttingDown = false;
 
@@ -292,24 +294,64 @@ export class ModelProxy {
    * from memory if its last lookup was in the last 15 seconds, otherwise
    * after a lookup made outside it (only a caller holding a remembered
    * token gets that far). So strangers using the bound up cannot keep out
-   * an agent at work, however long it works. The refusal is the same
-   * whether the thread exists or not.
+   * an agent at work, however long it works. Those lookups again are made
+   * one at a time per thread and provider (`#acceptToken`), so an agent cannot
+   * put more than one of them on the database at once, however many
+   * requests it sends. The refusal is the same whether the thread exists
+   * or not.
    */
   async #authenticate(exchange: ProxyExchange): Promise<string | undefined> {
-    const { request, response, route, target, logger } = exchange;
+    const { request, response, route } = exchange;
     const presentedToken = readPresentedToken(request.headers);
     if (presentedToken === undefined || !ModelProxyTokens.isWellFormed(presentedToken)) {
       sendRefusal(response, route.format, proxyRefusals.tokenRefused);
       return undefined;
     }
-    switch (this.#options.authorization.recallAuthentication(target, presentedToken)) {
-      case "fresh":
-        return presentedToken;
-      case "due_for_renewal":
-        return this.#lookUpToken(exchange, presentedToken);
-      case "not_remembered":
-        break;
+    return this.#acceptToken(exchange, presentedToken);
+  }
+
+  /**
+   * Lets in a token remembered fresh; looks one due for renewal up again,
+   * unless a lookup again is already under way for the same thread and
+   * provider, in which case it waits for that one and asks its memory
+   * afresh (the token it renewed may be another of the thread's); and
+   * looks a token not remembered up within the instance's bound.
+   */
+  async #acceptToken(exchange: ProxyExchange, presentedToken: string): Promise<string | undefined> {
+    const { target } = exchange;
+    const renewalKey = `${target.threadId}\n${target.providerId}`;
+    for (;;) {
+      switch (this.#options.authorization.recallAuthentication(target, presentedToken)) {
+        case "fresh":
+          return presentedToken;
+        case "not_remembered":
+          return this.#lookUpWithinBound(exchange, presentedToken);
+        case "due_for_renewal":
+          break;
+      }
+      const underWay = this.#renewals.get(renewalKey);
+      if (underWay === undefined) {
+        const renewal = this.#lookUpToken(exchange, presentedToken);
+        this.#renewals.set(renewalKey, renewal);
+        try {
+          return await renewal;
+        } finally {
+          this.#renewals.delete(renewalKey);
+        }
+      }
+      await settledUnlessAborted(underWay, exchange.signal);
+      if (this.#refuseIfEnded(exchange)) {
+        return undefined;
+      }
     }
+  }
+
+  /** Looks a token not remembered up, within the instance's bound on such lookups. */
+  async #lookUpWithinBound(
+    exchange: ProxyExchange,
+    presentedToken: string,
+  ): Promise<string | undefined> {
+    const { response, route, logger } = exchange;
     const lookup = this.#authentications.enter();
     if (lookup.kind === "busy") {
       logger.warn("Refused a model request: too many token lookups at once on this instance");
@@ -623,4 +665,21 @@ export class ModelProxy {
  */
 function isPipelined(response: ServerResponse): boolean {
   return response.socket === null;
+}
+
+/** Waits for `promise` to settle, or for `signal` to be aborted, whichever comes first. */
+async function settledUnlessAborted(promise: Promise<unknown>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return;
+  }
+  let stopWaiting = () => {};
+  const aborted = new Promise<void>((resolve) => {
+    stopWaiting = resolve;
+    signal.addEventListener("abort", stopWaiting, { once: true });
+  });
+  try {
+    await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", stopWaiting);
+  }
 }
