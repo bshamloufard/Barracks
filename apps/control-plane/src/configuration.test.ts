@@ -168,7 +168,7 @@ describe("the control plane configuration", () => {
     expect(result.ok && result.configuration.database).toBeUndefined();
   });
 
-  it("verifies the database's certificate by default, with a pool of five connections", () => {
+  it("verifies the database's certificate by default, with a pool of five connections and a keep-alive every four hours", () => {
     const result = readConfiguration({
       ...minimalEnvironment,
       BARRACK_DATABASE_URL:
@@ -184,6 +184,7 @@ describe("the control plane configuration", () => {
       tlsMode: "verify-full",
       certificateAuthorities: undefined,
       poolSize: 5,
+      keepAliveIntervalInMilliseconds: 4 * 60 * 60 * 1000,
     });
   });
 

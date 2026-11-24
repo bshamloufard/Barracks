@@ -10,6 +10,15 @@ import { z } from "zod";
 const defaultPoolSize = 5;
 
 /**
+ * Supabase pauses a free project after a week without "sufficient user
+ * database activity", and says "a few user requests to the database each
+ * day" are typically enough, so six a day leaves a wide margin; see
+ * database-keep-alive.ts.
+ */
+const defaultKeepAliveIntervalInMinutes = 240;
+const longestKeepAliveIntervalInMinutes = 24 * 60;
+
+/**
  * `verify-full`, as in libpq, encrypts and checks both that the server's
  * certificate chains to a trusted authority and that it names the host
  * connected to. `disable` sends everything, the password included, in the
@@ -35,6 +44,8 @@ export type DatabaseConfiguration = {
    */
   certificateAuthorities: string | undefined;
   poolSize: number;
+  /** How often to query the database so that an idle free Supabase project is not paused; undefined when off. */
+  keepAliveIntervalInMilliseconds: number | undefined;
 };
 
 /** The parts of a database URL that may safely appear in logs. */
@@ -67,6 +78,13 @@ export const databaseEnvironmentShape = {
     })
     .optional(),
   BARRACK_DATABASE_POOL_SIZE: z.coerce.number().int().min(1).max(100).default(defaultPoolSize),
+  /** 0 turns the keep-alive off. */
+  BARRACK_DATABASE_KEEP_ALIVE_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(longestKeepAliveIntervalInMinutes)
+    .default(defaultKeepAliveIntervalInMinutes),
 };
 
 const databaseEnvironmentSchema = z.object(databaseEnvironmentShape);
@@ -90,6 +108,10 @@ export function toDatabaseConfiguration(
     tlsMode: settings.BARRACK_DATABASE_TLS,
     certificateAuthorities: settings.BARRACK_DATABASE_CA_CERTIFICATE,
     poolSize: settings.BARRACK_DATABASE_POOL_SIZE,
+    keepAliveIntervalInMilliseconds:
+      settings.BARRACK_DATABASE_KEEP_ALIVE_MINUTES === 0
+        ? undefined
+        : settings.BARRACK_DATABASE_KEEP_ALIVE_MINUTES * 60_000,
   };
 }
 

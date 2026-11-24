@@ -1,9 +1,18 @@
+import type { Pool } from "pg";
 import { type DatabaseConfiguration, locationOf } from "../database/database-configuration.js";
+import {
+  type DatabaseKeepAlive,
+  keepAliveQueryFor,
+  startDatabaseKeepAlive,
+} from "../database/database-keep-alive.js";
 import { createDatabasePool } from "../database/database-pool.js";
 import { migrateOnceDatabaseIsReachable } from "../database/prepare-database.js";
 import type { Logger } from "../logger.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
-import { PostgresThreadEventLog } from "../thread-event-log/postgres-thread-event-log.js";
+import {
+  databaseSchema,
+  PostgresThreadEventLog,
+} from "../thread-event-log/postgres-thread-event-log.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { PostgresThreadStore } from "../threads/postgres-thread-store.js";
@@ -65,11 +74,35 @@ export async function openStorage(
     await pool.end();
     throw explainStartFailure(error);
   }
+  const keepAlive = startKeepAliveIfConfigured(database, pool, logger);
   return {
     threadEventLog: new PostgresThreadEventLog(pool),
     threadStore: new PostgresThreadStore(pool),
-    close: () => pool.end(),
+    close: async () => {
+      await keepAlive?.stop();
+      await pool.end();
+    },
   };
+}
+
+function startKeepAliveIfConfigured(
+  database: DatabaseConfiguration,
+  pool: Pool,
+  logger: Logger,
+): DatabaseKeepAlive | undefined {
+  const intervalInMilliseconds = database.keepAliveIntervalInMilliseconds;
+  if (intervalInMilliseconds === undefined) {
+    return undefined;
+  }
+  logger.info(
+    { keepAliveIntervalInMinutes: intervalInMilliseconds / 60_000 },
+    "Querying the database at this interval even when idle, so that a free Supabase project is not paused for inactivity",
+  );
+  return startDatabaseKeepAlive({
+    runQuery: keepAliveQueryFor(pool, databaseSchema),
+    intervalInMilliseconds,
+    logger,
+  });
 }
 
 /** Adds what to do about the failures a deployer is most likely to meet first. */
