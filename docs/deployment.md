@@ -1,14 +1,14 @@
 # Deploying Barrack
 
 > [!WARNING]
-> **Nothing here has been deployed yet.** Sign-in exists: users sign in with Supabase Auth, the control plane verifies every access token itself, admits only the email addresses you list, and shows each user only their own threads. But it has never run against a real Supabase project, Railway or Daytona (see [what the first deployment must confirm](#not-yet-verified)), and some limits remain: the model provider keys you configure reach every sandbox, where any agent can read them; and the gaps listed in the [decision log](decisions.md) under "Security gaps that remain open" are still open. Admit only people you trust with your keys and your sandbox budget.
+> **Nothing here has been deployed yet.** Sign-in exists: users sign in with Supabase Auth, the control plane verifies every access token itself, admits only the email addresses you list, and shows each user only their own threads. But it has never run against a real Supabase project, Railway or Daytona (see [what the first deployment must confirm](#not-yet-verified)), and some limits remain: the model provider keys you configure reach every sandbox, where any agent can read them; a thread's branch, which the agent writes, is pushed into the user's own repository, where its continuous integration runs it with the repository's secrets (see [GitHub](#4-github-optional-private-repositories-and-pull-requests)); and the gaps listed in the [decision log](decisions.md) under "Security gaps that remain open" are still open. Admit only people you trust with your keys and your sandbox budget.
 
 There are two ways to run Barrack:
 
 - **[Hosted](#hosted-railway-supabase-and-daytona)**: the control plane on Railway, Postgres on Supabase, sandboxes on Daytona. No machine of your own stays on. **Not yet tried against the real services**; see [what the first deployment must confirm](#not-yet-verified).
 - **[On one machine](#on-one-machine-with-docker-compose)**: Postgres, the control plane and every sandbox in Docker on a machine you control, with Docker Compose, signing in through a Supabase project. **Run end to end before sign-in existed**, not since (see [what was verified](#what-was-verified)).
 
-Both run the same image, built by the [`Dockerfile`](../Dockerfile) at the repository root: the built control plane with its production dependencies only, and the built web client, which it serves. It runs as an unprivileged user, listens on port 8787, applies database migrations at startup, and on SIGTERM closes its connections, waits for sandbox creations under way and exits. It is configured entirely by environment variables. Its `control-plane-with-docker-cli` stage adds the Docker CLI, which only the Docker sandbox provider needs.
+Both run the same image, built by the [`Dockerfile`](../Dockerfile) at the repository root: the built control plane with its production dependencies only, and the built web client, which it serves. It runs as an unprivileged user, listens on port 8787, applies database migrations at startup, and on SIGTERM closes its connections, waits for sandbox creations under way and exits. It is configured entirely by environment variables. It carries Git, with which it checks and pushes the branches threads publish. Its `control-plane-with-docker-cli` stage adds the Docker CLI, which only the Docker sandbox provider needs.
 
 ## Hosted: Railway, Supabase and Daytona
 
@@ -92,6 +92,41 @@ The service is described as code in [`.railway/railway.ts`](../.railway/railway.
 5. Under **Variables**, set the values marked "dashboard" below (the raw editor accepts the multi-line certificate). Sealing them hides them from the dashboard and API afterwards. For every model provider key you set, add a `preserve()` line to `.railway/railway.ts`, or a later apply may delete it.
 6. Deploy.
 
+### 4. GitHub (optional): private repositories and pull requests
+
+Without this step, threads can start from public repositories, cloned without credentials, and nothing can be published; the settings page and the new-thread form say that GitHub is not set up. With it, users connect their GitHub account in Settings, start threads on their own repositories, and push a thread's branch or open a pull request from the thread's page. How it works, and what it does not protect against, is in the [architecture](architecture.md#working-with-a-git-repository) and the [decision log](decisions.md).
+
+Register a GitHub App for your installation (on GitHub: **Settings → Developer settings → GitHub Apps → New GitHub App**, or the same under an organisation's settings), with exactly these settings, `<domain>` being the control plane's public domain:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Homepage URL | `https://<domain>` | GitHub requires one. |
+| Callback URL | `https://<domain>/github/callback` | The web client's page that finishes connecting. It must be the first callback URL: Barrack sends no `redirect_uri`, so GitHub uses the first. |
+| Expire user authorization tokens | on (the default) | Barrack revokes the user's token as soon as it has read their repositories, and never stores it; expiry is a second fence. |
+| Request user authorization (OAuth) during installation | **off** | That flow comes back without the single-use `state` Barrack ties each sign-in to, and would be refused. Barrack starts the sign-in itself. |
+| Enable Device Flow | off | Not used. |
+| Setup URL | `https://<domain>/?page=settings`, with **Redirect on update** on | After installing, users land in Settings and connect. The `installation_id` GitHub adds is ignored: it can be spoofed, and Barrack asks GitHub which installations the user can reach instead. |
+| Webhook | **Active** off | Barrack uses no webhooks. |
+| Repository permissions | **Contents: Read and write**, **Pull requests: Read and write**, **Metadata: Read-only** | Read for the sandbox's clone, write for the control plane's push, pull requests to open one, metadata to check the user may still push. Nothing else, and never **Workflows**: without it, GitHub refuses any push that changes `.github/workflows`. |
+| Organization and account permissions | none | |
+| Where can this GitHub App be installed? | **Only on this account** if every repository is yours or this organisation's; otherwise **Any account** | GitHub lets a private App be installed only on the account that owns it. A public App grants nothing by itself: only users of this installation who connect their GitHub account in Barrack can use it, and only on repositories they can push to. |
+
+Then, on the App's page:
+
+1. Note the **Client ID** (`BARRACK_GITHUB_APP_CLIENT_ID`) and the App's URL name, the last part of `https://github.com/apps/<slug>` (`BARRACK_GITHUB_APP_SLUG`).
+2. **Generate a new client secret** (`BARRACK_GITHUB_APP_CLIENT_SECRET`).
+3. **Generate a private key**, which downloads a `.pem` file. Its whole contents are `BARRACK_GITHUB_APP_PRIVATE_KEY`; a dashboard that stores it on one line, with `\n` for each line break, works too. Keep no other copy.
+4. Set the four in Railway's dashboard, sealed, and add a `preserve()` line for each to `.railway/railway.ts`, as for model provider keys. All four or none: the control plane refuses to start with some only.
+5. **Install App**, on the repositories threads may work on. Users then connect GitHub in Barrack's Settings.
+
+GitHub's [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) can register an App from a description in one click, but it hands the private key and secrets back to a page of the registering application, which would then have to store them or show them once to be pasted into these variables, and redeploy: no fewer steps for something done once, and a route that receives the App's key. Registering by hand was chosen instead.
+
+What to set on GitHub besides, since Barrack cannot enforce it:
+
+- **Protect the default branch** (and any branch that deploys) with a ruleset or branch protection requiring a pull request. Barrack pushes only to `barrack/<thread>` and the sandbox holds no token that can write, but these rules guard against everything else. On a private repository they need a paid GitHub plan.
+- **Keep repository secrets from untrusted branches.** A thread's branch lives in the repository itself, so a workflow triggered by `push` or `pull_request` runs the agent's code with the secrets branches of the repository get, which a fork's pull request would not. Put deployment secrets in [environments](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment) with required reviewers, or keep workflows that hold secrets off branches matching `barrack/*`.
+- **Two people for a merge**, if you want one: the pull request is opened by the App, so the user who asked can approve it alone; require two approvals or code owners to prevent that.
+
 #### Variables
 
 Every variable the control plane reads in this deployment. A test ([`deployment-guide.test.ts`](../apps/control-plane/src/deployment-guide.test.ts)) fails if this table and the configuration schema disagree.
@@ -126,6 +161,13 @@ Every variable the control plane reads in this deployment. A test ([`deployment-
 | `BARRACK_DATABASE_POOL_SIZE`             | no (5)                       | `5`                                                                                       | Connections held open; Supabase's session pooler allows 15 per role on the Free plan.                                                                                                                      |
 | `BARRACK_DATABASE_KEEP_ALIVE_MINUTES`    | no (240)                     | `240`                                                                                     | Minutes between queries that keep a free Supabase project from pausing; 0 turns them off.                                                                                                                  |
 | `PI_OFFLINE`, `PI_CACHE_RETENTION`       | no                           | `1`, `long`                                                                               | Pi's settings, forwarded to sandboxes.                                                                                                                                                                     |
+| `BARRACK_GITHUB_APP_CLIENT_ID`           | no, dashboard                | `Iv23li…`                                                                                 | The GitHub App's client ID ([step 4](#4-github-optional-private-repositories-and-pull-requests)). With the next three, or none: without them threads clone public repositories only.                          |
+| `BARRACK_GITHUB_APP_CLIENT_SECRET`       | no, dashboard (secret)       | `…`                                                                                       | The App's client secret, with which the control plane exchanges a user's sign-in code.                                                                                                                     |
+| `BARRACK_GITHUB_APP_PRIVATE_KEY`         | no, dashboard (secret)       | `-----BEGIN RSA PRIVATE KEY-----…`                                                        | The App's private key; it never leaves the control plane, which signs with it to mint short-lived tokens.                                                                                                 |
+| `BARRACK_GITHUB_APP_SLUG`                | no, dashboard                | `barrack-for-me`                                                                          | The App's URL name, for the link that installs it.                                                                                                                                                         |
+| `BARRACK_GITHUB_URL`                     | no (`https://github.com`)    | `https://github.com`                                                                      | Where GitHub is; leave it unset. Tests point it at a stand-in.                                                                                                                                             |
+| `BARRACK_GITHUB_API_URL`                 | no (`https://api.github.com`) | `https://api.github.com`                                                                 | Where GitHub's API is; leave it unset. Tests point it at a stand-in.                                                                                                                                       |
+| `BARRACK_ALLOW_PLAIN_HTTP_REPOSITORIES`  | never in a deployment        | `development-only`                                                                        | Accepts `http://` repositories and GitHub addresses, for tests and local Git servers only.                                                                                                                 |
 | `BARRACK_LOG_LEVEL`                      | no (`info`)                  | `debug`                                                                                   | Log detail; logs are JSON lines in Railway's log view.                                                                                                                                                     |
 | `BARRACK_CONTROL_PLANE_HOST`             | set by the image             | `0.0.0.0`                                                                                 | Interface to listen on; the image listens on all of them, as Railway requires.                                                                                                                             |
 | `BARRACK_CONTROL_PLANE_PORT`             | set by the image             | `8787`                                                                                    | Port to listen on; keep it equal to `PORT`.                                                                                                                                                                |
@@ -139,7 +181,7 @@ Every variable the control plane reads in this deployment. A test ([`deployment-
 - `https://<domain>/health` answers `{"status":"ok"}` and `https://<domain>/` asks you to sign in. A code arrives by email for an address on `BARRACK_ALLOWED_USER_EMAILS`, and signing in with it shows the thread list; another address is told it is not allowed.
 - Creating a thread makes a sandbox appear in Daytona's dashboard, the log shows `The thread's sandbox is ready` and then `Supervisor connected` for that `threadId`, and a message gets a reply.
 - Closing the tab and reopening the thread shows its whole history; a redeploy keeps it, the old deployment's log ends with `Shut down cleanly`, and the supervisors reconnect to the new one.
-- In Supabase's table editor, the `barrack` schema holds `users`, `threads`, `thread_events`, `thread_sequence_counters` and `schema_migrations`.
+- In Supabase's table editor, the `barrack` schema holds `users`, `threads`, `thread_events`, `thread_sequence_counters`, `thread_repositories`, `github_connections`, `github_connection_attempts` and `schema_migrations`.
 
 #### Not yet verified
 
@@ -153,6 +195,7 @@ None of this has run against Railway, Supabase or Daytona: there were no credent
 6. **Daytona**: the provider has only run against a stand-in for Daytona's API. Confirm the snapshot push command (Daytona's CLI for its generally available platform may be installed as `daytona` or `daytona-v0`) and its size flags, that a Tier 1 sandbox's supervisor can hold a WebSocket open to `*.up.railway.app`, and how the supervisor's token, which is in the sandbox's environment, can be reached through Daytona's own command interface (see the open gaps in the [decision log](decisions.md)). For the lifecycle: that stopping a sandbox lets its supervisor end the agent's run (Daytona's stop is not known to send a signal the supervisor can act on; the control plane interrupts the agent first and closes any run left open, so history stays right either way); that starting a sandbox **archived** after `BARRACK_DAYTONA_AUTO_ARCHIVE_MINUTES` restores it with its files and Pi's session, and how long that takes (the page shows "Waking the sandbox…" meanwhile, and the lease is renewed for as long as it takes); that `getStatus` reports an archived sandbox as `stopped`, and a deleted one as `missing`; and that a stopped or archived sandbox no longer counts against the organisation's limits on running resources, while it still counts against storage until deleted (delete threads you no longer need).
 7. **Sign-in**: it has run only against the tests' stand-in for Supabase Auth, which signs tokens the way Supabase documents. Confirm that the control plane finds the project's published keys at startup, that the Magic Link template's code arrives (through custom SMTP for anyone outside the project's team), that signing in with it gives a token the control plane accepts, that its check of a listed address against Supabase (`/auth/v1/user`) admits a confirmed user and refuses others, and that a token refreshed while a thread is open keeps its connection open.
 8. **Costs**: the figures above come from pricing pages, not from a bill.
+9. **GitHub**: nothing has run against a real GitHub App; every flow ran only against the tests' stand-in, which answers as GitHub's documentation describes. Confirm that linking with the settings above works (the callback reaches `/github/callback` with a code and the state, and finishing it lists your repositories), that a sandbox clones a private repository with the token the control plane mints and cannot push with it, that publishing pushes `barrack/<thread>` and opens one pull request as the App, and that a push changing `.github/workflows` is refused by GitHub with a message the thread shows. GitHub's new, longer token format (rolling out since 2026-04-27) fits every limit here, but has not been seen.
 
 ## On one machine with Docker Compose
 
@@ -172,7 +215,7 @@ None of this has run against Railway, Supabase or Daytona: there were no credent
    # Or, to try it without a model: BARRACK_AGENT_HARNESS=fake
    ```
 
-   Compose refuses to start without the first four.
+   Compose refuses to start without the first four. For private repositories and pull requests, also register a GitHub App as in [step 4](#4-github-optional-private-repositories-and-pull-requests) and add its four `BARRACK_GITHUB_APP_` variables here.
 
    Every variable in it reaches the control plane, so the control plane's other settings ([its README](../apps/control-plane/README.md#configuration)) can go here too. With rootless Docker, also set `DOCKER_SOCKET` to its socket's path.
 

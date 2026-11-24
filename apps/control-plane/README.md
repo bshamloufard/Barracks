@@ -30,6 +30,10 @@ The control plane decides when each thread's sandbox runs ([`src/sandbox-lifecyc
 
 A client learns all this from the thread's `sandbox` field (`GET /api/threads/{threadId}`); whether the agent is reachable right now it learns from the thread's WebSocket, as before.
 
+### Repositories and GitHub
+
+A thread may start from one repository ([`src/repositories/`](src/repositories)): a public one, cloned without credentials, or one of the user's repositories through the installation's GitHub App ([`src/github/`](src/github)), which they link in the web client's Settings. The control plane records it with the thread, tells the supervisor what to clone right after its welcome, answers the sandbox's requests for read-only credentials for that one repository, and publishes the thread's branch itself ([`src/publication/`](src/publication)), checking the sandbox's bundle as hostile input and pushing only to `barrack/<thread id>`. Everything about it is in the [architecture](../../docs/architecture.md#working-with-a-git-repository); setting up the App is in the [deployment guide](../../docs/deployment.md#4-github-optional-private-repositories-and-pull-requests). Publishing needs `git` on the control plane's path, which its image carries.
+
 ### Model provider keys (temporary)
 
 Until each user brings their own model access (Milestone 4), a control plane running Pi forwards the model provider keys in its own environment to every sandbox: the variables listed in [`src/threads/model-credentials.ts`](src/threads/model-credentials.ts), the same list the supervisor passes on to Pi, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Every thread can spend on those keys and every agent can read them. Their names are logged at startup, never their values.
@@ -48,13 +52,20 @@ Every `/api` request but the client configuration needs `Authorization: Bearer <
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /api/client-configuration`                 | `200 { "authentication": … }`: the Supabase URL and publishable key to sign in with, or development mode's token. Public.                   |
 | `POST /api/threads` with `{}`                   | `201 { "thread": Thread }`, owned by the user, or `409 sandbox_limit_reached`. Needs `Content-Type: application/json` (`415`).              |
+| `POST /api/threads` with `{ "repository": … }`  | The same, starting from `{ "url", "access": "none" \| "github_app", "baseBranch"? }`; `400` for a URL refused, `403 repository_not_allowed`.  |
 | `GET /api/threads`                              | `200 { "threads": [Thread, …] }`, the user's own, the most recently active first, at most 100.                                              |
 | `GET /api/threads/{threadId}`                   | `200 { "thread": Thread }`, or `404`.                                                                                                       |
 | `POST /api/threads/{threadId}/stop` with `{}`   | `202 { "thread": Thread }` now stopping, `409 conflict` unless running, or `404`.                                                           |
 | `POST /api/threads/{threadId}/resume` with `{}` | `202 { "thread": Thread }` now starting, `409 conflict` unless stopped (or failed with its sandbox), `409 sandbox_limit_reached`, or `404`. |
 | `DELETE /api/threads/{threadId}`                | `202 { "thread": Thread }` now deleting, then gone; `409 conflict` while starting or stopping; or `404`.                                    |
+| `POST /api/threads/{threadId}/publication`      | With `{ "openPullRequest": bool }`: `200` with the commit pushed, the branch and pull request links; `409 conflict` or `publication_failed`. |
+| `GET` / `DELETE /api/github/connection`         | `200 { "connection": … }`: GitHub unavailable here (and why), not connected, or connected with the repositories offered; `DELETE` forgets it. |
+| `POST /api/github/connection-attempts` with `{}` | `201 { "authorizationUrl" }`: where to send the user to approve the App.                                                                   |
+| `POST /api/github/connection` with `{ code, state }` | `200 { "connection": … }` once linked; `400` for a state not this user's, used or expired.                                            |
 
-A `Thread` is `{ "threadId", "createdAt", "lastActiveAt", "title" (from the first message, or null), "isAgentWorking", "sandbox": { "state": … } }`, as [`threads-api.ts`](../../packages/protocol/src/threads-api.ts) defines. When the store cannot be reached, requests answer `503`.
+A `Thread` is `{ "threadId", "createdAt", "lastActiveAt", "title" (from the first message, or null), "isAgentWorking", "sandbox": { "state": … }, "repository": { "url", "access", "baseBranch", "workBranch", "publishing" } or null }`, as [`threads-api.ts`](../../packages/protocol/src/threads-api.ts) defines. When the store cannot be reached, requests answer `503`.
+
+Outside `/api`, `PUT /threads/{threadId}/supervisor/publication-bundles/{publicationId}` takes a publication bundle from the thread's supervisor, with its token, and only while that publication waits for it.
 
 ## Signing users in
 
@@ -85,6 +96,9 @@ Threads created before sign-in existed have no owner and are shown to nobody; gi
 | `src/users/`                  | The `UserStore` interface and its implementations.                                                                                                           |
 | `src/threads/`                | The `ThreadStore` interface, its guarded state changes and implementations, supervisor tokens and environment.                                               |
 | `src/sandbox-lifecycle/`      | Creating, stopping, resuming, waking and deleting sandboxes, idle shutdown, reconciliation, the running-sandbox limit, thread titles.                        |
+| `src/repositories/`           | Which repository a thread may start from, its record, what the supervisor is told to clone, and read-only credentials for the sandbox.                     |
+| `src/github/`                 | The GitHub App's settings and API client, users' GitHub links, and checking with GitHub that a user may still push.                                         |
+| `src/publication/`            | Publishing a thread's branch: the bundle upload, checking it as hostile input, the push and the pull request.                                              |
 | `src/storage/`                | Opens Postgres (migrated) or memory for the thread store and the event log.                                                                                  |
 | `src/database/`               | Database settings, the connection pool, the migration runner, and waiting for the database at startup (`pg`).                                                |
 | `migrations/`                 | The SQL migrations, applied in name order.                                                                                                                   |
@@ -123,6 +137,9 @@ The endpoints and messages are defined in [`@barrack/protocol`](../../packages/p
 | `BARRACK_DATABASE_CA_CERTIFICATE`     | unset: the authorities Node trusts                                                        | PEM text of the certificate authority to trust instead. Required for Supabase.                                                                                                                                |
 | `BARRACK_DATABASE_POOL_SIZE`          | `5`                                                                                       | Most database connections one control plane holds open at once (1 to 100).                                                                                                                                    |
 | `BARRACK_DATABASE_KEEP_ALIVE_MINUTES` | `240`                                                                                     | Minutes between the queries that keep an idle free Supabase project from pausing (0 turns them off, at most 1440).                                                                                            |
+| `BARRACK_GITHUB_APP_CLIENT_ID`, `BARRACK_GITHUB_APP_CLIENT_SECRET`, `BARRACK_GITHUB_APP_PRIVATE_KEY`, `BARRACK_GITHUB_APP_SLUG` | unset: no GitHub | The installation's GitHub App; all four or none. See the [deployment guide](../../docs/deployment.md#4-github-optional-private-repositories-and-pull-requests). |
+| `BARRACK_GITHUB_URL`, `BARRACK_GITHUB_API_URL` | `https://github.com`, `https://api.github.com` | Where GitHub is; tests point them at a stand-in. |
+| `BARRACK_ALLOW_PLAIN_HTTP_REPOSITORIES` | unset | `development-only` accepts `http://` repositories and GitHub addresses, for tests and local Git servers. |
 
 If anything is wrong, the control plane refuses to start and lists every problem.
 
