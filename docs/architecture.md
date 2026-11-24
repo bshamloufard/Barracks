@@ -1,6 +1,6 @@
 # Architecture
 
-> This describes the **intended** design. Most of it is not built yet. Update this document as code lands, so that it always matches what the code actually does.
+> **Built so far (Milestone 1):** the control plane, a sandbox supervisor running Pi or a fake agent, and a bare web client, all on one machine, with history kept in memory. **Not built yet:** the data store, sign-in, cloud sandboxes and their providers, the thread list and the desktop view. Sections that describe the intended design say so. Update this document as code lands, so that it always matches what the code actually does.
 
 ## The four parts
 
@@ -14,6 +14,8 @@
 Clients are thin: all state lives on the server, so any client that can make web requests and hold a live connection can take part.
 
 The control plane never sleeps. Sandboxes do: they start when a thread has work and stop when it is idle, because idle sandboxes still cost money.
+
+Today the clients are one web page per thread ([`apps/web`](../apps/web)), the control plane ([`apps/control-plane`](../apps/control-plane)) keeps history in memory instead of a data store, and the sandbox is the developer's own machine, where the supervisor ([`apps/sandbox-supervisor`](../apps/sandbox-supervisor)) runs as an ordinary process. The rest of the table is intended.
 
 ## Two core design ideas
 
@@ -42,7 +44,7 @@ The agent's run ends with a single `agent_run_settled` event, which means the ag
 
 ### Reconnecting
 
-A client opens one connection per thread it is viewing and says, in the URL, the last sequence it already holds (0 for none). The control plane first sends a replay announcement naming the inclusive range of sequences the client missed, possibly empty, then exactly those events in order, and only then live traffic. The client can therefore tell catching up from watching live, and a reconnect never loses or repeats a thread event.
+A client opens one connection per thread it is viewing and says, in the URL, the last sequence it already holds (0 for none). The control plane first sends a replay announcement naming the inclusive range of sequences the client missed, possibly empty, then exactly those events in order, and only then live traffic. The client can therefore tell catching up from watching live, and a reconnect never loses or repeats a thread event. If the client claims a sequence the control plane does not hold (its in-memory history was lost in a restart), the control plane replays the thread from sequence 1, and a client sent an announcement that starts at or before its last seen sequence discards everything it holds and rebuilds from the replay.
 
 ### Message families
 
@@ -52,3 +54,17 @@ A client opens one connection per thread it is viewing and says, in the URL, the
 |                            | Control plane → supervisor | Deliver a user message; interrupt the agent                                                                |
 | Client ⇄ control plane     | Client → control plane     | Send a user message; interrupt the agent                                                                   |
 |                            | Control plane → client     | Replay announcement; a recorded thread event; a stream fragment; supervisor connection status; a rejection |
+
+## One prompt, end to end
+
+What happens, in the code as built, when a user types a message in the web page and the agent replies.
+
+1. **Web page.** The message box ([`components/message-composer.tsx`](../apps/web/src/components/message-composer.tsx)) hands the text to the thread's connection ([`connection/thread-connection.ts`](../apps/web/src/connection/thread-connection.ts)), which sends `send_user_message` on the page's WebSocket to `/threads/{threadId}/client`. In development, Vite's proxy forwards it to the control plane.
+2. **Control plane, in.** The upgrade router ([`websocket/route-upgrade.ts`](../apps/control-plane/src/websocket/route-upgrade.ts)) accepted this connection in [`websocket/client-endpoint.ts`](../apps/control-plane/src/websocket/client-endpoint.ts) after checking its origin. Every frame is validated against the protocol ([`websocket/receive-messages.ts`](../apps/control-plane/src/websocket/receive-messages.ts)) and handed to the thread's relay ([`thread-relay/thread-relay.ts`](../apps/control-plane/src/thread-relay/thread-relay.ts)), which handles one message at a time.
+3. **Recorded, then delivered.** The relay appends a `user_message` event to the thread event log ([`thread-event-log/in-memory-thread-event-log.ts`](../apps/control-plane/src/thread-event-log/in-memory-thread-event-log.ts)), which assigns its sequence, broadcasts it to every client watching, and only then sends `deliver_user_message` to the thread's supervisor.
+4. **Supervisor.** The supervisor's outbound connection ([`control-plane/control-plane-connection.ts`](../apps/sandbox-supervisor/src/control-plane/control-plane-connection.ts)) validates the message and passes it to [`supervisor.ts`](../apps/sandbox-supervisor/src/supervisor.ts), which gives it to the agent harness. The Pi harness ([`pi/pi-agent-harness.ts`](../apps/sandbox-supervisor/src/pi/pi-agent-harness.ts)) writes it to Pi's standard input as a steering `prompt` through its JSONL client ([`pi/pi-rpc-client.ts`](../apps/sandbox-supervisor/src/pi/pi-rpc-client.ts)); Pi runs as a child process ([`pi/pi-process.ts`](../apps/sandbox-supervisor/src/pi/pi-process.ts)).
+5. **Agent output, translated.** Pi answers with JSON lines on its standard output. Each is parsed ([`pi/pi-records.ts`](../apps/sandbox-supervisor/src/pi/pi-records.ts)) and translated into Barrack's vocabulary ([`pi/pi-event-translator.ts`](../apps/sandbox-supervisor/src/pi/pi-event-translator.ts)): text deltas become stream fragments, and the run starting, each completed assistant message, each tool execution and the run settling become agent events. The supervisor checks each against the protocol and sends it, holding agent events in a bounded backlog while the control plane is unreachable.
+6. **Control plane, out.** The relay passes stream fragments straight to clients, keeping the text so far ([`thread-relay/in-progress-assistant-text.ts`](../apps/control-plane/src/thread-relay/in-progress-assistant-text.ts)) for clients that join mid-message. It records each agent event in the log and then broadcasts it.
+7. **Web page, rendered.** The connection validates each message and dispatches it to the thread's store; the pure reducer ([`thread-state/thread-state.ts`](../apps/web/src/thread-state/thread-state.ts)) appends fragments to a streaming entry, replaces it with the completed message when that is recorded, and ignores any sequence it has already applied. React re-renders the conversation from that state.
+
+The end-to-end tests in [`tests/end-to-end`](../tests/end-to-end) run steps 2 to 6 with the real processes and the fake agent.
