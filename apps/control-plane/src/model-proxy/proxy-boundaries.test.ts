@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
+import { findAgentRequestShape, relayedProviders } from "@barrack/model-catalogue";
 import { describe, expect, it } from "vitest";
 import { digestConfirmedEmailAddress, OwnerAdmission } from "../authentication/owner-admission.js";
 import { inspectWholeBody } from "../test-support/request-bodies.js";
@@ -15,6 +16,7 @@ import {
   readPresentedToken,
 } from "./proxy-headers.js";
 import { findRelayedRoute } from "./relayed-routes.js";
+import { maximumReadMemberBytes } from "./request-body-members.js";
 import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
 /** The proxy's parts that decide what crosses it, each on its own. */
@@ -172,6 +174,23 @@ describe("settings the agent never writes so", () => {
   ] as const)("refuses a value of %s the agent never sends", (name, body, format) => {
     expect(outcomeOf(body, format)).toMatch(/the value given for `\w+`/);
     expect(name).toBeTruthy();
+  });
+
+  it("parses at most 16 KiB of any body, whatever it holds, so checking one costs next to nothing", () => {
+    const parsedAtMost = relayedProviders.flatMap(({ providerId, apis }) =>
+      apis.map(({ format }) => {
+        const members = Object.values(findAgentRequestShape(providerId, format)?.members ?? {});
+        return members.filter((rule) => rule !== "scanned").length * maximumReadMemberBytes;
+      }),
+    );
+
+    expect(Math.max(...parsedAtMost)).toBeLessThanOrEqual(16 * 1024);
+    expect(
+      outcomeOf(
+        `{"model":"m","reasoning":{"effort":"high","summary":"auto","x":"${"a".repeat(2_000)}"},"input":[]}`,
+        "openai_responses",
+      ),
+    ).toMatch(/too long/);
   });
 
   it("relays the agent's own settings", () => {

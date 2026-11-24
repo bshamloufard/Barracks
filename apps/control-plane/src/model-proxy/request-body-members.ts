@@ -27,8 +27,13 @@ export type ReadMembers = {
   rebuild(changes: ReadonlyMap<string, unknown>): Buffer;
 };
 
-/** Far longer than any member the proxy reads (a model, a flag, a few options) ever is. */
-export const maximumReadMemberBytes = 64 * 1024;
+/**
+ * Far longer than any member the proxy reads ever is: the agent's settings
+ * are a model's name (at most 256 characters), a flag, a count or a few
+ * options. With at most nine settings in any of its formats, no body has
+ * more than 9 KiB parsed, whatever it holds.
+ */
+export const maximumReadMemberBytes = 1024;
 
 export function readTopLevelMembers(
   received: Buffer,
