@@ -11,18 +11,20 @@ A small long-running Node process that lives inside a thread's sandbox (for Mile
 
 Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed.
 
-| Variable                      | Required | Meaning                                                                                       |
-| ----------------------------- | -------- | --------------------------------------------------------------------------------------------- |
-| `BARRACK_CONTROL_PLANE_URL`   | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                           |
-| `BARRACK_THREAD_ID`           | yes      | The thread this sandbox belongs to                                                            |
-| `BARRACK_SUPERVISOR_TOKEN`    | yes      | Sent as `Authorization: Bearer …`. Never logged and never passed to the agent                 |
-| `BARRACK_AGENT_HARNESS`       | no       | `pi` (default) or `fake`                                                                      |
-| `BARRACK_MODEL`               | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                       |
-| `BARRACK_WORKSPACE_DIRECTORY` | for `pi` | The agent's working directory                                                                 |
-| `BARRACK_STATE_DIRECTORY`     | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models) |
-| `BARRACK_LOG_LEVEL`           | no       | `debug`, `info` (default), `warn` or `error`                                                  |
+| Variable                      | Required | Meaning                                                                                          |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `BARRACK_CONTROL_PLANE_URL`   | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                              |
+| `BARRACK_THREAD_ID`           | yes      | The thread this sandbox belongs to                                                               |
+| `BARRACK_SUPERVISOR_TOKEN`    | yes      | Sent as `Authorization: Bearer …`. Never logged; kept out of the agent's environment (see below) |
+| `BARRACK_AGENT_HARNESS`       | no       | `pi` (default) or `fake`                                                                         |
+| `BARRACK_MODEL`               | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                          |
+| `BARRACK_WORKSPACE_DIRECTORY` | for `pi` | The agent's working directory                                                                    |
+| `BARRACK_STATE_DIRECTORY`     | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)    |
+| `BARRACK_LOG_LEVEL`           | no       | `debug`, `info` (default), `warn` or `error`                                                     |
 
 Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings, every `PI_*` variable, and model provider keys such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed.
+
+**What that does not protect.** Pi runs as the same operating-system user as the supervisor, so anything the agent runs can read the supervisor token from `/proc/<supervisor pid>/environ` (removing it from `process.env` would not change that; Linux reports the environment a process started with). Leaving it out of Pi's environment only stops it from turning up in something Pi prints or sends to the model by accident. Treat the token as readable by the agent until the sandbox image runs the agent as a different user and each thread has its own token; see the decision log entry "Known limitation: the supervisor and the agent share an operating-system user".
 
 ## Running it
 

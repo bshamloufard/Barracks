@@ -1,8 +1,16 @@
 /**
  * Pi's tools run with whatever environment Pi has, and the model can read
  * all of it, so Pi gets an environment built from an allowlist rather than a
- * copy of the supervisor's. In particular the supervisor's control-plane
- * token never reaches it.
+ * copy of the supervisor's. The supervisor's control-plane token is left out.
+ *
+ * That keeps the token out of anything Pi prints or sends to the model by
+ * accident; it does not keep it from a determined agent. Pi runs as the same
+ * operating-system user as the supervisor, so a tool can read the token from
+ * `/proc/<supervisor pid>/environ`. Deleting it from `process.env` would not
+ * help: Linux reports the environment the process started with. Real
+ * separation (the agent as a different user, a token per thread) comes with
+ * the sandbox image; see "Known limitation: the supervisor and the agent
+ * share an operating-system user" in docs/decisions.md.
  */
 
 /** What ordinary command-line tools expect to find. */

@@ -17,6 +17,9 @@ let isShuttingDown = false;
 
 const supervisor = new Supervisor({
   configuration,
+  // Pi's environment is built from an allowlist of this one that leaves the
+  // supervisor token out. The agent can still read the token from this
+  // process; src/pi/pi-environment.ts says exactly what is protected.
   sourceEnvironment: process.env,
   logger,
   onFatalError: (error) => void shutDown(1, error.message),
