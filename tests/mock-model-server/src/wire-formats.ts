@@ -324,8 +324,10 @@ class ChatCompletionsReply extends StreamedReply {
   }
 }
 
+/** Consecutive text is one text block, as Anthropic streams it, closed before a tool call or the end. */
 class AnthropicReply extends StreamedReply {
   #blockIndex = 0;
+  #openTextBlock: number | undefined;
 
   constructor(response: ServerResponse, model: string, usage: (outputPieces: number) => MockUsage) {
     super(response, model, usage);
@@ -355,21 +357,38 @@ class AnthropicReply extends StreamedReply {
 
   writeText(text: string): void {
     this.outputPieces += 1;
-    const index = this.#blockIndex;
-    this.#blockIndex += 1;
+    if (this.#openTextBlock === undefined) {
+      this.#openTextBlock = this.#blockIndex;
+      this.#blockIndex += 1;
+      this.send(
+        {
+          type: "content_block_start",
+          index: this.#openTextBlock,
+          content_block: { type: "text", text: "" },
+        },
+        "content_block_start",
+      );
+    }
     this.send(
-      { type: "content_block_start", index, content_block: { type: "text", text: "" } },
-      "content_block_start",
-    );
-    this.send(
-      { type: "content_block_delta", index, delta: { type: "text_delta", text } },
+      {
+        type: "content_block_delta",
+        index: this.#openTextBlock,
+        delta: { type: "text_delta", text },
+      },
       "content_block_delta",
     );
-    this.send({ type: "content_block_stop", index }, "content_block_stop");
+  }
+
+  #closeTextBlock(): void {
+    if (this.#openTextBlock !== undefined) {
+      this.send({ type: "content_block_stop", index: this.#openTextBlock }, "content_block_stop");
+      this.#openTextBlock = undefined;
+    }
   }
 
   writeToolCall(call: ToolCall): void {
     this.writeText(call.text);
+    this.#closeTextBlock();
     this.outputPieces += 1;
     const index = this.#blockIndex;
     this.#blockIndex += 1;
@@ -393,6 +412,7 @@ class AnthropicReply extends StreamedReply {
   }
 
   finish(endReason: "stop" | "tool_use"): void {
+    this.#closeTextBlock();
     const usage = this.usage(this.outputPieces);
     this.send(
       {
@@ -407,9 +427,11 @@ class AnthropicReply extends StreamedReply {
   }
 }
 
+/** Consecutive text is one message item, as OpenAI streams it, closed before a tool call or the end. */
 class ResponsesReply extends StreamedReply {
   readonly #output: object[] = [];
   #sequence = 0;
+  #openMessage: { outputIndex: number; itemId: string; text: string } | undefined;
 
   constructor(response: ServerResponse, model: string, usage: (outputPieces: number) => MockUsage) {
     super(response, model, usage);
@@ -418,25 +440,48 @@ class ResponsesReply extends StreamedReply {
 
   writeText(text: string): void {
     this.outputPieces += 1;
-    const outputIndex = this.#output.length;
-    const itemId = `msg_${outputIndex}`;
-    const part = { type: "output_text", text, annotations: [] };
-    this.#event("response.output_item.added", {
-      output_index: outputIndex,
-      item: { id: itemId, type: "message", status: "in_progress", role: "assistant", content: [] },
-    });
-    this.#event("response.content_part.added", {
-      item_id: itemId,
-      output_index: outputIndex,
-      content_index: 0,
-      part: { ...part, text: "" },
-    });
+    const message = this.#openMessage ?? this.#startMessage();
+    message.text += text;
     this.#event("response.output_text.delta", {
-      item_id: itemId,
-      output_index: outputIndex,
+      item_id: message.itemId,
+      output_index: message.outputIndex,
       content_index: 0,
       delta: text,
     });
+  }
+
+  #startMessage(): { outputIndex: number; itemId: string; text: string } {
+    const outputIndex = this.#output.length;
+    const message = { outputIndex, itemId: `msg_${outputIndex}`, text: "" };
+    this.#openMessage = message;
+    this.#output.push({});
+    this.#event("response.output_item.added", {
+      output_index: outputIndex,
+      item: {
+        id: message.itemId,
+        type: "message",
+        status: "in_progress",
+        role: "assistant",
+        content: [],
+      },
+    });
+    this.#event("response.content_part.added", {
+      item_id: message.itemId,
+      output_index: outputIndex,
+      content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] },
+    });
+    return message;
+  }
+
+  #closeMessage(): void {
+    const message = this.#openMessage;
+    if (message === undefined) {
+      return;
+    }
+    this.#openMessage = undefined;
+    const { itemId, outputIndex, text } = message;
+    const part = { type: "output_text", text, annotations: [] };
     this.#event("response.output_text.done", {
       item_id: itemId,
       output_index: outputIndex,
@@ -456,12 +501,13 @@ class ResponsesReply extends StreamedReply {
       role: "assistant",
       content: [part],
     };
-    this.#output.push(item);
+    this.#output[outputIndex] = item;
     this.#event("response.output_item.done", { output_index: outputIndex, item });
   }
 
   writeToolCall(call: ToolCall): void {
     this.writeText(call.text);
+    this.#closeMessage();
     this.outputPieces += 1;
     const outputIndex = this.#output.length;
     const itemId = `fc_${outputIndex}`;
@@ -492,6 +538,7 @@ class ResponsesReply extends StreamedReply {
   }
 
   finish(): void {
+    this.#closeMessage();
     const usage = this.usage(this.outputPieces);
     this.#event("response.completed", {
       response: this.#response("completed", {
