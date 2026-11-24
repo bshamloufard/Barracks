@@ -50,7 +50,7 @@ Tokens are verified against the Supabase project's published public keys (issuer
 
 **What a self-hoster sets up in Supabase:**
 
-1. **Asymmetric signing keys.** Under Project Settings, JWT Keys, the current key must be an asymmetric one (ECC P-256 is recommended). New projects have one; an older project still on the legacy HS256 secret must rotate. The control plane fetches the public keys at startup and refuses to start, saying so, if there are none.
+1. **Asymmetric signing keys.** Under Project Settings, JWT Keys, the current key must be an asymmetric one (ECC P-256 is recommended). New projects have one; an older project still on the legacy HS256 secret must rotate. The control plane fetches the public keys at startup and refuses to start, saying so, if there are none. Until it has read them it does not listen; while Supabase cannot be reached, or answers with anything but a key set, it logs each attempt and tries again, for as long as it takes, as it does for the database.
 2. **The email code.** Under Authentication, Email Templates, edit the **Magic Link** template to include `{{ .Token }}`, the six-digit code, for example `<p>Your Barrack code: {{ .Token }}</p>`. No redirect URLs are needed.
 3. **Mail.** Supabase's built-in sender reaches only the project's team members, about twice an hour. To let anyone else sign in, set up custom SMTP under Authentication, SMTP Settings.
 4. **Who may sign up.** Supabase lets anyone sign up by default. List the allowed addresses in `BARRACK_ALLOWED_USER_EMAILS` and, once everyone has signed in once, turn off "Allow new users to sign up". Leave "Confirm email" and anonymous sign-ins as they are by default (on and off); the control plane refuses anonymous users anyway.

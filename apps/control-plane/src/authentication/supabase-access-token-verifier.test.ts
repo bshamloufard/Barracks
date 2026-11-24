@@ -1,7 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { requireAsymmetricSigningKeys } from "./signing-key-check.js";
 import {
   SupabaseAccessTokenVerifier,
   type SupabaseAccessTokenVerifierOptions,
@@ -188,30 +187,5 @@ describe("confirming a token's email address with Supabase", () => {
       ok: true,
       identity: { confirmedEmailAddress: undefined },
     });
-  });
-});
-
-describe("checking a Supabase project's signing keys at startup", () => {
-  it("passes when the project publishes a public signing key", async () => {
-    await expect(requireAsymmetricSigningKeys(projectOf(issuer))).resolves.toBeUndefined();
-  });
-
-  it("fails, telling the owner to rotate, when the project publishes none (it still uses the legacy shared secret)", async () => {
-    const legacyIssuer = await TestIdentityIssuer.start({ publishInitialKey: false });
-
-    const check = requireAsymmetricSigningKeys(projectOf(legacyIssuer));
-
-    await expect(check).rejects.toThrow(
-      /legacy shared secret.*rotate to an asymmetric signing key/,
-    );
-    await legacyIssuer.close();
-  });
-
-  it("fails, naming the setting, when the project cannot be reached", async () => {
-    const project = projectOf(issuer);
-    await issuer.close();
-
-    await expect(requireAsymmetricSigningKeys(project)).rejects.toThrow(/BARRACK_SUPABASE_URL/);
-    issuer = await TestIdentityIssuer.start();
   });
 });

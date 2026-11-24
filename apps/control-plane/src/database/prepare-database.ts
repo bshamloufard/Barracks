@@ -1,12 +1,15 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Pool } from "pg";
+import { type CappedBackoff, delayAfterFailedAttempt } from "../capped-backoff.js";
 import type { Logger } from "../logger.js";
 import { databaseSchema } from "../thread-event-log/postgres-thread-event-log.js";
 import type { DatabaseLocation } from "./database-configuration.js";
 import { applyPendingMigrations } from "./migration-runner.js";
 
-const firstRetryDelayInMilliseconds = 1_000;
-const longestRetryDelayInMilliseconds = 30_000;
+const databaseRetryBackoff: CappedBackoff = {
+  firstDelayInMilliseconds: 1_000,
+  longestDelayInMilliseconds: 30_000,
+};
 
 /** Errors Node reports when it cannot reach a host at all. */
 const networkErrorCodes = new Set([
@@ -55,10 +58,7 @@ export async function migrateOnceDatabaseIsReachable(
       if (!isUnreachable) {
         throw error;
       }
-      const retryDelayInMilliseconds = Math.min(
-        firstRetryDelayInMilliseconds * 2 ** (attempt - 1),
-        longestRetryDelayInMilliseconds,
-      );
+      const retryDelayInMilliseconds = delayAfterFailedAttempt(databaseRetryBackoff, attempt);
       logger.error(
         { err: error, database: location, attempt, retryDelayInMilliseconds },
         "Could not reach the database to migrate it; trying again",

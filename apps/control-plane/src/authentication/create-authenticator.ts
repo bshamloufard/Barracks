@@ -18,7 +18,8 @@ export type ConfiguredAuthentication = {
 
 /**
  * Builds the authenticator for the configured method. With Supabase it first
- * checks the project publishes signing keys, failing the start if not.
+ * waits until the project's signing keys can be read, and fails the start if
+ * they are not asymmetric.
  */
 export async function createConfiguredAuthentication(
   configuration: AuthenticationConfiguration,
@@ -43,7 +44,11 @@ export async function createConfiguredAuthentication(
     };
   }
   const { project, admission } = configuration;
-  await requireAsymmetricSigningKeys(project);
+  // The server does not listen until this passes, as it does not until the
+  // database is migrated: no token could be verified without the key set,
+  // and a health check that fails meanwhile keeps a host from replacing a
+  // working deployment with this one.
+  await requireAsymmetricSigningKeys(project, logger);
   logger.info(
     {
       supabaseUrl: project.url,
