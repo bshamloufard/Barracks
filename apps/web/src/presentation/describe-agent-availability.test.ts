@@ -70,6 +70,18 @@ describe("the agent's availability", () => {
     expect(describeAgentAvailability(stateWith(sandbox, wentAway))).toEqual({ name });
   });
 
+  it("believes a connected supervisor over a record a moment old that says the sandbox is stopped or waking", () => {
+    expect(describeAgentAvailability(stateWith({ state: "stopped" }, connected))).toEqual({
+      name: "connected",
+    });
+    expect(describeAgentAvailability(stateWith({ state: "starting" }, connected))).toEqual({
+      name: "connected",
+    });
+    expect(describeAgentAvailability(stateWith({ state: "stopping" }, connected))).toEqual({
+      name: "stopping",
+    });
+  });
+
   it("carries the reason when the sandbox failed, and whether it can be resumed", () => {
     const failed = stateWith(
       { state: "failed", reason: "No quota left", canResume: true },

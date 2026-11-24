@@ -21,6 +21,9 @@ export type AgentAvailability =
  * A running sandbox whose supervisor this page has not yet seen connect is
  * still starting as far as the user can tell (a container takes a few
  * seconds to boot). Once it has connected, its absence means it went away.
+ * A supervisor connected while the record still says the sandbox is
+ * stopped or waking means the record is a moment old (a sandbox can wake in
+ * under a second), and the live connection is believed.
  */
 export function describeAgentAvailability(state: ThreadState): AgentAvailability {
   const { record } = state;
@@ -31,12 +34,8 @@ export function describeAgentAvailability(state: ThreadState): AgentAvailability
   switch (sandbox.state) {
     case "failed":
       return { name: "sandbox_failed", reason: sandbox.reason, canResume: sandbox.canResume };
-    case "starting":
-      return { name: "waking" };
     case "stopping":
       return { name: "stopping" };
-    case "stopped":
-      return { name: "stopped" };
     case "deleting":
       return { name: "deleting" };
     default:
@@ -45,10 +44,16 @@ export function describeAgentAvailability(state: ThreadState): AgentAvailability
   if (state.isSupervisorConnected) {
     return { name: "connected" };
   }
-  if (sandbox.state === "creating" || !state.hasSeenSupervisorConnected) {
-    return { name: "starting" };
+  switch (sandbox.state) {
+    case "starting":
+      return { name: "waking" };
+    case "stopped":
+      return { name: "stopped" };
+    case "creating":
+      return { name: "starting" };
+    default:
+      return state.hasSeenSupervisorConnected ? { name: "not_connected" } : { name: "starting" };
   }
-  return { name: "not_connected" };
 }
 
 /**
