@@ -37,4 +37,11 @@ export interface ThreadRuns {
    * control plane was still recording for it is recorded.
    */
   forgetDeletedThread(threadId: string): Promise<void>;
+
+  /**
+   * Whether the thread's supervisor is attached to this control plane now,
+   * welcomed. False says nothing of other control planes: during a
+   * redeploy's overlap it may be attached to the other one.
+   */
+  isSupervisorAttached(threadId: string): boolean;
 }

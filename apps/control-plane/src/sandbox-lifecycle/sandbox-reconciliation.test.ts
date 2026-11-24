@@ -12,6 +12,7 @@ import {
   type TestControlPlaneOptions,
   testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
+import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import type { ThreadRecord, ThreadSandboxRecord } from "../threads/thread-store.js";
 import {
   runEndedBySandboxStoppingMessage,
@@ -116,6 +117,25 @@ async function waitForCall(
 ): Promise<void> {
   while (!controlPlane.sandboxProvider.calls.some((call) => call.operation === operation)) {
     await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Refuses the first note that a supervisor attached, as a database blip would. */
+class ThreadStoreFailingFirstAttachment extends InMemoryThreadStore {
+  readonly #refused = Promise.withResolvers<void>();
+  #hasRefused = false;
+
+  get firstAttachmentRefused(): Promise<void> {
+    return this.#refused.promise;
+  }
+
+  override async recordSupervisorAttached(threadId: string): Promise<void> {
+    if (!this.#hasRefused) {
+      this.#hasRefused = true;
+      this.#refused.resolve();
+      throw new Error("The database did not answer in time.");
+    }
+    await super.recordSupervisorAttached(threadId);
   }
 }
 
@@ -446,6 +466,22 @@ describe("a sandbox whose supervisor never connects", () => {
     await reconcile(controlPlane, false);
 
     expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+  });
+
+  it("is left running, its wait cleared, when its supervisor attached but recording that failed", async () => {
+    const threadStore = new ThreadStoreFailingFirstAttachment();
+    const controlPlane = await start({ threadStore });
+    const { threadId } = await controlPlane.createThread();
+    await threadStore.firstAttachmentRefused;
+    expect((await recordedSandboxOf(controlPlane, threadId)).awaitingSupervisorSince).toBeDefined();
+
+    clock.advanceBy(deadline);
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+    expect((await recordedSandboxOf(controlPlane, threadId)).awaitingSupervisorSince).toBe(
+      undefined,
+    );
   });
 
   it("is given the whole deadline again when resumed", async () => {

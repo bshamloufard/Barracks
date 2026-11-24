@@ -83,16 +83,25 @@ export class SandboxReconciler {
    * Moved to `stopping` from the version read, so a supervisor attaching
    * meanwhile, which does not move the version, still loses the race only
    * by moments, and two control planes never both stop it.
+   *
+   * A thread whose supervisor is attached here is never failed for it: the
+   * note that it attached was lost (a failed write), and is made again
+   * instead, every sweep until it holds. Only the control plane the
+   * supervisor is attached to can know, so during a redeploy's overlap the
+   * other one relies on this one making the note before the deadline.
    */
   async #failIfSupervisorNeverAttached(thread: ThreadRecord): Promise<void> {
     const { sandbox, awaitingSupervisorSince } = thread;
     const { clock, timing, operations, threadStore, logger } = this.#options;
+    if (sandbox.state !== "running" || awaitingSupervisorSince === undefined) {
+      return;
+    }
+    if (this.#options.threadRuns.isSupervisorAttached(thread.threadId)) {
+      await this.#recordSupervisorAttachedAgain(thread.threadId);
+      return;
+    }
     const deadline = timing.supervisorAttachmentDeadlineInMilliseconds;
-    const isOverdue =
-      sandbox.state === "running" &&
-      awaitingSupervisorSince !== undefined &&
-      clock().getTime() - awaitingSupervisorSince.getTime() >= deadline;
-    if (!isOverdue) {
+    if (clock().getTime() - awaitingSupervisorSince.getTime() < deadline) {
       return;
     }
     const outcome = await threadStore.transition({
@@ -121,6 +130,22 @@ export class SandboxReconciler {
       "A sandbox ran without its supervisor ever connecting; stopping it. Check that sandboxes can reach BARRACK_SANDBOX_CONTROL_PLANE_URL, and the sandbox's own log",
     );
     operations.stopAndFail(outcome.thread, reason);
+  }
+
+  async #recordSupervisorAttachedAgain(threadId: string): Promise<void> {
+    const { threadStore, logger } = this.#options;
+    logger.warn(
+      { threadId },
+      "A thread's supervisor is attached but its sandbox is recorded as awaiting one; recording it attached again",
+    );
+    try {
+      await threadStore.recordSupervisorAttached(threadId);
+    } catch (error) {
+      logger.error(
+        { err: error, threadId },
+        "Could not record that a supervisor attached; the next check tries again",
+      );
+    }
   }
 
   async #takeOverAbandonedOperations(): Promise<void> {

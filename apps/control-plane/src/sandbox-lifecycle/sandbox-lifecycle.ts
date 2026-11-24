@@ -256,8 +256,9 @@ export class SandboxLifecycle {
   /**
    * Notes that the thread's supervisor attached, so reconciliation does not
    * take its sandbox for one that can never connect. A failure is logged and
-   * not fatal: the next attachment notes it again, and only a sandbox whose
-   * supervisor never attached for minutes is stopped.
+   * not fatal: reconciliation, on this control plane, finds the supervisor
+   * still attached at its next check and notes it again (see
+   * `SandboxReconciler`), long before the deadline it is held to.
    */
   async recordSupervisorAttached(threadId: string): Promise<void> {
     try {
