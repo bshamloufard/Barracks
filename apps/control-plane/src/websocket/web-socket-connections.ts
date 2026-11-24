@@ -63,7 +63,7 @@ export class WebSocketClientConnection implements ClientConnection {
   }
 
   #logSendFailure(error: Error | undefined): void {
-    if (error !== undefined) {
+    if (isWriteFailure(error)) {
       this.#logger.warn({ err: error }, "Could not send a message to a client");
     }
   }
@@ -87,7 +87,7 @@ export class WebSocketSupervisorConnection implements SupervisorConnection {
       return;
     }
     this.#socket.send(JSON.stringify(message), (error) => {
-      if (error !== undefined) {
+      if (isWriteFailure(error)) {
         this.#logger.warn(
           { err: error, messageType: message.type },
           "Could not send a message to the supervisor",
@@ -99,4 +99,12 @@ export class WebSocketSupervisorConnection implements SupervisorConnection {
   close(closeCode: number, reason: string): void {
     this.#socket.close(closeCode, reason);
   }
+}
+
+/**
+ * ws reports a successful write by calling back with `null`, although its
+ * type declarations promise `undefined`, so only a real error counts.
+ */
+function isWriteFailure(error: Error | undefined): error is Error {
+  return error instanceof Error;
 }
