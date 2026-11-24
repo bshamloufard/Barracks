@@ -66,6 +66,26 @@ export async function fetchThread(
   return threadResponseSchema.parse(await response.json()).thread;
 }
 
+/** Resolves once a thread being deleted is gone, its sandbox destroyed. */
+export async function waitUntilThreadIsGone(
+  controlPlane: ApiAccess,
+  threadId: string,
+): Promise<void> {
+  const deadline = Date.now() + sandboxWaitTimeoutInMilliseconds;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${controlPlane.httpBaseUrl}${buildThreadApiPath(threadId)}`, {
+      headers: { Authorization: `Bearer ${controlPlane.accessToken}` },
+    });
+    if (response.status === 404) {
+      return;
+    }
+    await sleep(pollIntervalInMilliseconds);
+  }
+  throw new Error(
+    `Thread ${threadId} was still there after ${sandboxWaitTimeoutInMilliseconds / 1000} s.`,
+  );
+}
+
 /** Resolves once the thread's sandbox runs, failing with the reason if it failed. */
 export function waitUntilSandboxIsReady(controlPlane: ApiAccess, threadId: string): Promise<void> {
   return waitUntilSandboxIs(controlPlane, threadId, "running");
