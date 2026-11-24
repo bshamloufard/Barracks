@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import {
   type MockModelServer,
@@ -32,17 +33,23 @@ import {
  * control plane creates as a real container from the sandbox image, running
  * the real Pi against a mock model on the host. The agent is made to run
  * commands, and everything asserted about what it can reach comes from its
- * own tool output: it runs as its own user, it cannot read the supervisor's
- * environment or files or this thread's supervisor token anywhere, cannot
- * signal or trace the supervisor, cannot run the helper that changes user,
- * and can write to its workspace. After a stop and start, its conversation
- * carries on. And when the agent stops Pi from answering, stopping the
- * sandbox still ends Pi and the agent's processes in time, through the
- * helper, since the supervisor may not signal them itself.
+ * own tool output: it runs as its own user, unable to gain privileges, it
+ * cannot read the supervisor's environment or files or this thread's
+ * supervisor token anywhere (in any process's environment, processes
+ * `docker exec` started as either user included, or any file), cannot
+ * signal or trace any process of another user, cannot run the helper that
+ * changes user, can write nowhere outside its own places and the shared
+ * temporary ones, and can write to its workspace. Then, as the supervisor's
+ * user, through `docker exec`: that user holds no capability, cannot become
+ * root, and the helper makes it the agent and no one else. After a stop
+ * and start, the agent's conversation carries on. And when the agent stops
+ * Pi from answering, stopping the sandbox still ends Pi and the agent's
+ * processes in time, through the helper, since the supervisor may not
+ * signal them itself.
  *
  * The test needs the thread's token to look for it, and the control plane
- * never reveals one, so the test reads it from the container's
- * configuration, as only someone in charge of the Docker daemon can. The
+ * never reveals one, so the test reads it from the supervisor's file, as
+ * only someone in charge of the Docker daemon can. The
  * stop of a frozen Pi is timed through the provider directly, so that it
  * measures the container's stop and nothing the control plane does first.
  *
@@ -58,6 +65,46 @@ const piAgentDirectory = "/var/lib/barrack/state/pi/agent";
 const agentUserId = 10002;
 const supervisorUserId = 10001;
 const { stopTimeoutInSeconds } = testDockerSettings;
+/** Every Docker capability's bit but SETGID (6) and SETUID (7), the two the helper needs. */
+const helperCapabilitiesOnly = "00000000000000c0";
+
+/**
+ * Leaves a process running in the sandbox through `docker exec`, as `user`,
+ * so the agent's probe meets one: it has the container's environment.
+ */
+function leaveExecProcessRunning(sandboxId: string, user: string): void {
+  execFileSync("docker", ["exec", "--detach", "--user", user, sandboxId, "sleep", "600"], {
+    timeout: 30_000,
+  });
+}
+
+/** Runs the supervisor's-user probe through `docker exec`, its script on standard input. */
+async function probeAsSupervisorUser(sandboxId: string): Promise<unknown> {
+  const script = await readFile(
+    new URL("support/supervisor-user-probe.mjs", import.meta.url),
+    "utf8",
+  );
+  const probe = spawn(
+    "docker",
+    [
+      "exec",
+      "--interactive",
+      "--user",
+      "barrack-supervisor",
+      sandboxId,
+      "node",
+      "--input-type=module",
+      "-",
+    ],
+    { stdio: ["pipe", "pipe", "inherit"] },
+  );
+  probe.stdin.end(script);
+  let output = "";
+  for await (const chunk of probe.stdout) {
+    output += String(chunk);
+  }
+  return JSON.parse(output);
+}
 
 function supervisorIs(isConnected: boolean) {
   return (messages: readonly ControlPlaneToClientMessage[]): boolean => {
@@ -165,6 +212,8 @@ if (unavailableReason !== undefined) {
         "utf8",
       );
       writeFileInSandboxAsAgent(sandboxId, probeInSandbox, probe);
+      leaveExecProcessRunning(sandboxId, "barrack-agent");
+      leaveExecProcessRunning(sandboxId, "barrack-supervisor");
 
       const tokenMiddle = supervisorToken.length / 2;
       const probeCommand = [
@@ -197,6 +246,18 @@ if (unavailableReason !== undefined) {
         CapAmb: "0000000000000000",
         NoNewPrivs: "1",
       });
+      // The supervisor, tini, and the process `docker exec` left as the supervisor.
+      expect(findings.otherUsersProcesses.length).toBeGreaterThanOrEqual(3);
+      for (const otherProcess of findings.otherUsersProcesses) {
+        expect(otherProcess).toEqual({
+          userId: expect.any(Number),
+          readEnvironment: "EACCES",
+          listFileDescriptors: "EACCES",
+          readMemory: "EACCES",
+          signal: "EPERM",
+        });
+      }
+      expect(findings.supervisorCoreFileLimit).toEqual({ soft: "0", hard: "0" });
       expect(findings.supervisor).toEqual({
         userId: supervisorUserId,
         readEnvironment: "EACCES",
@@ -212,10 +273,51 @@ if (unavailableReason !== undefined) {
         signal: "EPERM",
       });
       expect(findings.runAsAgent).toEqual({ execute: "EACCES", read: "EACCES" });
-      expect(findings.supervisorFiles).toEqual({ listRunDirectory: "EACCES", readLog: "EACCES" });
+      expect(findings.supervisorFiles).toEqual({
+        listRunDirectory: "EACCES",
+        readLog: "EACCES",
+        listStateDirectory: "EACCES",
+        listSecretsDirectory: "EACCES",
+        readToken: "EACCES",
+        writeDesktopControl: "EACCES",
+        replaceGitHelperSocket: "EACCES",
+      });
+      expect(findings.writablePaths).toEqual([]);
       expect(findings.setuidAndSetgidFiles).toEqual([]);
       expect(findings.token.foundIn).toEqual([]);
       expect(findings.token.readCount).toBeGreaterThan(100);
+      // The agent did read the container's environment, in the process `docker exec` left as the agent.
+      expect(findings.token.containerEnvironmentsRead).toBeGreaterThanOrEqual(1);
+
+      const asSupervisorUser = await probeAsSupervisorUser(sandboxId);
+      expect(asSupervisorUser).toEqual({
+        user: `${supervisorUserId}\t${supervisorUserId}\t${supervisorUserId}\t${supervisorUserId}`,
+        capabilities: {
+          CapInh: "0000000000000000",
+          CapPrm: "0000000000000000",
+          CapEff: "0000000000000000",
+          CapAmb: "0000000000000000",
+          CapBnd: helperCapabilitiesOnly,
+        },
+        becomeRootWithSetpriv: {
+          exitCode: expect.any(Number),
+          output: expect.stringMatching(/Operation not permitted/),
+        },
+        helperMakes:
+          "uid=10002(barrack-agent) gid=10002(barrack-agent) groups=10002(barrack-agent)",
+        helperGivenAUser: {
+          exitCode: 126,
+          output: "run-as-agent: usage: run-as-agent /absolute/path/to/program [argument...]",
+        },
+        helperGivenARelativeProgram: 126,
+        readToken: "allowed",
+        readAgentModelKey: "EACCES",
+        writeImageSoftware: {
+          helperDirectory: "EACCES",
+          supervisor: "EACCES",
+          startScripts: "EACCES",
+        },
+      });
       expect(findings.controlPlaneConnection).toEqual({
         socketCount: 1,
         heldByAgentProcesses: false,

@@ -62,7 +62,7 @@ describe("the docker run arguments for a thread's sandbox", () => {
 
     expect(runArguments).toContain("--add-host host.docker.internal:host-gateway");
     expect(runArguments).toContain("--cpus 2 --memory 4096m --memory-swap 4096m");
-    expect(runArguments).toContain("--pids-limit 1024 --stop-timeout 15");
+    expect(runArguments).toContain("--pids-limit 1024 --stop-timeout 15 --ulimit core=0");
     expect(runArguments).toContain("--cap-drop ALL --cap-add SETUID --cap-add SETGID");
     expect(runArguments).not.toContain("--privileged");
   });

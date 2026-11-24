@@ -1,8 +1,9 @@
 /**
  * Run by the agent itself, through its own shell tool, inside a sandbox: it
- * tries every route to the supervisor's secrets that the sandbox image means
- * to close, and prints what happened as one line of JSON. Each attempt
- * reports "allowed" or the error code it failed with.
+ * tries every route to the supervisor's secrets, and to the supervisor's
+ * privileges, that the sandbox image means to close, and prints what
+ * happened as one line of JSON. Each attempt reports "allowed" or the error
+ * code it failed with.
  *
  * Arguments: the control plane's port, then the supervisor's token in two
  * halves, so that the token itself never appears in any process's command
@@ -10,7 +11,9 @@
  */
 import { spawnSync } from "node:child_process";
 import {
+  accessSync,
   closeSync,
+  constants,
   lstatSync,
   openSync,
   readdirSync,
@@ -26,8 +29,24 @@ const [controlPlanePort, tokenStart, tokenEnd] = process.argv.slice(2);
 const token = `${tokenStart}${tokenEnd}`;
 const runAsAgentPath = "/opt/barrack/bin/run-as-agent";
 const supervisorEntryPoint = "/opt/barrack/supervisor/dist/main.js";
+const secretsDirectory = "/var/lib/barrack/secrets";
 /** Directories a process can see but that are not files anyone wrote. */
 const virtualFileSystems = new Set(["/proc", "/sys", "/dev"]);
+/**
+ * The image's own software, which nobody in the sandbox can write (the
+ * writable-paths search below checks that), and too large to read whole.
+ */
+const imageSoftware = new Set(["/usr"]);
+/** Where the agent may write by design: its own places, and the shared temporary ones. */
+const agentPlaces = [
+  "/workspace",
+  "/var/lib/barrack/state",
+  "/home/barrack-agent",
+  "/tmp",
+  "/var/tmp",
+  "/run/lock",
+  "/dev/shm",
+];
 
 function attempt(action) {
   try {
@@ -81,7 +100,16 @@ function probeOtherProcess(processId) {
   };
 }
 
-function* walkFiles(directory) {
+function* walkFiles(directory, skipped = virtualFileSystems) {
+  for (const entry of walkEntries(directory, skipped)) {
+    if (entry.isFile()) {
+      yield entry.path;
+    }
+  }
+}
+
+/** Every entry below `directory`, directories included, leaving out `skipped` and what is in them. */
+function* walkEntries(directory, skipped = virtualFileSystems) {
   let entries;
   try {
     entries = readdirSync(directory, { withFileTypes: true });
@@ -90,10 +118,12 @@ function* walkFiles(directory) {
   }
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory() && !virtualFileSystems.has(entryPath)) {
-      yield* walkFiles(entryPath);
-    } else if (entry.isFile()) {
-      yield entryPath;
+    if (skipped.has(entryPath)) {
+      continue;
+    }
+    yield { path: entryPath, isFile: () => entry.isFile(), isDirectory: () => entry.isDirectory() };
+    if (entry.isDirectory()) {
+      yield* walkEntries(entryPath, skipped);
     }
   }
 }
@@ -112,26 +142,21 @@ function findSetuidAndSetgidFiles() {
   return found;
 }
 
-/** Every readable place a token could have been written: process records and files. */
+/**
+ * Every readable place a token could have been written: every process's
+ * environment and command line (including processes `docker exec` started,
+ * as either user), and every file outside the image's own software and
+ * /proc, /sys and /dev, shared memory included.
+ */
 function findToken(processes) {
   const places = processes.flatMap(({ processId }) => [
     `/proc/${processId}/environ`,
     `/proc/${processId}/cmdline`,
   ]);
-  // Everywhere the supervisor's user could write, and more.
-  for (const directory of [
-    "/run",
-    "/var",
-    "/tmp",
-    "/dev/shm",
-    "/home",
-    "/workspace",
-    "/etc",
-    "/root",
-  ]) {
-    places.push(...walkFiles(directory));
-  }
+  places.push(...walkFiles("/", new Set([...virtualFileSystems, ...imageSoftware])));
+  places.push(...walkFiles("/dev/shm"));
   let readCount = 0;
+  let containerEnvironmentsRead = 0;
   const foundIn = [];
   for (const place of places) {
     try {
@@ -140,6 +165,12 @@ function findToken(processes) {
       }
       const contents = readFileSync(place, "latin1");
       readCount += 1;
+      if (
+        place.endsWith("/environ") &&
+        contents.includes("BARRACK_SUPERVISOR_SECRETS_DIRECTORY=")
+      ) {
+        containerEnvironmentsRead += 1;
+      }
       if (contents.includes(token)) {
         foundIn.push(place);
       }
@@ -147,7 +178,37 @@ function findToken(processes) {
       // Unreadable to the agent, which is the point.
     }
   }
-  return { readCount, foundIn };
+  return { readCount, containerEnvironmentsRead, foundIn };
+}
+
+/**
+ * Whatever the agent can write outside its own places and the shared
+ * temporary ones: anything there that the supervisor ran or read as
+ * configuration would be a way into it.
+ */
+function findWritablePaths() {
+  const skipped = new Set([...virtualFileSystems, ...agentPlaces]);
+  const writable = [];
+  for (const entry of walkEntries("/", skipped)) {
+    try {
+      if (!lstatSync(entry.path).isSymbolicLink()) {
+        accessSync(entry.path, constants.W_OK);
+        writable.push(entry.path);
+      }
+    } catch {
+      // Not writable, which is the point.
+    }
+  }
+  return writable;
+}
+
+/** The soft and hard limits on a process's core file size, which /proc shows to anyone. */
+function readCoreFileLimit(processId) {
+  const line = readFileSync(`/proc/${processId}/limits`, "utf8")
+    .split("\n")
+    .find((limit) => limit.startsWith("Max core file size"));
+  const [soft, hard] = line?.split(/\s{2,}/).slice(1, 3) ?? [];
+  return { soft, hard };
 }
 
 /** Socket inodes of TCP connections to the control plane, from this network namespace's table. */
@@ -194,6 +255,8 @@ function listFileDescriptors(processId) {
 
 const ownUserId = process.getuid();
 const processes = listProcesses();
+/** Every process of another user: the supervisor, tini, and whatever `docker exec` started as the supervisor. */
+const otherUsersProcesses = processes.filter(({ userId }) => userId !== ownUserId);
 const supervisor = processes.find(({ commandLine }) => commandLine.includes(supervisorEntryPoint));
 // Pi renames its process, so it is found as the agent's process that the
 // supervisor started.
@@ -231,6 +294,9 @@ console.log(
     ),
     supervisor: supervisor === undefined ? "not found" : probeOtherProcess(supervisor.processId),
     firstProcess: probeOtherProcess(1),
+    otherUsersProcesses: otherUsersProcesses.map(({ processId }) => probeOtherProcess(processId)),
+    supervisorCoreFileLimit:
+      supervisor === undefined ? "not found" : readCoreFileLimit(supervisor.processId),
     runAsAgent: {
       execute: spawnSync(runAsAgentPath, ["--version"]).error?.code ?? "allowed",
       read: attempt(() => readFileSync(runAsAgentPath)),
@@ -238,7 +304,15 @@ console.log(
     supervisorFiles: {
       listRunDirectory: attempt(() => readdirSync("/run/barrack")),
       readLog: attempt(() => readFileSync("/var/log/barrack/supervisor.log")),
+      listStateDirectory: attempt(() => readdirSync("/var/lib/barrack/supervisor")),
+      listSecretsDirectory: attempt(() => readdirSync(secretsDirectory)),
+      readToken: attempt(() => readFileSync(`${secretsDirectory}/BARRACK_SUPERVISOR_TOKEN`)),
+      writeDesktopControl: attempt(() => writeFileSync("/run/barrack-desktop/control", "agent")),
+      replaceGitHelperSocket: attempt(() =>
+        writeFileSync("/run/barrack-git/credential.sock.planted", ""),
+      ),
     },
+    writablePaths: findWritablePaths(),
     setuidAndSetgidFiles: findSetuidAndSetgidFiles(),
     token: findToken(processes),
     controlPlaneConnection: {

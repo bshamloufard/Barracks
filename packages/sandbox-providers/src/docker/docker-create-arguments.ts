@@ -96,6 +96,10 @@ export function buildCreateArguments(
     String(settings.processLimit),
     "--stop-timeout",
     String(settings.stopTimeoutInSeconds),
+    // No process may write a core file, however it raises its own limit: a
+    // crashed supervisor's would hold its token.
+    "--ulimit",
+    "core=0",
     // Nothing in the sandbox runs as root, so it needs no capabilities beyond
     // the two the image's run-as-agent takes from its file to start the
     // agent as a separate user (see sandbox-image/README.md). Those two must
