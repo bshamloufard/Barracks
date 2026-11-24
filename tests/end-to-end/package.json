@@ -12,7 +12,9 @@
     "@barrack/mock-model-server": "workspace:*",
     "@barrack/protocol": "workspace:*",
     "@barrack/sandbox-providers": "workspace:*",
+    "@types/pg": "8.23.1",
     "@types/ws": "8.18.2",
+    "pg": "8.23.1",
     "tsx": "4.23.15",
     "ws": "8.23.0"
   }
