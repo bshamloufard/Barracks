@@ -37,6 +37,16 @@ export type SandboxReconcilerOptions = {
 const threadsPerSweep = 1_000;
 
 /**
+ * How far apart two control plane instances' clocks may be while still
+ * comparing a supervisor's welcome on one with the start of its sandbox's
+ * wait on the other. Hosts kept by NTP differ by milliseconds; this is
+ * generous. Its price: a supervisor welcomed this long before its sandbox
+ * began waiting (one of a sandbox stopped and resumed within seconds,
+ * still attached) is taken as the new sandbox's.
+ */
+const clockSkewToleranceInMilliseconds = 5_000;
+
+/**
  * Brings what the control plane believes about sandboxes back in line with
  * what is true, at startup and then periodically:
  *
@@ -97,6 +107,10 @@ export class SandboxReconciler {
    * control plane the supervisor is attached to can know, so during a
    * redeploy's overlap the other one relies on this one making the note
    * before the deadline.
+   *
+   * The two times may come from two instances' clocks (the wait began on
+   * the one that recorded the sandbox running), so a welcome up to
+   * `clockSkewToleranceInMilliseconds` before the wait began still counts.
    */
   async #failIfSupervisorNeverAttached(thread: ThreadRecord): Promise<void> {
     const { sandbox, awaitingSupervisorSince } = thread;
@@ -105,7 +119,9 @@ export class SandboxReconciler {
       return;
     }
     const welcomedAt = this.#options.threadRuns.whenSupervisorWelcomed(thread.threadId);
-    if (welcomedAt !== undefined && welcomedAt.getTime() >= awaitingSupervisorSince.getTime()) {
+    const earliestWelcomeCounted =
+      awaitingSupervisorSince.getTime() - clockSkewToleranceInMilliseconds;
+    if (welcomedAt !== undefined && welcomedAt.getTime() >= earliestWelcomeCounted) {
       await this.#recordSupervisorAttachedAgain(thread.threadId, awaitingSupervisorSince);
       return;
     }

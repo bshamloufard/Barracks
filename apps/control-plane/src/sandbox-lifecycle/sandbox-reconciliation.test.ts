@@ -13,7 +13,12 @@ import {
   testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
-import type { SandboxState, ThreadRecord, ThreadSandboxRecord } from "../threads/thread-store.js";
+import type {
+  SandboxState,
+  SandboxTransition,
+  ThreadRecord,
+  ThreadSandboxRecord,
+} from "../threads/thread-store.js";
 import {
   runEndedBySandboxStoppingMessage,
   sandboxLostReason,
@@ -124,9 +129,28 @@ async function waitForCall(
 class ThreadStoreFailingFirstAttachment extends InMemoryThreadStore {
   readonly #refused = Promise.withResolvers<void>();
   #hasRefused = false;
+  readonly #creatorsClockAheadByMilliseconds: number;
+
+  /**
+   * `creatorsClockAheadByMilliseconds`: how far ahead is the clock of the
+   * control plane recording sandboxes running, from when they await their
+   * supervisors.
+   */
+  constructor(creatorsClockAheadByMilliseconds = 0) {
+    super();
+    this.#creatorsClockAheadByMilliseconds = creatorsClockAheadByMilliseconds;
+  }
 
   get firstAttachmentRefused(): Promise<void> {
     return this.#refused.promise;
+  }
+
+  override async transition(transition: SandboxTransition) {
+    if (transition.to.state !== "running") {
+      return super.transition(transition);
+    }
+    const at = new Date(transition.at.getTime() + this.#creatorsClockAheadByMilliseconds);
+    return super.transition({ ...transition, at });
   }
 
   override async recordSupervisorAttached(threadId: string, at: Date): Promise<void> {
@@ -510,6 +534,21 @@ describe("a sandbox whose supervisor never connects", () => {
     );
   });
 
+  it("is left running, its wait cleared, when recording that its supervisor attached failed and the control plane that began the wait has a clock a little ahead", async () => {
+    const threadStore = new ThreadStoreFailingFirstAttachment(3_000);
+    const controlPlane = await start({ threadStore });
+    const { threadId } = await controlPlane.createThread();
+    await threadStore.firstAttachmentRefused;
+
+    clock.advanceBy(deadline + 5_000);
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+    expect((await recordedSandboxOf(controlPlane, threadId)).awaitingSupervisorSince).toBe(
+      undefined,
+    );
+  });
+
   it("is left running when its supervisor attaches between the deadline being read and acted on", async () => {
     clock = new ControllableClock();
     const threadStore = new ThreadStoreAttachingAfterListing();
@@ -541,7 +580,8 @@ describe("a sandbox whose supervisor never connects", () => {
       .toBeUndefined();
     await controlPlane.sendApi("POST", `${buildThreadApiPath(thread.threadId)}/stop`);
     await controlPlane.whenOperationsSettle();
-    clock.advanceBy(1_000);
+    // Longer than the clock skew reconciliation allows for between instances.
+    clock.advanceBy(10_000);
     await controlPlane.sendApi("POST", `${buildThreadApiPath(thread.threadId)}/resume`);
     await controlPlane.whenOperationsSettle();
     expect(controlPlane.threadServices.relays.isSupervisorAttached(thread.threadId)).toBe(true);
