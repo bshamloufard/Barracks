@@ -10,7 +10,7 @@ Early development. Milestone 1 (a local proof of the core loop) is in progress. 
 
 ## Prerequisites
 
-- Node.js 22 or newer (the exact major version is in [`.nvmrc`](.nvmrc))
+- Node.js 22.19 or newer, which the Pi agent requires ([`.nvmrc`](.nvmrc) names the major version, so version managers install the latest 22.x release)
 - pnpm 10 (the exact version is pinned in `package.json` under `packageManager`; running `corepack enable` installs it for you)
 
 ## Getting started
