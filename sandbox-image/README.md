@@ -34,7 +34,7 @@ The supervisor writes who holds the desktop's input, `agent` or `user`, to `/run
 
 ### For Daytona
 
-The Daytona provider creates sandboxes from a Daytona snapshot of this image, named by `BARRACK_DAYTONA_SNAPSHOT`. Daytona's CLI can push a locally built image as a snapshot, for example `daytona snapshot push barrack-sandbox:dev --name barrack-sandbox-<version>`. Use a new name for each build, since Daytona rejects tags such as `latest`. This route has not yet been tried against a live Daytona account.
+The Daytona provider creates sandboxes from a Daytona snapshot of this image, named by `BARRACK_DAYTONA_SNAPSHOT`. Daytona's CLI can push a locally built image as a snapshot, for example `daytona snapshot push barrack-sandbox:dev --name barrack-sandbox-<version>`. Use a new name for each build, since Daytona rejects tags such as `latest`. This has never been tried against Daytona; the [deployment guide](../docs/deployment.md#2-daytona-the-sandbox-image) has the steps, and its checklist what to confirm.
 
 ## What runs, and as whom
 
@@ -92,7 +92,7 @@ Open:
 - **The cloud metadata address**, `169.254.169.254`: on a cloud VM, the network lets a sandbox ask it for the machine's credentials. The container cannot refuse it by itself; the host must (see [the deployment guide](../docs/deployment.md#the-cloud-metadata-address)).
 - **The kernel**: a container shares the host's kernel, behind Docker's default seccomp profile and namespaces, with no user namespace remapping; a kernel flaw would let the agent out of the container altogether. A sandbox in its own virtual machine (gVisor, Kata, Firecracker) would close it, at a cost Barrack has not taken on.
 - **Disk**: Docker limits a sandbox's memory, processors and processes, but not its disk, so an agent can fill the host's. Docker's per-container size limit needs `overlay2` on XFS with project quotas; on such a host, `--storage-opt size=` would close it.
-- **Daytona**: Daytona's own processes inside a sandbox, and how its command and file interfaces run, have not been examined; its daemon listens inside the sandbox, and if a process there can ask it for a command or a file without the API key, the agent can become any user, root included. See [the deployment guide](../docs/deployment.md#not-yet-verified) for what a first run must check.
+- **Daytona**: never run. Its daemon listens inside the sandbox, and if a process there can ask it for a command or a file without the API key, the agent can become any user, root included. The [first-deployment checklist](../docs/deployment.md#first-deployment-checklist) says how to check.
 
 #### What the supervisor's user can do
 

@@ -2,16 +2,29 @@
 
 Barrack is an open-source, self-hostable, always-on coding-agent platform in the spirit of Devin. You open a thread from any device and describe a task. An agent (the [Pi coding agent](https://github.com/earendil-works/pi)) works on it inside its own cloud sandbox, and you can watch it, steer it, or walk away and come back later on another device.
 
-Barrack has four parts: clients (web first), an always-on control plane, a Postgres data store, and one sandbox per thread. Inside each sandbox, a small supervisor process connects outward to the control plane. See [docs/architecture.md](docs/architecture.md) for how they fit together.
-
-> [!WARNING]
-> **`pnpm dev` has no sign-in.** It runs the control plane in development mode, where every client is one fixed user, so the control plane refuses to listen anywhere but `127.0.0.1` and `localhost`; each agent can run any command on your machine. With Supabase sign-in the control plane may listen anywhere, and each user sees and controls only their own threads, but nothing has been deployed yet, and for providers the control plane does not relay, each user's own model key reaches their threads' sandboxes, where the agent (and any code a repository makes it run) can read it (Settings says, per provider, where the key lives): admit only people you trust, and use keys with a spending limit.
+Barrack has four parts: clients (web first), an always-on **control plane** (the service users and sandboxes connect to), a Postgres data store, and one **sandbox** (an isolated Linux computer) per thread. Inside each sandbox a small **supervisor** process starts the agent and connects outward to the control plane. See [docs/architecture.md](docs/architecture.md) for how they fit together.
 
 ## Status
 
-**Milestone 1 is complete:** on one machine, a prompt typed in the web page reaches the agent through the control plane and a sandbox supervisor, and the agent's reply streams back.
+**Nothing has been deployed, and nothing has run against a real outside service.** Every milestone below that says "built" has been tested on one machine: with stand-ins for the outside services, in Docker containers, and against Postgres. The real Pi agent has run only against a local mock model. Railway, Supabase, Daytona, a real GitHub App and real model providers have never been used, because there were no credentials. The code for each of them is written and tested against a stand-in that answers as its documentation describes; [the first-deployment checklist](docs/deployment.md#first-deployment-checklist) lists what a first real run must confirm.
 
-**Milestone 2's parts are built and tested locally, with Docker and Postgres:** threads are created from a thread list, each with a sandbox of its own and a supervisor token minted for it alone; sandboxes come from a provider chosen by configuration (Docker, Daytona, or local processes for development); the agent runs as its own operating-system user inside the sandbox image; thread history is stored in Postgres and replayed in pages after a restart; and delivery between a sandbox's supervisor and the control plane is acknowledged both ways, so killing either mid-run loses no recorded event and hands no message to the agent twice, and a message sent while the agent is away waits for it. **Nothing is deployed**, and Daytona, Railway and Supabase have not been exercised, for lack of credentials. **Milestone 3 has begun:** users sign in with Supabase Auth by an emailed code, the control plane verifies every token itself and admits only listed addresses, and each thread belongs to one user, over HTTP and WebSocket alike; and the thread lifecycle is built: several threads run at once (three, each in its own container with the real Pi, tested together), a thread can be stopped, resumed and deleted, a message wakes a stopped one with its conversation intact, idle sandboxes stop after ten minutes, a limit caps how many run per user, and the control plane reconciles its records with the provider and finishes operations a killed instance left. Threads can also start from a Git repository: a public one, or one of the user's own through the installation's GitHub App, which they link in Settings; the sandbox clones it before the agent starts and holds only a read-only token for it, and the control plane pushes the thread's branch and opens a pull request when the user asks. That has run against a stand-in for GitHub only, never a real GitHub App. **Milestone 4's API-key half is built:** each user adds their own model keys in Settings, stored encrypted, chooses a model for each thread and can switch it, and each thread runs on its owner's key alone, handed to the agent outside any environment; a rejected key, an exhausted quota and a rate limit each end the run with a plain message and the next step. Connecting a ChatGPT subscription is not built yet. **Milestone 5 is built and accepted in Docker:** each sandbox has a graphical desktop with Firefox, embedded live in the thread page and reachable only by the thread's owner, which the user watches and can take control of, and the agent has a computer tool to see and drive it; a browser test watches the real Pi open Firefox in its sandbox and click through a page, then takes the mouse and keyboard itself. The loop has been run with the real Pi against a local mock model, not yet with a real model provider.
+The project is built in the eight milestones of its plan:
+
+| Milestone                                                         | Status                   | What remains                                                                                                 |
+| ----------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| 1. Local proof: a prompt in a web page reaches the agent and back | Built and tested locally | Nothing                                                                                                      |
+| 2. One thread in the cloud (Railway, Supabase, Daytona)           | Built and tested locally | A first deployment: never run on Railway, Supabase or Daytona                                                |
+| 3. Many threads: sign-in, thread lifecycle, Git repositories      | Built and tested locally | Sign-in against a real Supabase project, and the GitHub flows against a real GitHub App                      |
+| 4. Bring your own model access                                    | Half built               | API keys work; signing in with a ChatGPT subscription awaits the owner's choice of route, then must be built |
+| 5. Live desktop and computer use                                  | Built and tested locally | A run on Daytona                                                                                             |
+| 6. Second sandbox provider (Docker beside Daytona)                | Built and tested locally | The same thread on Daytona: only Docker has ever run                                                         |
+| 7. Hardening: keys kept out of sandboxes, usage caps, recovery    | Built and tested locally | The model proxy against real providers; the gaps the [decision log](docs/decisions.md) still lists as open   |
+| 8. Native apps for iPhone and Mac                                 | Not built                | Everything: no Swift toolchain was available; deleting an account must be built first                        |
+
+**What works today, on one machine:** creating threads from a thread list, each in a sandbox of its own (a Docker container, or a plain local process for development); several threads at once; stopping, resuming and deleting a thread, and idle sandboxes stopping by themselves; history kept in Postgres and replayed after a restart, with nothing lost when the control plane or a supervisor is killed mid-run; sign-in and per-user access checks (tested with a stand-in token issuer); starting a thread from a Git repository and publishing its branch (tested with a stand-in for GitHub); each user's own model keys, stored encrypted, with a model per thread; the live desktop, which the user watches and can take over, and the agent's computer tool (a browser test drives it in Docker); and, for eight providers, the model proxy that keeps a user's key out of the sandbox and counts and caps usage.
+
+> [!WARNING]
+> **Admit only people you trust.** `pnpm dev` has no sign-in: every client is one fixed user, so the control plane listens only on `127.0.0.1` and `localhost`, and each agent can run any command on your machine. With Supabase sign-in each user sees and controls only their own threads, but for providers the control plane does not relay, a user's own model key is placed in their threads' sandboxes, where the agent (and any code a repository makes it run) can read it; Settings says, per provider, where the key lives. Use keys with a spending limit.
 
 ## Prerequisites
 
@@ -79,17 +92,20 @@ tests/fake-github/           A stand-in for GitHub: its API, its sign-in and Git
 tests/mock-model-server/     A stand-in OpenAI-compatible model, so tests run the real Pi with no network or key
 tests/test-identity-issuer/  A stand-in for Supabase Auth's token issuer, so tests verify real tokens with no project
 scripts/dev/                 The pnpm dev command
-docs/                        Architecture overview and decision log
+Dockerfile                   The control plane's image, which also serves the built web client
+compose.yaml                 Everything on one machine with Docker Compose (docs/deployment.md)
+.railway/railway.ts          The control plane's Railway service, as Railway Infrastructure as Code
+docs/                        Architecture overview, decision log and deployment guide
 .github/workflows/           CI: pnpm check and pnpm build with Postgres, and the Docker tests
 ```
 
-The applications, the sandbox providers and the sandbox image each have a README describing their configuration and how they are organised.
+Each folder under `apps/`, `packages/` and `tests/`, and `sandbox-image/`, has a README saying what it is for, how to run and test it, and where its main files are.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): how the parts fit together, and the path of one prompt through them.
-- [docs/decisions.md](docs/decisions.md): the decision log, recording each choice and why it was made.
-- [docs/deployment.md](docs/deployment.md): deploying, hosted on Railway, Supabase and Daytona, or on one machine with Docker Compose.
+- [docs/decisions.md](docs/decisions.md): the decision log, recording each choice, where it departs from the project plan, and why.
+- [docs/deployment.md](docs/deployment.md): deploying, hosted on Railway, Supabase and Daytona, or on one machine with Docker Compose, with the [first-deployment checklist](docs/deployment.md#first-deployment-checklist): what the owner must supply, in what order, and what a first real run must check.
 
 ## Licence
 
