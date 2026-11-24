@@ -1,5 +1,5 @@
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { connect } from "node:net";
+import { createServer, type IncomingMessage, type Server, ServerResponse } from "node:http";
+import { type AddressInfo, connect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   developmentAccessToken,
@@ -15,8 +15,12 @@ import {
   waitForProxyAccess,
 } from "../test-support/model-proxy-peers.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
+import { silentLogger } from "../test-support/test-database.js";
 import { InMemoryModelProxyTokenStore } from "./in-memory-model-proxy-token-store.js";
 import { idleModelProxyActivity } from "./model-proxy.js";
+import { defaultModelProxyLimits } from "./model-proxy-limits.js";
+import { ProxyExchange } from "./proxy-exchange.js";
+import { relayRequest } from "./relay-request.js";
 
 /**
  * An agent may hang up at any moment, an honest one included (Pi aborts a
@@ -90,14 +94,20 @@ class HoldableThreadEventLog extends ControllableThreadEventLog {
 let provider: Server | undefined;
 let controlPlane: TestControlPlane | undefined;
 const heldAnswers: ServerResponse[] = [];
+/** Every body the provider received whole. */
+const receivedBodies: string[] = [];
 
 afterEach(async () => {
   await controlPlane?.close();
   controlPlane = undefined;
   heldAnswers.splice(0);
-  provider?.closeAllConnections();
-  await new Promise((resolve) => provider?.close(resolve));
+  receivedBodies.splice(0);
+  const stopping = provider;
   provider = undefined;
+  stopping?.closeAllConnections();
+  await new Promise((resolve) =>
+    stopping === undefined ? resolve(undefined) : stopping.close(resolve),
+  );
 });
 
 /** A provider that answers at once, unless the request asks it to hold. */
@@ -108,6 +118,7 @@ async function startProvider(): Promise<string> {
       body += chunk.toString("utf8");
     });
     request.on("end", () => {
+      receivedBodies.push(body);
       if (body.includes(holdBeforeAnswering)) {
         heldAnswers.push(response);
         return;
@@ -192,11 +203,29 @@ async function sendHangingUp(
   access: ProxyAccess,
   body: string,
   sentBytes = Buffer.byteLength(body),
-): Promise<{ hangUp: () => Promise<void> }> {
+): Promise<{ hangUp: () => Promise<void>; send: (body: string) => void; closed: Promise<void> }> {
   const port = Number(new URL(requireControlPlane().httpBaseUrl).port);
   const socket = connect(port, "127.0.0.1");
   socket.on("error", () => undefined);
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  // Read whatever is answered, so the socket notices the control plane closing it.
+  socket.resume();
   await new Promise((resolve) => socket.once("connect", resolve));
+  socket.write(requestHead(access, body));
+  socket.write(Buffer.from(body).subarray(0, sentBytes));
+  return {
+    hangUp: async () => {
+      socket.destroy();
+      // Long enough for the control plane to see the socket close.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    },
+    // Another request on the same connection, before the first is answered: pipelined.
+    send: (nextBody) => socket.write(requestHead(access, nextBody) + nextBody),
+    closed,
+  };
+}
+
+function requestHead(access: ProxyAccess, body: string): string {
   const head = [
     `POST ${access.basePath}/v1/messages HTTP/1.1`,
     "Host: 127.0.0.1",
@@ -205,15 +234,7 @@ async function sendHangingUp(
     "content-type: application/json",
     `content-length: ${Buffer.byteLength(body)}`,
   ].join("\r\n");
-  socket.write(`${head}\r\n\r\n`);
-  socket.write(Buffer.from(body).subarray(0, sentBytes));
-  return {
-    hangUp: async () => {
-      socket.destroy();
-      // Long enough for the control plane to see the socket close.
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    },
-  };
+  return `${head}\r\n\r\n`;
 }
 
 /** What a thread's agent may do once nothing is held: its full number of requests at once. */
@@ -326,6 +347,183 @@ describe("an agent hanging up at each point a request waits", () => {
     expect(await countedFor(threadId)).toEqual([
       expect.objectContaining({ source: "measured", answerCount: 5 }),
     ]);
+  });
+});
+
+/**
+ * A request sent on a connection before the answer ahead of it has ended
+ * (pipelined) is handed over by Node at once, but its response is queued
+ * behind the one ahead and, if the connection closes meanwhile, never
+ * closes. The pinned agent never pipelines (its HTTP client sends one
+ * request at a time on a connection), so the proxy ends such a connection
+ * without relaying the request.
+ */
+describe("a request pipelined behind another", () => {
+  const pipelined = "pipelined request";
+
+  it("ends the connection, relaying nothing of it, while the one ahead awaits the provider", async () => {
+    const { access, threadId } = await startThread();
+    const connection = await sendHangingUp(access, bodyAsking(holdBeforeAnswering));
+    await expect.poll(() => heldAnswers.length).toBe(1);
+    connection.send(bodyAsking(pipelined));
+    await connection.closed;
+
+    await expectFullAllowance(access);
+    expect(receivedBodies.filter((body) => body.includes(pipelined))).toEqual([]);
+    // The one ahead reached the provider whole, so it is counted.
+    expect(await countedFor(threadId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: "estimated", answerCount: 1 })]),
+    );
+  });
+
+  it("ends the connection, relaying nothing of it, while the one ahead is mid-answer", async () => {
+    const { access, threadId } = await startThread();
+    const connection = await sendHangingUp(access, bodyAsking(holdMidAnswer));
+    await expect.poll(() => heldAnswers.length).toBe(1);
+    connection.send(bodyAsking(pipelined));
+    await connection.closed;
+
+    await expectFullAllowance(access);
+    expect(receivedBodies.filter((body) => body.includes(pipelined))).toEqual([]);
+    expect(await countedFor(threadId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: "estimated", answerCount: 1 })]),
+    );
+  });
+
+  it("holds nothing once its thread is stopped, the agent never having hung up", async () => {
+    const { access, threadId } = await startThread();
+    const connection = await sendHangingUp(access, bodyAsking(holdBeforeAnswering));
+    await expect.poll(() => heldAnswers.length).toBe(1);
+    connection.send(bodyAsking(pipelined));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    requireControlPlane().modelProxy.cancelThread(threadId);
+
+    await expect
+      .poll(() => requireControlPlane().modelProxy.activity, { timeout: 5_000 })
+      .toEqual(idleModelProxyActivity);
+    expect(receivedBodies.filter((body) => body.includes(pipelined))).toEqual([]);
+  });
+});
+
+/**
+ * Should a request's response ever be one Node never closes (as a
+ * pipelined request's is, if its connection closes while it is queued),
+ * the request still ends when its connection closes, and its relay still
+ * finishes when it is cancelled or times out.
+ */
+describe("a request whose response Node never closes", () => {
+  const incomingServers: Server[] = [];
+
+  afterEach(async () => {
+    for (const server of incomingServers.splice(0)) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  /**
+   * A request as Node hands it over, paired with a response that, like one
+   * queued behind another, is never given the connection; and what hangs
+   * the request's connection up.
+   */
+  async function receiveWithQueuedResponse(): Promise<{
+    request: IncomingMessage;
+    response: ServerResponse;
+    hangUp: () => void;
+  }> {
+    const received = Promise.withResolvers<IncomingMessage>();
+    const server = createServer((request) => received.resolve(request));
+    incomingServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const socket = connect(port, "127.0.0.1");
+    socket.on("error", () => undefined);
+    const body = bodyAsking("Hello");
+    socket.write(
+      `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    );
+    const request = await received.promise;
+    return { request, response: new ServerResponse(request), hangUp: () => socket.destroy() };
+  }
+
+  function relayTo(
+    origin: string,
+    incoming: { request: IncomingMessage; response: ServerResponse },
+    text: string,
+    cancellation: AbortSignal,
+    limits = defaultModelProxyLimits,
+  ) {
+    return relayRequest({
+      ...incoming,
+      route: { format: "anthropic_messages", upstreamUrl: new URL(`${origin}/v1/messages`) },
+      body: Buffer.from(bodyAsking(text)),
+      ownerKey: ownersKey,
+      limits,
+      cancellation,
+    });
+  }
+
+  it("ends the request when its connection closes", async () => {
+    const { request, response, hangUp } = await receiveWithQueuedResponse();
+    const exchange = new ProxyExchange({
+      request,
+      response,
+      target: { threadId: "a-thread", providerId: "anthropic", apiPath: "/v1/messages", query: "" },
+      route: { format: "anthropic_messages", upstreamUrl: new URL("http://127.0.0.1/v1/messages") },
+      logger: silentLogger,
+    });
+    hangUp();
+
+    await expect.poll(() => exchange.ending).toBe("agent_went_away");
+    exchange.close();
+  });
+
+  it("finishes relaying once cancelled before the provider answers, saying the provider received it", async () => {
+    const origin = await startProvider();
+    const cancellation = new AbortController();
+    const relaying = relayTo(
+      origin,
+      await receiveWithQueuedResponse(),
+      holdBeforeAnswering,
+      cancellation.signal,
+    );
+    await expect.poll(() => heldAnswers.length).toBe(1);
+    cancellation.abort("thread_ended");
+
+    expect(await relaying).toMatchObject({ wasRequestSent: true, interruption: "cancelled" });
+  });
+
+  it("finishes relaying once cancelled mid-answer, with the usage the answer gave", async () => {
+    const origin = await startProvider();
+    const cancellation = new AbortController();
+    const relaying = relayTo(
+      origin,
+      await receiveWithQueuedResponse(),
+      holdMidAnswer,
+      cancellation.signal,
+    );
+    await expect.poll(() => heldAnswers.length).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    cancellation.abort("shutting_down");
+
+    expect(await relaying).toMatchObject({
+      wasRequestSent: true,
+      interruption: "shutting_down",
+      usage: expect.objectContaining({ inputTokens: 10 }),
+    });
+  });
+
+  it("finishes relaying when it runs out of time", async () => {
+    const origin = await startProvider();
+    const relaying = relayTo(
+      origin,
+      await receiveWithQueuedResponse(),
+      holdBeforeAnswering,
+      new AbortController().signal,
+      { ...defaultModelProxyLimits, totalTimeoutInMilliseconds: 200 },
+    );
+
+    expect(await relaying).toMatchObject({ wasRequestSent: true, interruption: "timed_out" });
   });
 });
 

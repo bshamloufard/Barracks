@@ -189,6 +189,13 @@ export class ModelProxy {
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (isPipelined(response)) {
+      this.#options.logger.warn(
+        "Ended a connection that sent a model request before the answer ahead of it had ended",
+      );
+      request.socket.destroy();
+      return;
+    }
     // A refused request's body is never read, so its connection is not reused.
     response.shouldKeepAlive = false;
     if (this.#isShuttingDown) {
@@ -574,4 +581,18 @@ export class ModelProxy {
       }
     });
   }
+}
+
+/**
+ * Whether the request came on a connection whose previous answer had not
+ * ended (HTTP pipelining). Node hands such a request over at once but
+ * gives its response the connection only once the one ahead finishes, and
+ * never closes it if the connection closes first, so nothing could tell
+ * when it ended. The pinned agent's HTTP client never pipelines (undici,
+ * one request at a time per connection), so such a connection is ended
+ * without relaying anything; the request ahead is ended with it.
+ * https://github.com/nodejs/node/blob/v24.0.0/lib/_http_server.js (`parserOnIncoming`)
+ */
+function isPipelined(response: ServerResponse): boolean {
+  return response.socket === null;
 }

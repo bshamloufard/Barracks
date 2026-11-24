@@ -112,13 +112,7 @@ class RequestRelay {
       () => this.#interrupt("timed_out"),
       limits.totalTimeoutInMilliseconds,
     );
-    const cancel = () => {
-      this.#interrupt(interruptionFor(cancellation.reason));
-      // The agent's response may have closed already, and closes only once.
-      if (response.closed) {
-        this.#finish();
-      }
-    };
+    const cancel = () => this.#interrupt(interruptionFor(cancellation.reason));
     cancellation.addEventListener("abort", cancel, { once: true });
     response.on("close", () => {
       cancellation.removeEventListener("abort", cancel);
@@ -165,7 +159,12 @@ class RequestRelay {
     });
   }
 
-  /** The first reason wins; everything still open is ended. */
+  /**
+   * The first reason wins; everything still open is ended, and the relay
+   * finishes at once, without waiting for the agent's response to close:
+   * it may have closed already (it closes only once), and one that Node
+   * queued behind another on the same connection never closes at all.
+   */
   #interrupt(reason: RelayInterruption): void {
     if (this.#isFinished) {
       return;
@@ -173,11 +172,12 @@ class RequestRelay {
     this.#interruption ??= reason;
     this.#abortController.abort();
     const { response, route } = this.#options;
-    if (!response.headersSent) {
+    if (response.headersSent) {
+      response.destroy();
+    } else {
       sendRefusal(response, route.format, refusalFor(this.#interruption));
-      return;
     }
-    response.destroy();
+    this.#finish();
   }
 
   #finish(): void {

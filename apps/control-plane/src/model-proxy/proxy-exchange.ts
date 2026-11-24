@@ -25,7 +25,10 @@ export type ExchangeEnding =
  * The agent hanging up is noticed from the moment the exchange exists,
  * before anything is awaited: it aborts `signal`, which every wait that can
  * be cut short listens to (reading the body, the request to the provider),
- * and which the proxy checks after every wait that cannot.
+ * and which the proxy checks after every wait that cannot. It is noticed
+ * from the connection closing as well as from the response: Node never
+ * closes a response it queued behind another on the same connection, if
+ * the connection closes first.
  */
 export class ProxyExchange {
   readonly request: IncomingMessage;
@@ -54,9 +57,14 @@ export class ProxyExchange {
         this.end("agent_went_away");
       }
     };
+    const connection = this.request.socket;
     this.response.once("close", noticeHangUp);
-    this.hold(() => this.response.removeListener("close", noticeHangUp));
-    if (this.response.destroyed || this.request.destroyed) {
+    connection.once("close", noticeHangUp);
+    this.hold(() => {
+      this.response.removeListener("close", noticeHangUp);
+      connection.removeListener("close", noticeHangUp);
+    });
+    if (this.response.destroyed || this.request.destroyed || connection.destroyed) {
       this.end("agent_went_away");
     }
   }
