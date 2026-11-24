@@ -1,0 +1,60 @@
+#!/bin/sh
+# Starts the supervisor in the background unless one is already running, so
+# it is safe to run any number of times. Providers that do not make the
+# supervisor the sandbox's main process (Daytona chooses its own) run this
+# after every create and every start. With --check it only reports, through
+# its exit status, whether a supervisor is running.
+#
+# Exit status: 0 when a supervisor is running (or has just been started),
+# 3 with --check when none is, 1 on any other failure.
+set -eu
+
+pid_file=/run/barrack/supervisor.pid
+lock_file=/run/barrack/ensure-supervisor.lock
+log_file=/var/log/barrack/supervisor.log
+
+supervisor_is_running() {
+  [ -s "$pid_file" ] || return 1
+  pid="$(cat "$pid_file")"
+  # A recorded ID can outlive its process (the file survives a stop) and be
+  # reused by another, so the process must also be the supervisor.
+  [ -r "/proc/$pid/cmdline" ] &&
+    tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q '/opt/barrack/supervisor/dist/main.js'
+}
+
+if [ "${1:-}" = "--check" ]; then
+  supervisor_is_running && exit 0
+  exit 3
+fi
+
+# Two concurrent runs must not both decide that no supervisor is running.
+# The lock file is made by the image, so every user can open it for reading,
+# which is all flock needs.
+exec 9< "$lock_file"
+flock 9
+
+if supervisor_is_running; then
+  exit 0
+fi
+
+if [ "$(id -u)" = "0" ]; then
+  # Commands a provider runs may arrive as root; the supervisor never runs as root.
+  run_as_supervisor="setpriv --reuid=$BARRACK_SUPERVISOR_USER --regid=$BARRACK_SUPERVISOR_USER --init-groups"
+else
+  run_as_supervisor=""
+fi
+
+# setsid detaches the supervisor from the command that started it, so it
+# keeps running when that command's session ends. It must not inherit the lock.
+# shellcheck disable=SC2086 # $run_as_supervisor is deliberately split into words.
+setsid $run_as_supervisor /usr/local/bin/barrack-run-supervisor \
+  >> "$log_file" 2>&1 < /dev/null 9<&- &
+
+# Give a supervisor that fails at once (bad configuration, say) time to exit,
+# so the failure is reported here rather than discovered later.
+sleep 1
+if supervisor_is_running; then
+  exit 0
+fi
+echo "The supervisor did not stay running; see $log_file." >&2
+exit 1

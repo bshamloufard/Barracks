@@ -1,0 +1,13 @@
+# Only what sandbox-image/Dockerfile copies is sent to the Docker daemon,
+# so unrelated changes never invalidate the image's cached layers.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!packages/protocol
+!apps/sandbox-supervisor
+!sandbox-image
+**/node_modules
+**/dist
+**/*.tsbuildinfo

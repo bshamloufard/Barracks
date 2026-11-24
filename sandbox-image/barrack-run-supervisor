@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs the sandbox supervisor in the foreground. This is the image's default
+# command; its configuration comes entirely from the environment.
+#
+# The process ID is recorded first so that barrack-ensure-supervisor can tell
+# that a supervisor is already running. `exec` keeps that ID: the supervisor
+# replaces this shell, so signals reach it directly.
+set -eu
+
+echo "$$" > /run/barrack/supervisor.pid
+exec /usr/local/bin/node /opt/barrack/supervisor/dist/main.js
