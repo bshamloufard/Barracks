@@ -36,7 +36,11 @@ export function describeAgentAvailability(state: ThreadState): AgentAvailability
   return { name: "not_connected" };
 }
 
-/** Why the message box is closed, or undefined when the user can send. */
+/**
+ * Why the message box is closed, or undefined when the user can send. A
+ * message can be sent while the agent is starting or away: it is recorded
+ * and waits for the agent, and the conversation shows it waiting.
+ */
 export function describeWhySendingIsBlocked(state: ThreadState): string | undefined {
   if (state.connection.name !== "connected") {
     return "Waiting for the connection to the control plane.";
@@ -44,14 +48,12 @@ export function describeWhySendingIsBlocked(state: ThreadState): string | undefi
   const availability = describeAgentAvailability(state);
   switch (availability.name) {
     case "connected":
+    case "starting":
+    case "not_connected":
       return undefined;
     case "loading":
       return "Loading the thread.";
-    case "starting":
-      return "The thread's sandbox is starting; you can send messages once its agent connects.";
     case "sandbox_failed":
       return "This thread's sandbox could not be created, so it has no agent to send messages to.";
-    case "not_connected":
-      return "The agent is not connected.";
   }
 }

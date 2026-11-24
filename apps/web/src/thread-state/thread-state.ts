@@ -21,6 +21,8 @@ import type {
 export type UserMessageEntry = {
   kind: "user_message";
   key: string;
+  /** Its place in the thread, which says whether the agent has been handed it yet. */
+  sequence: number;
   text: string;
 };
 
@@ -97,6 +99,8 @@ export type ThreadState = {
   /** A run has started and has not yet settled or failed. */
   isAgentWorking: boolean;
   isSupervisorConnected: boolean;
+  /** User messages up to this sequence have reached the agent; later ones are waiting for it. */
+  userMessagesDeliveredThroughSequence: number;
   /**
    * Whether this page has seen the supervisor connected since it opened.
    * Until it has, a sandbox that exists may still be starting its supervisor.
@@ -120,6 +124,7 @@ export const initialThreadState: ThreadState = {
   entries: [],
   isAgentWorking: false,
   isSupervisorConnected: false,
+  userMessagesDeliveredThroughSequence: 0,
   hasSeenSupervisorConnected: false,
   connection: { name: "connecting" },
   rejectionReason: undefined,
@@ -158,6 +163,8 @@ export function applyControlPlaneMessage(
         hasSeenSupervisorConnected:
           state.hasSeenSupervisorConnected || message.isSupervisorConnected,
       };
+    case "user_message_delivery_status":
+      return { ...state, userMessagesDeliveredThroughSequence: message.deliveredThroughSequence };
     case "client_message_rejected":
       return { ...state, rejectionReason: message.reason };
   }
@@ -211,6 +218,7 @@ function applyThreadEvent(
       return appendEntry(state, {
         kind: "user_message",
         key: `user:${event.messageId}`,
+        sequence,
         text: event.text,
       });
     case "agent_run_started":

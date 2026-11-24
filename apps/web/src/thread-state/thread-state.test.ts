@@ -67,7 +67,7 @@ describe("thread events", () => {
 
     expect(state.lastSeenSequence).toBe(2);
     expect(state.entries).toEqual([
-      { kind: "user_message", key: "user:user-1", text: "Say hello" },
+      { kind: "user_message", key: "user:user-1", sequence: 1, text: "Say hello" },
     ]);
   });
 
@@ -124,7 +124,7 @@ describe("stream fragments", () => {
     );
 
     expect(state.entries).toEqual([
-      { kind: "user_message", key: "user:user-1", text: "Say hello" },
+      { kind: "user_message", key: "user:user-1", sequence: 1, text: "Say hello" },
       {
         kind: "assistant_message",
         key: "assistant:assistant-1",
@@ -384,6 +384,23 @@ describe("the supervisor connection status", () => {
 
     expect(neverConnected.hasSeenSupervisorConnected).toBe(false);
     expect(connectedThenGone.hasSeenSupervisorConnected).toBe(true);
+  });
+});
+
+describe("user messages waiting for the agent", () => {
+  it("are told apart from delivered ones by their sequence and the delivery status", () => {
+    const state = stateAfter(
+      recorded(1, { type: "user_message", messageId: "user-1", text: "Delivered" }),
+      recorded(2, { type: "user_message", messageId: "user-2", text: "Waiting" }),
+      received({ type: "user_message_delivery_status", deliveredThroughSequence: 1 }),
+    );
+
+    const waiting = state.entries.filter(
+      (entry) =>
+        entry.kind === "user_message" &&
+        entry.sequence > state.userMessagesDeliveredThroughSequence,
+    );
+    expect(waiting.map((entry) => entry.key)).toEqual(["user:user-2"]);
   });
 });
 

@@ -4,7 +4,13 @@ import { AssistantMessage, StreamingAssistantMessage } from "./assistant-message
 import { ToolExecution } from "./tool-execution";
 import { useStickToBottom } from "./use-stick-to-bottom";
 
-export function Conversation({ entries }: { entries: ConversationEntry[] }) {
+export function Conversation({
+  entries,
+  userMessagesDeliveredThroughSequence,
+}: {
+  entries: ConversationEntry[];
+  userMessagesDeliveredThroughSequence: number;
+}) {
   const conversationReference = useRef<HTMLDivElement>(null);
   useStickToBottom(conversationReference);
   return (
@@ -15,7 +21,10 @@ export function Conversation({ entries }: { entries: ConversationEntry[] }) {
         <ol className="conversation">
           {entries.map((entry) => (
             <li key={entry.key} className="conversation-entry">
-              <ConversationEntryView entry={entry} />
+              <ConversationEntryView
+                entry={entry}
+                userMessagesDeliveredThroughSequence={userMessagesDeliveredThroughSequence}
+              />
             </li>
           ))}
         </ol>
@@ -24,10 +33,25 @@ export function Conversation({ entries }: { entries: ConversationEntry[] }) {
   );
 }
 
-function ConversationEntryView({ entry }: { entry: ConversationEntry }) {
+function ConversationEntryView({
+  entry,
+  userMessagesDeliveredThroughSequence,
+}: {
+  entry: ConversationEntry;
+  userMessagesDeliveredThroughSequence: number;
+}) {
   switch (entry.kind) {
     case "user_message":
-      return <p className="user-message">{entry.text}</p>;
+      return (
+        <>
+          <p className="user-message">{entry.text}</p>
+          {entry.sequence > userMessagesDeliveredThroughSequence && (
+            <p className="quiet-note">
+              Waiting for the agent: it will receive this message as soon as it is connected.
+            </p>
+          )}
+        </>
+      );
     case "streaming_assistant_message":
       return <StreamingAssistantMessage entry={entry} />;
     case "assistant_message":
