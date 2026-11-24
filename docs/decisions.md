@@ -128,8 +128,164 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What we did:** `scripts/dev/` starts the control plane, a supervisor and Vite for one thread, with a fresh supervisor token given only to the two services that use it. Each service leads its own process group; on Ctrl-C the script stops the supervisor first, then the rest, and if any service dies it stops the others and exits non-zero.
 - **Why:** A process manager such as `concurrently` could run three commands, but not generate a secret for two of them, stop them in order, or kill the Pi process the supervisor starts; a few small typed modules, linted and type-checked like everything else, do all of that with no new dependency. Process groups make it macOS and Linux only.
 
-## 2026-11-24: Known limitation: the supervisor and the agent share an operating-system user
+## 2026-11-24: The agent runs as its own operating-system user
 
 - **What the plan said:** Treat everything inside a sandbox as untrusted, and give sandboxes the fewest credentials possible.
-- **What we did:** In Milestone 1 the supervisor and Pi run as the same user. The supervisor's token is kept out of Pi's environment, but a determined agent could still read it from the supervisor process (through `/proc`, for example). Every supervisor shares that one token for now, so it would let the agent connect as the supervisor of any thread.
-- **Why:** Separating them, with a different user or a separate container for the supervisor, belongs with sandbox hardening, and per-thread supervisor credentials are due once sandboxes run in the cloud (Milestone 2), as the security baseline requires. Until then, the token should be treated as readable by the agent.
+- **What we did:** This replaces the Milestone 1 limitation that the supervisor and Pi shared a user. In the sandbox image the supervisor runs as `barrack-supervisor` and starts Pi as `barrack-agent` through `run-as-agent`, which only the supervisor's group may run, and it signals the agent's processes through the same helper. Under `pnpm dev` both still run as the developer's user.
+- **Why:** Linux shows a process's environment and memory, and allows signals and tracing, only within one user, so this is what keeps the supervisor's token from the agent. Commands started with `docker exec` still see the token until it is handed over some other way than the container's environment; see the open gaps below.
+
+## 2026-11-24: A user's message is recorded before it is delivered
+
+- **What the plan said:** Every event is recorded in order before it is shown.
+- **What we did:** The control plane records a `user_message` and broadcasts it before sending it to the supervisor; if it cannot be sent, the sender is told it was recorded but not delivered.
+- **Why:** A message the agent acted on but history lacks could never be repaired, while one recorded but undelivered is visible, reported, and can be redelivered once delivery is acknowledged.
+
+## 2026-11-24: Streamed text is shown only for the message being produced
+
+- **What the plan said:** Stream fragments are relayed live and superseded by the completed message.
+- **What we did:** Text that was never completed is discarded when another message starts streaming or the run settles or fails. The control plane, which keeps the text for clients joining mid-message, and the web client's reducer apply the same rule.
+- **Why:** Otherwise a page that reconnected would show different leftovers from a page that watched all along.
+
+## 2026-11-24: A failed model request is held back until Pi says whether it will retry
+
+- **What the plan said:** Show the user model provider failures; nothing should be lost silently.
+- **What we did:** An assistant message that ended in a provider error is held until Pi shows whether it will retry (`agent_end.willRetry`, or `compaction_start` for an overflow followed by `compaction_end.willRetry`). It is dropped when the retry's run starts and recorded as soon as anything else follows.
+- **Why:** A failure Pi recovers from then shows no error, and one it cannot shows exactly one.
+
+## 2026-11-24: Every frame fits, with room for the control plane's envelope
+
+- **What the plan said:** Validate everything that crosses a boundary; bound what a sandbox can make the control plane store and send.
+- **What we did:** A supervisor's agent event frames must fit `maximumFrameLength` less `threadEventEnvelopeAllowance` (1 KiB), both in the protocol. An oversized message keeps the start and end of each text block, oversized tool arguments become a note of their size, and failing that the content becomes a notice; an oversized stream fragment is dropped and logged. The control plane refuses to record an event whose frame to clients could not fit, bounds the streamed text it keeps by its escaped length, and never sends a client an oversized frame.
+- **Why:** An event recorded but too large to send would break every replay of its thread, so the guarantee is checked on both sides of the envelope.
+
+## 2026-11-24: Thread identifiers are limited to URL- and file-name-safe characters
+
+- **What the plan said:** Nothing specific.
+- **What we did:** Thread identifiers must match `[A-Za-z0-9_-]{1,64}`, in the protocol and as a check in the database.
+- **Why:** They appear in URL paths and in names of files and containers, so nothing in them may need escaping or be read as a path.
+
+## 2026-11-24: Every run the agent starts ends exactly once
+
+- **What the plan said:** Thread status and sandbox shutdown depend on Pi's run lifecycle.
+- **What we did:** The Pi harness guarantees that every `agent_run_started` is followed by exactly one `agent_run_settled` or `agent_failed`, including when Pi crashes or is stopped mid-run.
+- **Why:** Clients and, later, idle shutdown can then trust a run's end instead of guessing from silence.
+
+## 2026-11-24: Acknowledged delivery is deferred
+
+- **What the plan said:** Every event is recorded in order; nothing should be lost silently.
+- **What we did:** Messages are not yet acknowledged in either direction, so a message accepted by a half-open connection can be lost: an agent event on its way to the control plane, or a user message on its way to the supervisor, which the thread then shows as sent.
+- **Why:** It needs a resume protocol on both hops (acknowledgements and a supervisor hello), planned for the rest of Milestone 2; until then the outage backlog and record-before-deliver keep losses rare and visible.
+
+## 2026-11-24: Each thread's supervisor gets a token of its own, stored as a digest
+
+- **What the plan said:** Connections between sandbox and control plane must be authenticated per thread.
+- **What we did:** The shared `BARRACK_SUPERVISOR_TOKEN` is gone. Creating a thread mints 32 random bytes for it, records only their SHA-256 digest, and hands the token to the provider in the supervisor's environment; a supervisor's upgrade is compared against its thread's digest in constant time.
+- **Why:** Reading the threads table does not let anyone connect as a supervisor, and one sandbox's token is worthless for any other thread. A fast digest suffices because the token is random.
+
+## 2026-11-24: Threads are recorded at once, and their sandboxes created in the background
+
+- **What the plan said:** Starting a thread starts its sandbox.
+- **What we did:** `POST /api/threads` records the thread and answers immediately; the sandbox is created afterwards, retried twice while the provider is unavailable, and the thread recorded `ready` or `failed` with a reason. A sandbox that cannot be recorded is destroyed.
+- **Why:** A real provider can take minutes, and no sandbox may be left running unrecorded.
+
+## 2026-11-24: Threads left creating by a restart are failed at startup
+
+- **What the plan said:** Recovery when the control plane restarts mid-task belongs to Milestone 7.
+- **What we did:** At startup, every thread still marked `creating` is marked failed, with a reason saying the control plane restarted while its sandbox was being created, and logged. A sandbox the provider may have made for it was never recorded, so it is not destroyed. This assumes one control plane per database.
+- **Why:** Otherwise such a thread would show as starting for ever; finding and finishing them properly comes with the thread lifecycle.
+
+## 2026-11-24: A local-process sandbox provider for development
+
+- **What the plan said:** Docker on the developer's own computer is the way to develop without a cloud account.
+- **What we did:** `pnpm dev` and the fast end-to-end tests create threads through the control plane with a `local-process` provider: a directory and a supervisor process per thread on the same machine, with no isolation. It is refused unless `BARRACK_ALLOW_UNISOLATED_SANDBOXES=development-only` is set and the control plane listens only on loopback. This supersedes `pnpm dev` hand-starting one supervisor with a shared token.
+- **Why:** It keeps `pnpm dev` and `pnpm test` free of Docker while every thread still goes through the same creation path and per-thread tokens as in production.
+
+## 2026-11-24: Pi's offline and caching settings are forwarded to sandboxes
+
+- **What the plan said:** Nothing specific.
+- **What we did:** A control plane running Pi forwards `PI_OFFLINE` and `PI_CACHE_RETENTION` from its own environment to every sandbox, as it forwards model keys; no other `PI_` variable.
+- **Why:** Once the control plane built each supervisor's environment, Pi in a sandbox could no longer be told to stay offline, which the tests and any sandbox without general internet access need. An allowlist keeps a developer's own Pi session variables out.
+
+## 2026-11-24: Postgres through `pg` and Supabase's session pooler, in a schema of its own
+
+- **What the plan said:** Supabase for Postgres.
+- **What we did:** The control plane connects with `pg` through Supabase's session pooler (port 5432), keeps its tables in a `barrack` schema with row level security on and no policies, and verifies TLS with Supabase's own certificate authority.
+- **Why:** The direct host is IPv6 only, which Railway lacks by default; the transaction pooler breaks the advisory lock migrations need; and the `public` schema is served to anyone holding the project's publishable key.
+
+## 2026-11-24: Our own migration runner
+
+- **What the plan said:** Nothing specific.
+- **What we did:** About 150 lines apply plain SQL files in name order, each in its own transaction, under an advisory lock, recording a checksum of each; the control plane refuses to start if an applied file changed or the database has one this build lacks.
+- **Why:** A migration library would bring more than the few rules we need, and these rules are easy to read and test.
+
+## 2026-11-24: Events are stored as `json`, and replayed in pages of 100
+
+- **What the plan said:** Make history cheap to replay.
+- **What we did:** Each event is a `json` column, not `jsonb`, appended with its counter in one statement. Replay reads 100 events at a time.
+- **Why:** `jsonb` rejects U+0000 and unpaired surrogates, which tool output can contain, and would reject the append; `json` keeps the exact text. A page of 100 bounds a replay's memory at about 13 MB even of maximum-size tool output.
+
+## 2026-11-24: A live client that would see a gap is disconnected
+
+- **What the plan said:** A client receives every event exactly once, in order.
+- **What we did:** A live client is sent an event only if it is the next after the last it was sent; an earlier one is skipped as already replayed, and a later one disconnects the client so it replays what it missed.
+- **Why:** This covers an append committed after it was reported failed and two control plane instances writing one thread, without the relay having to know which happened.
+
+## 2026-11-24: Docker through its CLI
+
+- **What the plan said:** Docker on a machine we control, as the second provider.
+- **What we did:** The Docker provider runs the `docker` CLI with `execFile`, passing secrets through the CLI's environment and never its arguments.
+- **Why:** No dependency, and the CLI honours the operator's contexts, `DOCKER_HOST` and credential helpers; arguments would show the token to every user on the machine.
+
+## 2026-11-24: Daytona through its SDK's `v0` namespace, with auto-stop off
+
+- **What the plan said:** Daytona first; the control plane should own when a sandbox stops, since Daytona's idle auto-stop ignores work inside the sandbox.
+- **What we did:** `@daytona/sdk` 2.1.0 through `v0`, its generally available platform. Sandboxes are created with auto-stop off (0), auto-delete off (-1) and archived 60 minutes after a stop.
+- **Why:** Archiving stops disk billing and frees storage quota; stopping is the control plane's decision. None of this has been run against Daytona.
+
+## 2026-11-24: The Docker provider was built to a working state before Daytona
+
+- **What the plan said:** Daytona first (Milestone 2), Docker second (Milestone 6).
+- **What we did:** Both providers exist, but only the Docker one has been run; the Daytona provider is tested against an in-memory stand-in.
+- **Why:** No Daytona credentials were available, and Docker proves the provider boundary and the sandbox image end to end in the meantime.
+
+## 2026-11-24: The sandbox image is Ubuntu 24.04 with Node from the official image
+
+- **What the plan said:** Decide how the base sandbox image is built and kept current.
+- **What we did:** The runtime image is Ubuntu 24.04; Node, npm and corepack are copied from the official Node image. Both are pinned by digest, and the supervisor is installed from the lockfile.
+- **Why:** Ubuntu is what coding tools and agents most often expect, the official image gives the exact Node version the repository requires, and digests make rebuilds reproducible.
+
+## 2026-11-24: The supervisor changes user through a copy of `setpriv` with file capabilities
+
+- **What the plan said:** Keep secrets from the agent; the sandbox is the security boundary.
+- **What we did:** `run-as-agent` is a copy of `setpriv` carrying only the `setuid` and `setgid` file capabilities, runnable only by the supervisor's group; the supervisor's own process has no capabilities, and no file in the image keeps a setuid or setgid bit.
+- **Why:** The supervisor stays unprivileged, and `no-new-privileges` cannot be set without disarming the helper, so no setuid program may remain for the agent to abuse. The cost: the helper can switch to any user, so the supervisor's user is effectively root in the container (see the open gaps below).
+
+## 2026-11-24: Docker tests are opt-in, with a CI job of their own
+
+- **What the plan said:** Test the provider boundary and sandbox lifecycle.
+- **What we did:** Tests that run real containers run only with `BARRACK_DOCKER_TESTS=1` (`pnpm test:docker`, which builds the image first), and CI runs them in a separate job that also checks no container was left behind.
+- **Why:** They need the image built from the current sources and take far longer, so `pnpm test` stays fast and needs no Docker.
+
+## 2026-11-24: A mock model server shared by the tests
+
+- **What the plan said:** A fake agent and fake providers make most of the system testable without model spend.
+- **What we did:** A stand-in OpenAI-compatible model lives in the workspace package `tests/mock-model-server`, used by the supervisor's Pi integration test and the Docker end-to-end tests.
+- **Why:** The real Pi can then be tested without network or key, and one mock serves both instead of two drifting copies.
+
+## 2026-11-24: No deployment until sign-in exists
+
+- **What the plan said:** Milestone 2 deploys the control plane on Railway, with events in Supabase.
+- **What we did:** Milestone 2's parts are built and tested locally only; deploying waits for sign-in (Milestone 3).
+- **Why:** Deployed as planned, the control plane would be on the internet with no authentication: anyone could create threads and command agents.
+
+## 2026-11-24: An idle control plane does not keep a free Supabase project awake
+
+- **What the plan said:** Confirm that the running control plane generates enough activity to stop a free project pausing, and note the outcome.
+- **What we did:** The control plane queries the database only when a thread is created or used, so a week without use would let a free project pause. A small periodic query is needed; it is not built yet.
+- **Why:** Supabase pauses free projects after about a week of low activity, and an always-on service that is merely idle does not count.
+
+## 2026-11-24: Security gaps that remain open
+
+- **What the plan said:** Apply the security baseline from the first milestone that touches the cloud.
+- **What we did:** These are known and not yet closed. (1) The token is in the sandbox's environment (the container's, and on Daytona the sandbox's `envVars`), so anything started with `docker exec` or a provider's command interface inherits it, including as the agent's user; fix: hand it to the supervisor through a file only its user can read, or standard input. (2) `run-as-agent` can switch to any user, so the supervisor's user is effectively root in the container; fix: a helper that can only become `barrack-agent`, or the supervisor in a container of its own. (3) None of this has been examined on Daytona, whose own processes and command interface may offer the agent a way round; fix: examine and test it there before relying on it. (4) There is no user sign-in, so anyone who can reach the control plane controls every thread; fix: Supabase sign-in and per-user access checks on the server (Milestone 3), until which it stays on localhost.
+- **Why:** Each fix is larger than the change that revealed it, and none matters while nothing is deployed; they are listed so none is forgotten.
