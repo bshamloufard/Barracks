@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
-import {
-  type SupervisorToControlPlaneMessage,
-  supervisorToControlPlaneMessageSchema,
-} from "@barrack/protocol";
+import { supervisorToControlPlaneMessageSchema } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import {
   initialTranslationState,
+  type TranslatedMessage,
   type TranslationState,
   translatePiEvent,
   translatePiExit,
@@ -37,7 +35,7 @@ function readFixtureEvents(fixtureName: string): PiEvent[] {
 function translateAll(events: PiEvent[], state: TranslationState = initialTranslationState) {
   let identifierCount = 0;
   const mintIdentifier = () => `minted-${++identifierCount}`;
-  const messages: SupervisorToControlPlaneMessage[] = [];
+  const messages: TranslatedMessage[] = [];
   const unrecognized: string[] = [];
   const retriedErrorMessages: string[] = [];
   let currentState = state;
@@ -55,7 +53,7 @@ function translateFixture(fixtureName: string) {
   return translateAll(readFixtureEvents(fixtureName));
 }
 
-function describeMessages(messages: SupervisorToControlPlaneMessage[]): string[] {
+function describeMessages(messages: TranslatedMessage[]): string[] {
   return messages.map((message) =>
     message.type === "agent_event"
       ? message.event.type
@@ -63,7 +61,7 @@ function describeMessages(messages: SupervisorToControlPlaneMessage[]): string[]
   );
 }
 
-function agentEvents(messages: SupervisorToControlPlaneMessage[]) {
+function agentEvents(messages: TranslatedMessage[]) {
   return messages.flatMap((message) => (message.type === "agent_event" ? [message.event] : []));
 }
 
@@ -367,7 +365,8 @@ describe("translatePiEvent", () => {
       "interrupted-retry",
     ]) {
       for (const message of translateFixture(fixtureName).messages) {
-        expect(supervisorToControlPlaneMessageSchema.safeParse(message).success).toBe(true);
+        const numbered = message.type === "agent_event" ? { ...message, eventNumber: 1 } : message;
+        expect(supervisorToControlPlaneMessageSchema.safeParse(numbered).success).toBe(true);
       }
     }
   });
@@ -455,7 +454,7 @@ describe("translatePiEvent", () => {
   });
 });
 
-function fragment(messageId: string, appendedText: string): SupervisorToControlPlaneMessage {
+function fragment(messageId: string, appendedText: string): TranslatedMessage {
   return {
     type: "stream_fragment",
     fragment: {
