@@ -15,8 +15,15 @@
  * It also measures what an estimate of the body's input tokens needs (see
  * `answer-usage.ts`): the whitespace between tokens, which no provider
  * counts, and the images the body sends, whose base64 data a provider
- * counts by the picture's size rather than by its bytes.
+ * counts by the picture's size rather than by its bytes. Only an image in
+ * the place its format sends one (a part of a message, or of a tool's
+ * result or output) is counted so; base64 anywhere else is text the model
+ * reads. And it notes a part, input item or tool that refers to input the
+ * provider keeps or fetches itself (see `referencedInputTypes`), which no
+ * estimate from the body could count.
  */
+
+import type { ProviderApiFormat } from "@barrack/model-catalogue";
 
 export type JsonBodyScannerLimits = {
   /** The deepest nesting accepted; the pinned agent's requests nest about a dozen deep. */
@@ -44,10 +51,12 @@ export type ScannedJsonBody = {
   closingBraceOffset: number;
   /** Whitespace between tokens, in bytes. */
   insignificantBytes: number;
-  /** Bytes of base64 image data, in data URLs or Anthropic's base64 image sources. */
+  /** Bytes of base64 image data, where the body's format sends an image. */
   base64ImageBytes: number;
   /** Images the body sends or refers to, however it does. */
   imageCount: number;
+  /** The `type` of the first part, input item or tool that refers to input the provider keeps or fetches, if any. */
+  referencedInputType: string | undefined;
 };
 
 export type JsonScanOutcome = { kind: "scanned"; body: ScannedJsonBody } | JsonScanProblem;
@@ -126,28 +135,106 @@ for (const character of Buffer.from("0123456789abcdefABCDEF")) {
 /** Enough of each string's start to recognise the keys and values that mark images. */
 const stringPrefixCapacity = 48;
 
-/** Keys whose values tell about images; any other key is `otherKey`. */
-const keyKinds = { otherKey: 0, type: 1, data: 2, mediaType: 3 } as const;
-const recognisedKeys: ReadonlyArray<[Buffer, number]> = [
-  [Buffer.from("type"), keyKinds.type],
-  [Buffer.from("data"), keyKinds.data],
-  [Buffer.from("media_type"), keyKinds.mediaType],
-];
+/**
+ * Keys that lead to where an image or a reference to stored input can be;
+ * any other key is `otherKey`. `conversation` is the format's own key for
+ * its conversation: `messages`, or the Responses API's `input`.
+ */
+const keyKinds = {
+  otherKey: 0,
+  type: 1,
+  data: 2,
+  url: 3,
+  imageUrl: 4,
+  source: 5,
+  content: 6,
+  output: 7,
+  conversation: 8,
+  tools: 9,
+} as const;
 
 /**
- * The `type` of an image part in each relayed format: Anthropic's `image`,
- * the Responses API's `input_image`, Chat Completions' `image_url`.
+ * Where a container lies, among those that can send an image or refer to
+ * stored input: the top-level object; its conversation; an item of it (a
+ * message, or one of the Responses API's input items); the parts of an
+ * item (its `content`, or a Responses tool call's `output`) or of a part
+ * (an Anthropic tool result's `content`); one part; an image part's source
+ * (Anthropic's `source`, Chat Completions' `image_url` object); the tools,
+ * and one tool. Anything else is `elsewhere`, where nothing is an image.
  */
-const imageTypes = [Buffer.from("image"), Buffer.from("input_image"), Buffer.from("image_url")];
-const imageMediaTypePrefix = Buffer.from("image/");
+const positions = {
+  elsewhere: 0,
+  top: 1,
+  conversation: 2,
+  conversationItem: 3,
+  parts: 4,
+  part: 5,
+  imageSource: 6,
+  toolList: 7,
+  tool: 8,
+} as const;
+
+/** What an object's `type` says, as far as images go; a type given twice says nothing to trust. */
+const typeKinds = { unstated: 0, imagePart: 1, base64Source: 2, other: 3, givenTwice: 4 } as const;
+
+/**
+ * The `type` of an image part in each relayed format: Anthropic's `image`
+ * (whose `source` is `{type: "base64", data}`), the Responses API's
+ * `input_image` (whose `image_url` is a data URL) and Chat Completions'
+ * `image_url` (whose `image_url.url` is).
+ * https://docs.anthropic.com/en/docs/build-with-claude/vision
+ * https://platform.openai.com/docs/guides/images-vision
+ */
+const imagePartTypes: Readonly<Record<ProviderApiFormat, Buffer>> = {
+  anthropic_messages: Buffer.from("image"),
+  openai_responses: Buffer.from("input_image"),
+  openai_chat_completions: Buffer.from("image_url"),
+};
+const anyImagePartType = Object.values(imagePartTypes);
+const base64SourceType = Buffer.from("base64");
+
+/**
+ * The `type`s of a part, input item or tool whose input the provider
+ * keeps or fetches itself, or that sends a document or file, whose cost no
+ * count of the body's bytes could estimate: Anthropic's `document` and
+ * `container_upload`; the Responses API's `input_file`, `item_reference`,
+ * and its `mcp` and `file_search` tools; Chat Completions' `file`. The
+ * pinned agent sends none of them.
+ */
+const referencedInputTypes = [
+  "document",
+  "container_upload",
+  "input_file",
+  "item_reference",
+  "mcp",
+  "file_search",
+  "file",
+].map((type) => Buffer.from(type));
+
 const imageDataUrlPrefix = Buffer.from("data:image/");
 const base64Marker = Buffer.from(";base64,");
+
+function recognisedKeysFor(format: ProviderApiFormat): ReadonlyArray<[Buffer, number]> {
+  return [
+    [Buffer.from("type"), keyKinds.type],
+    [Buffer.from("data"), keyKinds.data],
+    [Buffer.from("url"), keyKinds.url],
+    [Buffer.from("image_url"), keyKinds.imageUrl],
+    [Buffer.from("source"), keyKinds.source],
+    [Buffer.from("content"), keyKinds.content],
+    [Buffer.from("output"), keyKinds.output],
+    [Buffer.from(format === "openai_responses" ? "input" : "messages"), keyKinds.conversation],
+    [Buffer.from("tools"), keyKinds.tools],
+  ];
+}
 
 /** Shorter base64 than this is no picture worth estimating apart. */
 const shortestImageData = 64;
 
 export class JsonBodyScanner {
   readonly #limits: JsonBodyScannerLimits;
+  readonly #format: ProviderApiFormat;
+  readonly #recognisedKeys: ReadonlyArray<[Buffer, number]>;
   #expecting: Expecting = expecting.value;
   #problem: JsonScanProblem | undefined;
   /** The offset of the first byte of the chunk being scanned. */
@@ -155,8 +242,11 @@ export class JsonBodyScanner {
   #depth = 0;
   readonly #isObjectAt: Uint8Array;
   readonly #keyKindAt: Uint8Array;
-  readonly #hasImageMediaTypeAt: Uint8Array;
+  readonly #positionAt: Uint8Array;
+  readonly #typeAt: Uint8Array;
+  /** Image data within the object at each depth, counted once its parts' types confirm it. */
   readonly #pendingBase64BytesAt: Float64Array;
+  readonly #pendingImagesAt: Float64Array;
   // The string being read.
   #isKey = false;
   #stringLength = 0;
@@ -175,13 +265,19 @@ export class JsonBodyScanner {
   #base64ImageBytes = 0;
   #base64Images = 0;
   #imageTypeMarks = 0;
+  #referencedInputType: string | undefined;
 
-  constructor(limits: JsonBodyScannerLimits) {
+  /** `format` is the relayed format the body is in, which says where it may send images. */
+  constructor(limits: JsonBodyScannerLimits, format: ProviderApiFormat) {
     this.#limits = limits;
+    this.#format = format;
+    this.#recognisedKeys = recognisedKeysFor(format);
     this.#isObjectAt = new Uint8Array(limits.maximumDepth + 1);
     this.#keyKindAt = new Uint8Array(limits.maximumDepth + 1);
-    this.#hasImageMediaTypeAt = new Uint8Array(limits.maximumDepth + 1);
+    this.#positionAt = new Uint8Array(limits.maximumDepth + 1);
+    this.#typeAt = new Uint8Array(limits.maximumDepth + 1);
     this.#pendingBase64BytesAt = new Float64Array(limits.maximumDepth + 1);
+    this.#pendingImagesAt = new Float64Array(limits.maximumDepth + 1);
   }
 
   /** Scans the next chunk; returns the problem once the body is known to be refused. */
@@ -209,6 +305,7 @@ export class JsonBodyScanner {
         insignificantBytes: this.#insignificantBytes,
         base64ImageBytes: this.#base64ImageBytes,
         imageCount: Math.max(this.#imageTypeMarks, this.#base64Images),
+        referencedInputType: this.#referencedInputType,
       },
     };
   }
@@ -521,12 +618,64 @@ export class JsonBodyScanner {
       this.#fail("the body nests too deeply");
       return;
     }
+    const position = this.#positionInside(isObject);
     this.#depth += 1;
     this.#isObjectAt[this.#depth] = isObject ? 1 : 0;
     this.#keyKindAt[this.#depth] = keyKinds.otherKey;
-    this.#hasImageMediaTypeAt[this.#depth] = 0;
+    this.#positionAt[this.#depth] = position;
+    this.#typeAt[this.#depth] = typeKinds.unstated;
     this.#pendingBase64BytesAt[this.#depth] = 0;
+    this.#pendingImagesAt[this.#depth] = 0;
     this.#expecting = isObject ? expecting.keyOrObjectEnd : expecting.valueOrArrayEnd;
+  }
+
+  /** Where a container opened now lies, from where its parent lies and the key it is under. */
+  #positionInside(isObject: boolean): number {
+    const parentDepth = this.#depth;
+    if (parentDepth === 0) {
+      return positions.top;
+    }
+    const parent = this.#positionAt[parentDepth];
+    const key =
+      this.#isObjectAt[parentDepth] === 1 ? this.#keyKindAt[parentDepth] : keyKinds.otherKey;
+    if (isObject) {
+      switch (parent) {
+        case positions.conversation:
+          return positions.conversationItem;
+        case positions.parts:
+          return positions.part;
+        case positions.toolList:
+          return positions.tool;
+        case positions.part:
+          return key === this.#imageSourceKey() ? positions.imageSource : positions.elsewhere;
+        default:
+          return positions.elsewhere;
+      }
+    }
+    const isUnderContent = key === keyKinds.content;
+    if (parent === positions.top) {
+      return key === keyKinds.conversation
+        ? positions.conversation
+        : key === keyKinds.tools
+          ? positions.toolList
+          : positions.elsewhere;
+    }
+    if (parent === positions.conversationItem && (isUnderContent || key === keyKinds.output)) {
+      return positions.parts;
+    }
+    return parent === positions.part && isUnderContent ? positions.parts : positions.elsewhere;
+  }
+
+  /** The key of an image part whose value is an object holding the image: Anthropic's `source`, Chat Completions' `image_url`. */
+  #imageSourceKey(): number {
+    switch (this.#format) {
+      case "anthropic_messages":
+        return keyKinds.source;
+      case "openai_chat_completions":
+        return keyKinds.imageUrl;
+      case "openai_responses":
+        return keyKinds.otherKey;
+    }
   }
 
   #closeContainer(isObject: boolean, offset: number): void {
@@ -535,7 +684,7 @@ export class JsonBodyScanner {
       return;
     }
     if (isObject) {
-      this.#settleImageSource();
+      this.#settleImages();
     }
     this.#depth -= 1;
     if (this.#depth === 0) {
@@ -559,7 +708,7 @@ export class JsonBodyScanner {
   }
 
   #recogniseKey(): number {
-    for (const [key, kind] of recognisedKeys) {
+    for (const [key, kind] of this.#recognisedKeys) {
       if (this.#stringIs(key)) {
         return kind;
       }
@@ -568,39 +717,97 @@ export class JsonBodyScanner {
   }
 
   /**
-   * Notes what a string value says about images: an image part's `type`;
-   * a base64 source's `media_type` and `data` (Anthropic's, whose data
-   * counts as an image only if its own object's media type is an image's,
-   * known when the object closes); or a base64 data URL of an image (the
-   * OpenAI formats'). Only exact, unescaped spellings are recognised; any
-   * other is counted as text, which errs high.
+   * Notes what a string value says about images and referenced input: a
+   * `type` (see `#noteType`), or image data where the format sends it,
+   * held until the objects around it close and their types confirm it is
+   * an image. Only exact, unescaped spellings are recognised; any other is
+   * counted as text, which errs high.
    */
   #noteStringValue(): void {
     const depth = this.#depth;
     const keyKind = this.#isObjectAt[depth] === 1 ? this.#keyKindAt[depth] : keyKinds.otherKey;
-    if (keyKind === keyKinds.type && imageTypes.some((type) => this.#stringIs(type))) {
-      this.#imageTypeMarks += 1;
-    } else if (keyKind === keyKinds.mediaType && this.#stringStartsWith(imageMediaTypePrefix)) {
-      this.#hasImageMediaTypeAt[depth] = 1;
-    } else if (
-      keyKind === keyKinds.data &&
-      this.#lastNonBase64Position === -1 &&
-      this.#stringLength >= shortestImageData
-    ) {
+    const position = this.#positionAt[depth] ?? positions.elsewhere;
+    if (keyKind === keyKinds.type) {
+      this.#noteType(depth, position);
+    } else if (this.#isImageData(keyKind, position)) {
       this.#pendingBase64BytesAt[depth] =
         (this.#pendingBase64BytesAt[depth] ?? 0) + this.#stringLength;
-    } else if (this.#isImageDataUrl()) {
-      this.#base64ImageBytes += this.#stringLength;
-      this.#base64Images += 1;
+      this.#pendingImagesAt[depth] = (this.#pendingImagesAt[depth] ?? 0) + 1;
     }
   }
 
-  #settleImageSource(): void {
+  /** Whether the string just read is image data in the place its format sends it. */
+  #isImageData(keyKind: number | undefined, position: number): boolean {
+    switch (this.#format) {
+      case "anthropic_messages":
+        return (
+          position === positions.imageSource &&
+          keyKind === keyKinds.data &&
+          this.#lastNonBase64Position === -1 &&
+          this.#stringLength >= shortestImageData
+        );
+      case "openai_chat_completions":
+        return (
+          position === positions.imageSource && keyKind === keyKinds.url && this.#isImageDataUrl()
+        );
+      case "openai_responses":
+        return (
+          position === positions.part && keyKind === keyKinds.imageUrl && this.#isImageDataUrl()
+        );
+    }
+  }
+
+  /**
+   * An object's `type`: an image part's anywhere counts as an image sent
+   * (by data or by reference), which errs high; a part, input item or tool
+   * of a type that refers to stored input is noted; and the object's own
+   * type is kept, or marked as given twice.
+   */
+  #noteType(depth: number, position: number): void {
+    if (anyImagePartType.some((type) => this.#stringIs(type))) {
+      this.#imageTypeMarks += 1;
+    }
+    const isItemPartOrTool =
+      position === positions.conversationItem ||
+      position === positions.part ||
+      position === positions.tool;
+    const referenced = isItemPartOrTool
+      ? referencedInputTypes.find((type) => this.#stringIs(type))
+      : undefined;
+    this.#referencedInputType ??= referenced?.toString();
+    this.#typeAt[depth] =
+      this.#typeAt[depth] !== typeKinds.unstated
+        ? typeKinds.givenTwice
+        : this.#stringIs(imagePartTypes[this.#format])
+          ? typeKinds.imagePart
+          : this.#stringIs(base64SourceType)
+            ? typeKinds.base64Source
+            : typeKinds.other;
+  }
+
+  /**
+   * As an object closes, the image data within it is passed on: from an
+   * image source to its part (Anthropic's only if its type is `base64`),
+   * and from a part to the body's count only if the part is an image.
+   */
+  #settleImages(): void {
     const depth = this.#depth;
-    const pending = this.#pendingBase64BytesAt[depth] ?? 0;
-    if (this.#hasImageMediaTypeAt[depth] === 1 && pending > 0) {
-      this.#base64ImageBytes += pending;
-      this.#base64Images += 1;
+    const bytes = this.#pendingBase64BytesAt[depth] ?? 0;
+    const images = this.#pendingImagesAt[depth] ?? 0;
+    if (images === 0) {
+      return;
+    }
+    const type = this.#typeAt[depth];
+    if (this.#positionAt[depth] === positions.imageSource) {
+      const isBase64 = this.#format !== "anthropic_messages" || type === typeKinds.base64Source;
+      if (isBase64) {
+        this.#pendingBase64BytesAt[depth - 1] =
+          (this.#pendingBase64BytesAt[depth - 1] ?? 0) + bytes;
+        this.#pendingImagesAt[depth - 1] = (this.#pendingImagesAt[depth - 1] ?? 0) + images;
+      }
+    } else if (this.#positionAt[depth] === positions.part && type === typeKinds.imagePart) {
+      this.#base64ImageBytes += bytes;
+      this.#base64Images += images;
     }
   }
 

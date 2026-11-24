@@ -36,8 +36,10 @@ export const requestBodyShapeLimits: JsonBodyScannerLimits = {
  * `request-body-members.ts`).
  *
  * Request bodies otherwise pass through unchanged: nothing here is an
- * allow-list of what a request may contain, and a request may refer to
- * objects the provider keeps (files, earlier responses) by identifier.
+ * allow-list of what a request may contain, though a request that sends a
+ * document or file, or refers to input the provider keeps or fetches
+ * (earlier responses, stored prompts, files, remote MCP servers), is
+ * refused, since the input it adds could not be estimated.
  */
 export type RelayedRequestBody = {
   /** What is sent to the provider. */
@@ -60,6 +62,24 @@ export type BodyInspection =
   | { kind: "relayable"; body: RelayedRequestBody }
   | { kind: "refused"; refusal: ProxyRefusal; reason: string };
 
+/**
+ * The top-level fields, as the relayed providers document them, that make
+ * the provider add input it keeps or fetches itself, which the body does
+ * not show and an estimate from it could not count: the Responses API's
+ * `previous_response_id`, `conversation` and stored `prompt`
+ * (https://platform.openai.com/docs/api-reference/responses/create), and
+ * Anthropic's remote `mcp_servers`
+ * (https://docs.anthropic.com/en/docs/agents-and-tools/mcp-connector).
+ * The pinned agent sends none of them (nor any of the parts and tools
+ * `json-body-scanner.ts` notes), so they are refused in every format.
+ */
+const referencedInputFields = [
+  "previous_response_id",
+  "conversation",
+  "prompt",
+  "mcp_servers",
+] as const;
+
 /** The top-level members the proxy reads, in every format. */
 const readKeys = new Set([
   "model",
@@ -73,6 +93,7 @@ const readKeys = new Set([
   "max_output_tokens",
   "max_completion_tokens",
   ...reasoningFields,
+  ...referencedInputFields,
 ]);
 
 /** OpenRouter's requests are also read for the fields that route them. */
@@ -113,6 +134,10 @@ export function inspectRequestBody(
   if (detachment !== undefined) {
     return refused(proxyRefusals.detachedGenerationRefused, detachment);
   }
+  const referencedInput = findReferencedInput(fields, scanned);
+  if (referencedInput !== undefined) {
+    return refused(proxyRefusals.referencedInputRefused, referencedInput);
+  }
   const fallbackModels = readFallbackModels(format, fields);
   if (fallbackModels === undefined) {
     return refused(
@@ -146,6 +171,7 @@ export function inspectRequestBody(
 /** The fields the proxy reads, of a body that may hold anything else too. */
 type RequestFields = ReasoningFields &
   OpenRouterRoutingFields &
+  Partial<Record<(typeof referencedInputFields)[number], unknown>> &
   Partial<
     Record<
       | "model"
@@ -203,6 +229,18 @@ function findDetachedGeneration(
     case "anthropic_messages":
       return undefined;
   }
+}
+
+/** What in the body refers to input the provider keeps or fetches, if anything does. */
+function findReferencedInput(fields: RequestFields, scanned: ScannedJsonBody): string | undefined {
+  const field = referencedInputFields.find((name) => isSet(fields[name]));
+  if (field !== undefined) {
+    return `it refers to stored or remote input (\`${field}\`)`;
+  }
+  if (scanned.referencedInputType !== undefined) {
+    return `it sends or refers to input of type \`${scanned.referencedInputType}\``;
+  }
+  return undefined;
 }
 
 /** Present with any value but `false` or `null`, either of which a provider takes as unset. */

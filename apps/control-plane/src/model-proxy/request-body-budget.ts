@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import type { ProviderApiFormat } from "@barrack/model-catalogue";
 import {
   JsonBodyScanner,
   type JsonBodyScannerLimits,
@@ -35,6 +36,8 @@ export type BodyReadingOptions = {
   threadId: string;
   ownerUserId: string;
   scannerLimits: JsonBodyScannerLimits;
+  /** The format the body is in, which says where it may send images. */
+  format: ProviderApiFormat;
 };
 
 /**
@@ -92,7 +95,7 @@ export class RequestBodyBudget {
     }
     return new Promise((resolve) => {
       const held = this.#hold(options);
-      const scanner = new JsonBodyScanner(options.scannerLimits);
+      const scanner = new JsonBodyScanner(options.scannerLimits, options.format);
       let chunks: Buffer[] = [];
       let readBytes = 0;
       const settle = (reading: BodyReading) => {

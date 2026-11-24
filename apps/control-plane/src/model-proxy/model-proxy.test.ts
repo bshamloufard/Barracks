@@ -674,6 +674,75 @@ describe("the model proxy", () => {
     },
   );
 
+  // What a provider adds from what it keeps or fetches is invisible in the
+  // body, so a request abandoned before its answer could not be estimated;
+  // the pinned agent sends none of these.
+  it.each([
+    ["an earlier stored response", "openai", { previous_response_id: "resp_1" }],
+    ["a stored conversation", "openai", { conversation: "conv_1" }],
+    ["a stored prompt", "openai", { prompt: { id: "pmpt_1" } }],
+    ["a stored item", "openai", { input: [{ type: "item_reference", id: "msg_1" }] }],
+    [
+      "a file by its identifier",
+      "openai",
+      { input: [{ role: "user", content: [{ type: "input_file", file_id: "file-1" }] }] },
+    ],
+    [
+      "a remote MCP server among its tools",
+      "openai",
+      { tools: [{ type: "mcp", server_label: "s", server_url: "https://example.com/mcp" }] },
+    ],
+    [
+      "a document by its address",
+      "anthropic",
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "document", source: { type: "url", url: "https://example.com/a.pdf" } },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "a remote MCP server",
+      "anthropic",
+      { mcp_servers: [{ type: "url", url: "https://example.com/mcp", name: "s" }] },
+    ],
+    [
+      "a file in Chat Completions",
+      "groq",
+      { messages: [{ role: "user", content: [{ type: "file", file: { file_id: "file-1" } }] }] },
+    ],
+  ] as const)(
+    "refuses a request that refers to %s, in words the agent shows",
+    async (_description, providerId, referring) => {
+      await start();
+      const ownersKey = {
+        openai: keys.adasOpenAi,
+        anthropic: keys.adasAnthropic,
+        groq: keys.adasGroq,
+      }[providerId];
+      await controlPlane.saveModelCredential(providerId, ownersKey, adaToken);
+      const { access } = await startThread(adaToken, `${providerId}/a-model`);
+      const example = relayedFormatExamples[providerId];
+
+      const response = await callModelProxy(controlPlane, access, example, "Go on", {
+        body: JSON.stringify({ ...example.body("Go on"), ...referring }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: {
+          message: expect.stringContaining("refers to input the provider keeps or fetches"),
+        },
+      });
+      expect(modelServer.receivedRequests).toEqual([]);
+    },
+  );
+
   it("relays only the thread's own model, and only the fallbacks the agent sends for that model", async () => {
     await start();
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);

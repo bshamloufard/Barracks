@@ -60,6 +60,12 @@ export const proxyRefusals = {
     message:
       "Barrack's model proxy does not relay background or deferred requests: what the provider generated after answering could not be counted towards the usage cap.",
   },
+  referencedInputRefused: {
+    status: 400,
+    errorType: "invalid_request_error",
+    message:
+      "Barrack's model proxy does not relay a request that sends a document or file, or refers to input the provider keeps or fetches (an earlier response, a conversation, a stored prompt or item, a file, or a remote MCP server): what it adds could not be counted towards the usage cap.",
+  },
   modelRoutingRefused: {
     status: 403,
     errorType: "permission_error",

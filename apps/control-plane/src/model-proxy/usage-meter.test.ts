@@ -332,6 +332,37 @@ describe("reading usage from an answer", () => {
     expect(estimated).toBeLessThan(words.length / 4 + 2 * tokensPerImage + 200);
   });
 
+  it("estimates base64 anywhere but where its format sends an image at its bytes, as text", () => {
+    const base64Text = Buffer.from("x".repeat(300_000)).toString("base64");
+    const bodies = [
+      {
+        model: "a-model",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: `data:image/png;base64,${base64Text}` }],
+          },
+        ],
+      },
+      {
+        model: "a-model",
+        messages: [{ role: "user", content: "Hi" }],
+        tools: [
+          {
+            name: "t",
+            input_schema: { type: "object", media_type: "image/png", data: base64Text },
+          },
+        ],
+      },
+    ];
+
+    for (const body of bodies) {
+      const inspection = inspectWholeBody("anthropic_messages", body);
+      const estimated = inspection.kind === "relayable" ? inspection.body.estimatedInputTokens : 0;
+      expect(estimated).toBeGreaterThanOrEqual(base64Text.length / 4);
+    }
+  });
+
   it("counts a request that states no maximum at its model's own, or its provider's largest", () => {
     expect(resolveMaximumOutputTokens("openai", "gpt-4", undefined)).toBe(8_192);
     expect(resolveMaximumOutputTokens("openai", "gpt-4", 100)).toBe(100);

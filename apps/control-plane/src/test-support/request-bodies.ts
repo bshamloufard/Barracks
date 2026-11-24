@@ -20,7 +20,7 @@ export function inspectWholeBody(
   const received = Buffer.isBuffer(body)
     ? body
     : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
-  const scanner = new JsonBodyScanner(requestBodyShapeLimits);
+  const scanner = new JsonBodyScanner(requestBodyShapeLimits, format);
   scanner.write(received);
   const scanned = scanner.finish();
   if (scanned.kind === "invalid") {

@@ -1,11 +1,16 @@
+import type { ProviderApiFormat } from "@barrack/model-catalogue";
 import { describe, expect, it } from "vitest";
 import { JsonBodyScanner, type JsonScanOutcome } from "./json-body-scanner.js";
 import { requestBodyShapeLimits } from "./request-body.js";
 
 /** Scans `text` split into chunks of `chunkSize` bytes, as a body arriving in pieces would be. */
-function scan(text: string | Buffer, chunkSize = 7): JsonScanOutcome {
+function scan(
+  text: string | Buffer,
+  chunkSize = 7,
+  format: ProviderApiFormat = "anthropic_messages",
+): JsonScanOutcome {
   const bytes = typeof text === "string" ? Buffer.from(text) : text;
-  const scanner = new JsonBodyScanner(requestBodyShapeLimits);
+  const scanner = new JsonBodyScanner(requestBodyShapeLimits, format);
   for (let start = 0; start < bytes.length; start += chunkSize) {
     scanner.write(bytes.subarray(start, start + chunkSize));
   }
@@ -155,37 +160,170 @@ describe("checking a body's JSON as it arrives", () => {
 
     expect(outcome.kind === "scanned" && outcome.body.insignificantBytes).toBe(1006);
   });
+});
 
-  it("finds the images each format sends, and the bytes of their base64 data", () => {
-    const picture = "iVBORw0KGgo".repeat(100);
+/**
+ * Base64 image data is left out of an estimate's text only where each
+ * format sends an image, since a provider counts an image by its pixels;
+ * the same bytes anywhere else are text the model reads, and count as such.
+ */
+describe("finding the images a body sends", () => {
+  const picture = "iVBORw0KGgo".repeat(100);
+  const dataUrl = `data:image/png;base64,${picture}`;
+  const anthropicImage = {
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: picture },
+  };
+
+  function imagesIn(format: ProviderApiFormat, body: object) {
+    const outcome = scan(JSON.stringify(body), 13, format);
+    if (outcome.kind !== "scanned") {
+      throw new Error(outcome.reason);
+    }
+    const { imageCount, base64ImageBytes, referencedInputType } = outcome.body;
+    return { imageCount, base64ImageBytes, referencedInputType };
+  }
+
+  it("finds Anthropic's base64 images in a message's parts and in a tool result's", () => {
+    const body = {
+      model: "m",
+      messages: [
+        { role: "user", content: [anthropicImage, { type: "text", text: "Look" }] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t", content: [anthropicImage] }],
+        },
+      ],
+    };
+
+    expect(imagesIn("anthropic_messages", body)).toEqual({
+      imageCount: 2,
+      base64ImageBytes: 2 * picture.length,
+      referencedInputType: undefined,
+    });
+  });
+
+  it("finds the Responses API's images in a message's parts and in a tool's output", () => {
+    const image = { type: "input_image", detail: "auto", image_url: dataUrl };
+    const body = {
+      model: "m",
+      input: [
+        { role: "user", content: [image] },
+        { type: "function_call_output", call_id: "c", output: [image] },
+      ],
+    };
+
+    expect(imagesIn("openai_responses", body)).toEqual({
+      imageCount: 2,
+      base64ImageBytes: 2 * dataUrl.length,
+      referencedInputType: undefined,
+    });
+  });
+
+  it("finds Chat Completions' images in a message's parts", () => {
+    const body = {
+      model: "m",
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: dataUrl } }] }],
+    };
+
+    expect(imagesIn("openai_chat_completions", body)).toMatchObject({
+      imageCount: 1,
+      base64ImageBytes: dataUrl.length,
+    });
+  });
+
+  it.each([
+    ["text that starts like a data URL", { type: "text", text: dataUrl }],
+    ["an image part whose source is not base64", { type: "image", source: { data: picture } }],
+    [
+      "base64 data under a part that is not an image",
+      { type: "text", source: anthropicImage.source },
+    ],
+  ])("counts as text, in Anthropic's format, %s", (_description, part) => {
+    const body = { model: "m", messages: [{ role: "user", content: [part] }] };
+
+    expect(imagesIn("anthropic_messages", body).base64ImageBytes).toBe(0);
+  });
+
+  it("counts as text an image part that gives its type twice", () => {
+    const part = `{"type":"image","source":{"type":"base64","data":"${picture}"},"type":"text"}`;
+    const outcome = scan(`{"model":"m","messages":[{"role":"user","content":[${part}]}]}`);
+
+    expect(outcome.kind === "scanned" && outcome.body.base64ImageBytes).toBe(0);
+  });
+
+  it("counts as text an image's shape anywhere but a message's parts, such as in a tool's schema", () => {
+    const body = {
+      model: "m",
+      tools: [
+        {
+          name: "t",
+          input_schema: {
+            type: "object",
+            media_type: "image/png",
+            data: picture,
+            default: anthropicImage,
+          },
+        },
+      ],
+      system: [anthropicImage],
+      messages: [{ role: "user", content: "Hi", extra: [anthropicImage] }],
+    };
+
+    expect(imagesIn("anthropic_messages", body).base64ImageBytes).toBe(0);
+  });
+
+  it("counts as text another format's image in the format the body is sent in", () => {
+    const body = {
+      model: "m",
+      messages: [{ role: "user", content: [{ type: "input_image", image_url: dataUrl }] }],
+    };
+
+    expect(imagesIn("openai_chat_completions", body).base64ImageBytes).toBe(0);
+    expect(imagesIn("anthropic_messages", body).base64ImageBytes).toBe(0);
+  });
+
+  it.each([
+    ["anthropic_messages", { type: "document", source: { type: "url", url: "https://a/b.pdf" } }],
+    ["anthropic_messages", { type: "container_upload", file_id: "file_1" }],
+    ["openai_responses", { type: "input_file", file_id: "file-1" }],
+    ["openai_chat_completions", { type: "file", file: { file_id: "file-1" } }],
+  ] as const)("notes, in %s, a part that refers to a file or document: %j", (format, part) => {
+    const conversation = format === "openai_responses" ? "input" : "messages";
+    const body = { model: "m", [conversation]: [{ role: "user", content: [part] }] };
+
+    expect(imagesIn(format, body).referencedInputType).toBe(part.type);
+  });
+
+  it("notes a stored item, a remote MCP server or file search among the Responses API's input and tools", () => {
+    expect(
+      imagesIn("openai_responses", { model: "m", input: [{ type: "item_reference", id: "msg_1" }] })
+        .referencedInputType,
+    ).toBe("item_reference");
+    expect(
+      imagesIn("openai_responses", { model: "m", input: "Hi", tools: [{ type: "mcp" }] })
+        .referencedInputType,
+    ).toBe("mcp");
+    expect(
+      imagesIn("openai_responses", { model: "m", input: "Hi", tools: [{ type: "file_search" }] })
+        .referencedInputType,
+    ).toBe("file_search");
+  });
+
+  it("notes nothing for the same words elsewhere, such as an argument the agent passed a tool", () => {
     const body = {
       model: "m",
       messages: [
         {
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/png", data: picture } },
-            { type: "image", source: { type: "url", url: "https://example.com/a.png" } },
-            {
-              type: "document",
-              source: { type: "base64", media_type: "application/pdf", data: picture },
-            },
-          ],
+          role: "assistant",
+          content: [{ type: "tool_use", id: "t", name: "x", input: { type: "file" } }],
         },
-        { content: [{ type: "input_image", image_url: `data:image/png;base64,${picture}` }] },
-        {
-          content: [{ type: "image_url", image_url: { url: `data:image/jpeg;base64,${picture}` } }],
-        },
-        { content: [{ type: "text", text: `data:image/png;base64,${picture}!` }] },
+      ],
+      tools: [
+        { name: "x", input_schema: { type: "object", properties: { type: { type: "string" } } } },
       ],
     };
-    const outcome = scan(JSON.stringify(body), 13);
 
-    expect(outcome.kind).toBe("scanned");
-    if (outcome.kind === "scanned") {
-      expect(outcome.body.imageCount).toBe(4);
-      expect(outcome.body.base64ImageBytes).toBe(
-        3 * picture.length + "data:image/png;base64,".length + "data:image/jpeg;base64,".length,
-      );
-    }
+    expect(imagesIn("anthropic_messages", body).referencedInputType).toBeUndefined();
   });
 });

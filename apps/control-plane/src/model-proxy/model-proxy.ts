@@ -395,6 +395,7 @@ export class ModelProxy {
           threadId: target.threadId,
           ownerUserId: owner.ownerUserId,
           scannerLimits: requestBodyShapeLimits,
+          format: route.format,
         },
         exchange.signal,
       )
