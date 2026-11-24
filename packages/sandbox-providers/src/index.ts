@@ -11,6 +11,10 @@ export {
   type SupervisorLauncher,
 } from "./fake/fake-sandbox-provider.js";
 export {
+  type LocalProcessProviderSettings,
+  LocalProcessSandboxProvider,
+} from "./local-process/local-process-sandbox-provider.js";
+export {
   readSandboxProviderConfiguration,
   type SandboxProviderConfiguration,
   type SandboxProviderConfigurationResult,
