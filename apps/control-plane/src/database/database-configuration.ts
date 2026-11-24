@@ -3,8 +3,10 @@ import { z } from "zod";
 /**
  * Supabase's session pooler serves at most "Pool Size" connections (15 by
  * default) per database role and database, shared by everything using that
- * role. Railway briefly runs two control plane instances during a redeploy,
- * so five each leaves room for both and for a person with `psql` open.
+ * role. Every redeploy on Railway runs two control plane instances at once,
+ * from the new one's start until the old one has drained (see
+ * `.railway/railway.ts`), so five each leaves room for both and for a
+ * person with `psql` open.
  * https://supabase.com/docs/guides/platform/compute-and-disk#limits-and-constraints
  */
 const defaultPoolSize = 5;

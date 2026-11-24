@@ -43,20 +43,28 @@ export default defineRailway((context, project) => {
       // https://docs.railway.com/deployments/healthchecks
       healthcheckPath: "/health",
       healthcheckTimeout: 300,
-      // Exactly one instance. Each instance relays only the connections it
-      // holds itself, and at startup marks every thread still `creating` as
-      // failed, so a second replica would split a thread's watchers from its
-      // supervisor and fail the other's sandbox creations.
+      // Exactly one replica. Each instance relays only the connections it
+      // holds itself, so a second replica would routinely split a thread's
+      // watchers from its supervisor. (Two instances do run at once for a
+      // while on every redeploy; see below. Everything they share is safe
+      // for that, but it is a moment, not a way to run.)
       numReplicas: 1,
       // Always on: never put to sleep when idle (Railway's "serverless").
       // https://docs.railway.com/deployments/serverless
       sleepApplication: false,
-      // On a redeploy the old deployment is sent SIGTERM once the new one is
-      // healthy, and killed after the draining time, which is 0 seconds
-      // unless set. The control plane's shutdown closes its connections at
-      // once (supervisors and browsers reconnect to the new deployment) and
-      // then waits for sandbox creations under way, which on Daytona take
-      // up to a minute or two. No overlap, to keep two instances apart.
+      // A redeploy runs two instances side by side. The new one starts,
+      // migrates the database and begins its lifecycle sweeps while the old
+      // one still serves every connection, until the health check passes;
+      // only then does traffic move to it. The old one is then sent SIGTERM
+      // after the overlap time (none here, so at once) and killed after the
+      // draining time, which is 0 seconds unless set. Its shutdown closes
+      // its connections at once (supervisors and browsers reconnect to the
+      // new instance) and then waits for sandbox operations under way,
+      // which on Daytona take up to a minute or two. No overlap shortens
+      // the time both run, but cannot remove it, so everything the two
+      // share is safe for it: see "Two instances at once" in
+      // docs/deployment.md.
+      // https://docs.railway.com/deployments/healthchecks
       // https://docs.railway.com/deployments/deployment-teardown
       drainingSeconds: 120,
       overlapSeconds: 0,
