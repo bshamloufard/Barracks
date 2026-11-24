@@ -29,7 +29,8 @@ export type RelayInterruption =
   | "response_too_large"
   | "timed_out"
   | "upstream_failed"
-  | "cancelled";
+  | "cancelled"
+  | "shutting_down";
 
 export type RelayRequestOptions = {
   request: IncomingMessage;
@@ -84,6 +85,12 @@ class RequestRelay {
 
   start(): void {
     const { request, response, route, body, ownerKey, limits, cancellation } = this.#options;
+    if (cancellation.aborted || response.destroyed) {
+      // Ended, or hung up, before anything was sent: nothing reaches the provider.
+      this.#interruption = interruptionFor(cancellation.reason);
+      this.#finish();
+      return;
+    }
     const client = route.upstreamUrl.protocol === "https:" ? https : http;
     const upstreamRequest = client.request(route.upstreamUrl, {
       method: "POST",
@@ -105,7 +112,13 @@ class RequestRelay {
       () => this.#interrupt("timed_out"),
       limits.totalTimeoutInMilliseconds,
     );
-    const cancel = () => this.#interrupt("cancelled");
+    const cancel = () => {
+      this.#interrupt(interruptionFor(cancellation.reason));
+      // The agent's response may have closed already, and closes only once.
+      if (response.closed) {
+        this.#finish();
+      }
+    };
     cancellation.addEventListener("abort", cancel, { once: true });
     response.on("close", () => {
       cancellation.removeEventListener("abort", cancel);
@@ -214,12 +227,25 @@ function createDecompression(
   }
 }
 
+/** A request ended through its cancellation: by the agent hanging up, or by the proxy. */
+function interruptionFor(cancellationReason: unknown): RelayInterruption {
+  switch (cancellationReason) {
+    case "agent_went_away":
+    case "shutting_down":
+      return cancellationReason;
+    default:
+      return "cancelled";
+  }
+}
+
 function refusalFor(interruption: RelayInterruption): ProxyRefusal {
   switch (interruption) {
     case "timed_out":
       return proxyRefusals.upstreamTooSlow;
     case "cancelled":
       return proxyRefusals.tokenRefused;
+    case "shutting_down":
+      return proxyRefusals.proxyBusy;
     case "upstream_failed":
     case "response_too_large":
     case "agent_went_away":

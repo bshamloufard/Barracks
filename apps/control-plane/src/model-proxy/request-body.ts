@@ -183,7 +183,7 @@ function refused(refusal: ProxyRefusal, reason: string): BodyInspection {
 
 export type BodyReading =
   | { kind: "read"; bytes: Buffer; release: () => void }
-  | { kind: "too_large" | "proxy_busy" | "agent_went_away" };
+  | { kind: "too_large" | "proxy_busy" | "agent_went_away" | "ended" };
 
 /**
  * Bytes of request bodies held at once by this instance while they are
@@ -199,25 +199,46 @@ export class RequestBodyBudget {
     this.#limit = limit;
   }
 
+  /** Bytes of request bodies held now. */
+  get held(): number {
+    return this.#held;
+  }
+
   /**
    * Reads the whole body, refusing one larger than `maximumBytes` or one
-   * that would take the instance over its budget. A reading that ends in
-   * anything but `read` holds nothing.
+   * that would take the instance over its budget, and stopping at once
+   * when `signal` is aborted (`ended`), already or later. Settles exactly
+   * once, whatever the request has already done, and then listens to it no
+   * more. A reading that ends in anything but `read` holds nothing.
    */
-  read(request: IncomingMessage, maximumBytes: number): Promise<BodyReading> {
+  read(request: IncomingMessage, maximumBytes: number, signal: AbortSignal): Promise<BodyReading> {
+    if (signal.aborted) {
+      return Promise.resolve({ kind: "ended" });
+    }
+    if (request.destroyed && !request.complete) {
+      return Promise.resolve({ kind: "agent_went_away" });
+    }
     return new Promise((resolve) => {
-      const chunks: Buffer[] = [];
+      let chunks: Buffer[] = [];
       let taken = 0;
       const giveBack = () => {
         this.#held -= taken;
         taken = 0;
       };
-      const stop = (kind: "too_large" | "proxy_busy" | "agent_went_away") => {
-        request.removeAllListeners("data");
-        giveBack();
-        resolve({ kind });
+      const settle = (reading: BodyReading) => {
+        request.removeListener("data", onData);
+        request.removeListener("end", onEnd);
+        request.removeListener("error", onError);
+        request.removeListener("close", onClose);
+        signal.removeEventListener("abort", onAbort);
+        chunks = [];
+        resolve(reading);
       };
-      request.on("data", (chunk: Buffer) => {
+      const stop = (kind: Exclude<BodyReading["kind"], "read">) => {
+        giveBack();
+        settle({ kind });
+      };
+      const onData = (chunk: Buffer) => {
         if (taken + chunk.length > maximumBytes) {
           stop("too_large");
           return;
@@ -229,10 +250,10 @@ export class RequestBodyBudget {
         this.#held += chunk.length;
         taken += chunk.length;
         chunks.push(chunk);
-      });
-      request.once("end", () => {
+      };
+      const onEnd = () => {
         let isReleased = false;
-        resolve({
+        settle({
           kind: "read",
           bytes: Buffer.concat(chunks),
           release: () => {
@@ -242,13 +263,19 @@ export class RequestBodyBudget {
             }
           },
         });
-      });
-      request.once("error", () => stop("agent_went_away"));
-      request.once("close", () => {
+      };
+      const onError = () => stop("agent_went_away");
+      const onClose = () => {
         if (!request.complete) {
           stop("agent_went_away");
         }
-      });
+      };
+      const onAbort = () => stop("ended");
+      request.on("data", onData);
+      request.once("end", onEnd);
+      request.once("error", onError);
+      request.once("close", onClose);
+      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 }

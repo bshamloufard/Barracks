@@ -116,12 +116,15 @@ export function usageCapRefusal(explanation: string): ProxyRefusal {
   return { status: 403, errorType: "permission_error", message: explanation };
 }
 
-/** Writes the refusal as the format's own error body. */
+/** Writes the refusal as the format's own error body, unless the agent has hung up. */
 export function sendRefusal(
   response: ServerResponse,
   format: ProviderApiFormat | undefined,
   refusal: ProxyRefusal,
 ): void {
+  if (response.destroyed) {
+    return;
+  }
   if (response.headersSent) {
     response.destroy();
     return;

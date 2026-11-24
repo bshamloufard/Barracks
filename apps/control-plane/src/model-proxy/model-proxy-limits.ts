@@ -192,6 +192,11 @@ export class AuthenticationAllowance {
     this.#bucket = { tokens: limits.authenticationBurst, refilledAt: clock() };
   }
 
+  /** Lookups under way now. */
+  get inFlight(): number {
+    return this.#inFlight;
+  }
+
   /** Room for one lookup, to leave once it is done, or none. */
   enter(): { kind: "entered"; leave: () => void } | { kind: "busy" } {
     refill(
