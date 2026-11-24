@@ -1,0 +1,23 @@
+{
+  "name": "@barrack/sandbox-supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runs the coding agent inside a thread's sandbox and connects it out to the Barrack control plane.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --project tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@barrack/protocol": "workspace:*",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "pino": "10.4.0",
+    "ws": "8.23.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2"
+  }
+}
