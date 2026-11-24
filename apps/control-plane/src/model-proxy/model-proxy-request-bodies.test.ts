@@ -18,6 +18,7 @@ import type { ModelProxyLimits } from "./model-proxy-limits.js";
 
 const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@example.com" };
 const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
+const lin = { userId: "33333333-3333-4333-8333-333333333333", email: "lin@example.com" };
 const mebibyte = 1024 * 1024;
 
 let issuer: TestIdentityIssuer;
@@ -173,6 +174,28 @@ describe("the bytes of request bodies one thread or owner may hold", () => {
 
     expect(await Promise.race(holdings.map((holding) => holding.status))).toBe(429);
     expect(await send(other.access, body).status).toBe(200);
+  });
+
+  it("counts what a body grows by when written out again against the same bounds, and refuses it past them", async () => {
+    await start({ maximumRequestBytes: mebibyte, maximumRequestBytesHeldInTotal: 2 * mebibyte });
+    const body = paddedBody(mebibyte - 64 * 1024);
+    for (const holder of [await startThread(ada), await startThread(grace)]) {
+      send(holder.access, body, { sentBytes: body.length - 64, trickleEveryMilliseconds: 200 });
+    }
+    await expect
+      .poll(() => requireControlPlane().modelProxy.activity.requestBodyBytesHeld)
+      .toBeGreaterThan(2 * body.length - 200);
+    const heldBefore = requireControlPlane().modelProxy.activity.requestBodyBytesHeld;
+    // Each `9e20` the proxy reads is written out again as 21 digits.
+    const growing = Buffer.from(
+      `{"model":"a-model","max_tokens":[${Array(8_000).fill("9e20").join(",")}],"messages":[]}`,
+    );
+    const { access } = await startThread(lin);
+
+    expect(await send(access, growing).status).toBe(503);
+    expect(requireControlPlane().modelProxy.activity.requestBodyBytesHeld).toBeLessThanOrEqual(
+      heldBefore + 128,
+    );
   });
 
   it("refuses a body that takes longer than its deadline, and gives back what it held", async () => {

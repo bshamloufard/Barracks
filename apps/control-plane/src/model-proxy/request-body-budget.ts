@@ -7,10 +7,17 @@ import {
 
 /** Bytes a request holds while it is read and relayed, to give back when it ends. */
 export type HeldBytes = {
-  /** Holds `bytes` from now on instead, once what is relayed replaces what was read. */
-  resize(bytes: number): void;
+  /**
+   * Holds `bytes` from now on instead, once what is relayed replaces what
+   * was read; growth is taken within the same bounds as the bytes read,
+   * and refused (holding what it held) where they would be passed.
+   */
+  resize(bytes: number): ShareRefusal | undefined;
   release(): void;
 };
+
+/** Why bytes were not taken: the instance's bound, or the thread's or owner's share. */
+type ShareRefusal = "instance_busy" | "share_used";
 
 export type BodyReading =
   | { kind: "read"; bytes: Buffer; scanned: ScannedJsonBody; held: HeldBytes }
@@ -39,11 +46,14 @@ export type BodyReadingOptions = {
  * one body of the largest size. Each request takes its share as its bytes
  * arrive and gives it back once relayed.
  *
- * A body is held once while it is relayed (the bytes read, or what
- * replaces them), and counted once. For an instant it is held twice: when
- * its chunks are joined, and when a member the proxy rewrites is spliced
- * in (see `request-body.ts`). Of everything else the proxy keeps per
- * request, none grows with the body.
+ * What is counted is what the proxy keeps of a body: the bytes read, and
+ * then what replaces them once a member is rewritten (see
+ * `request-body.ts`), any growth taken within the same bounds. What is not
+ * counted: when its chunks are joined into one buffer, or a rewritten body
+ * replaces the one read, the bytes replaced are no longer referenced but
+ * stay in memory until the garbage collector frees them, so for a while a
+ * body can be in memory about twice over. Of everything else the proxy
+ * keeps per request, none grows with the body.
  */
 export class RequestBodyBudget {
   readonly #limit: number;
@@ -145,7 +155,7 @@ export class RequestBodyBudget {
 
   /** One request's bytes, taken from the instance's, its thread's and its owner's shares. */
   #hold(options: BodyReadingOptions): HeldBytes & {
-    take(bytes: number): "instance_busy" | "share_used" | undefined;
+    take(bytes: number): ShareRefusal | undefined;
   } {
     const threadShare = Math.max(options.maximumBytes, Math.floor(this.#limit / 4));
     const ownerShare = Math.max(options.maximumBytes, Math.floor(this.#limit / 2));
@@ -158,26 +168,34 @@ export class RequestBodyBudget {
       adjust(this.#heldByThread, threadId, bytes);
       adjust(this.#heldByOwner, ownerUserId, bytes);
     };
+    const take = (bytes: number): ShareRefusal | undefined => {
+      if (this.#held + bytes > this.#limit) {
+        return "instance_busy";
+      }
+      const thread = (this.#heldByThread.get(threadId) ?? 0) + bytes;
+      const owner = (this.#heldByOwner.get(ownerUserId) ?? 0) + bytes;
+      if (thread > threadShare || owner > ownerShare) {
+        return "share_used";
+      }
+      change(bytes);
+      return undefined;
+    };
     return {
-      take: (bytes) => {
-        if (this.#held + bytes > this.#limit) {
-          return "instance_busy";
-        }
-        const thread = (this.#heldByThread.get(threadId) ?? 0) + bytes;
-        const owner = (this.#heldByOwner.get(ownerUserId) ?? 0) + bytes;
-        if (thread > threadShare || owner > ownerShare) {
-          return "share_used";
-        }
-        change(bytes);
-        return undefined;
-      },
+      take,
       // What replaces a body differs from it only in the few top-level
-      // members the proxy writes out again, each at most 64 KiB (see
-      // `request-body-members.ts`), so it is held whatever the shares.
+      // members the proxy writes out again, but those can grow several
+      // times over (a number such as `9e20` is written out in 21 digits),
+      // so growth is taken like any other bytes.
       resize: (bytes) => {
-        if (!isReleased) {
-          change(bytes - taken);
+        if (isReleased) {
+          return undefined;
         }
+        const growth = bytes - taken;
+        if (growth > 0) {
+          return take(growth);
+        }
+        change(growth);
+        return undefined;
       },
       release: () => {
         if (!isReleased) {

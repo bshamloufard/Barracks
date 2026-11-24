@@ -426,7 +426,12 @@ export class ModelProxy {
       sendRefusal(response, route.format, inspection.refusal);
       return undefined;
     }
-    reading.held.resize(inspection.body.bytes.length);
+    const growthRefused = reading.held.resize(inspection.body.bytes.length);
+    if (growthRefused !== undefined) {
+      logger.warn({ reason: growthRefused }, "Did not relay a model request's rewritten body");
+      sendRefusal(response, route.format, bodyReadingRefusals[growthRefused]);
+      return undefined;
+    }
     return inspection.body;
   }
 
