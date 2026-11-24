@@ -101,6 +101,10 @@ COPY --from=supervisor-build /opt/barrack/supervisor/ /opt/barrack/supervisor/
 COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ensure-supervisor \
       /usr/local/bin/
 
+# Without BARRACK_AGENT_USER, or with the supervisor started as that same
+# user, the supervisor refuses to start the agent rather than let it read the
+# supervisor's token; providers that may not pass this environment on set it
+# themselves.
 ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_STATE_DIRECTORY=/var/lib/barrack/state \
     BARRACK_SUPERVISOR_STATE_DIRECTORY=/var/lib/barrack/supervisor \

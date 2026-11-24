@@ -29,7 +29,7 @@ The Daytona provider creates sandboxes from a Daytona snapshot of this image, na
 
 ### Keeping the supervisor's secrets from the agent
 
-The supervisor runs as `barrack-supervisor` and starts the agent as `barrack-agent` (see [the supervisor's README](../apps/sandbox-supervisor/README.md#which-user-the-agent-runs-as)). Linux shows a process's environment, memory and file descriptors, and lets it be signalled or traced, only by processes of its own user, so the agent cannot reach the supervisor's token through its process.
+The supervisor runs as `barrack-supervisor` and starts the agent as `barrack-agent` (see [the supervisor's README](../apps/sandbox-supervisor/README.md#which-user-the-agent-runs-as)). Linux shows a process's environment, memory and file descriptors, and lets it be signalled or traced, only by processes of its own user, so the agent cannot reach the supervisor's token through its process. If `BARRACK_AGENT_USER` is missing (a platform that does not pass the image's environment on) or the supervisor was started as `barrack-agent` (a user override), the supervisor refuses to start the agent and says why, rather than share its user; the Daytona provider sets `BARRACK_AGENT_USER` itself for that reason.
 
 | User                 | UID   | Groups                         | Owns                                                                           |
 | -------------------- | ----- | ------------------------------ | ------------------------------------------------------------------------------ |

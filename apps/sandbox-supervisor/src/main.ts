@@ -24,6 +24,7 @@ async function prepareLauncher(
   const { agentDirectory, sessionDirectory } = getPiDirectories(agentHarness.stateDirectory);
   const preparation = await prepareAgentProcessLauncher({
     agentUserName: agentHarness.agentUserName,
+    agentMayShareSupervisorUser: agentHarness.agentMayShareSupervisorUser,
     agentDirectories: [agentHarness.workspaceDirectory, agentDirectory, sessionDirectory],
   });
   if (!preparation.ok) {

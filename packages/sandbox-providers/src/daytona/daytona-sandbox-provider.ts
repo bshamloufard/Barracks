@@ -72,6 +72,14 @@ const launchSupervisorTimeoutInSeconds = 60;
  */
 const ensureSupervisorCommand = "/usr/local/bin/barrack-ensure-supervisor";
 
+/**
+ * The user the sandbox image runs the agent as. The image sets this too, but
+ * whether Daytona passes an image's environment to the processes it starts
+ * has not been confirmed, and without it the supervisor refuses to start
+ * the agent rather than share its own user. So it is set explicitly.
+ */
+const sandboxImageAgentUser = { BARRACK_AGENT_USER: "barrack-agent" };
+
 export const sandboxLabel = "barrack.sandbox";
 export const threadIdLabel = "barrack.thread-id";
 
@@ -213,7 +221,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     return {
       name: sandboxNameFor(request.threadId),
       snapshot: this.#settings.snapshot,
-      envVars: { ...request.supervisorEnvironment },
+      envVars: { ...sandboxImageAgentUser, ...request.supervisorEnvironment },
       labels: { [sandboxLabel]: "true", [threadIdLabel]: request.threadId },
       // Preview URLs of a public sandbox need no token at all.
       public: false,

@@ -84,6 +84,16 @@ describe("the local-process sandbox provider", () => {
     expect(launch.environment).not.toHaveProperty("DATABASE_PASSWORD");
   });
 
+  it("tells the supervisor, by name, that its agent shares its user, since there is no other", async () => {
+    const sandboxId = await createSandbox({ BARRACK_THREAD_ID: "thread-1" });
+
+    const launch = await readLaunch(sandboxId);
+
+    expect(launch.environment).toMatchObject({
+      BARRACK_AGENT_SHARES_SUPERVISOR_USER: "development-only",
+    });
+  });
+
   it("makes each workspace a Git repository of its own, so the agent's Git commands stop there", async () => {
     const sandboxId = await createSandbox();
 

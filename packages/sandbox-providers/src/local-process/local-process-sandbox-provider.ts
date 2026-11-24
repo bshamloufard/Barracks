@@ -254,6 +254,10 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
       BARRACK_WORKSPACE_DIRECTORY: workspaceDirectoryIn(sandbox.directory),
       BARRACK_STATE_DIRECTORY: stateDirectoryIn(sandbox.directory),
       BARRACK_SUPERVISOR_STATE_DIRECTORY: supervisorStateDirectoryIn(sandbox.directory),
+      // There is no second user here: the agent runs as the developer, like
+      // the supervisor, and can read its token. Using this provider at all
+      // already required declaring development use.
+      BARRACK_AGENT_SHARES_SUPERVISOR_USER: "development-only",
       ...sandbox.supervisorEnvironment,
     };
   }

@@ -136,7 +136,7 @@ function createProvider(daytona = new InMemoryDaytona()) {
 }
 
 describe("the Daytona sandbox provider", () => {
-  it("creates sandboxes with Daytona's own lifecycle timers off, except archiving", async () => {
+  it("creates sandboxes with Daytona's own lifecycle timers off, except archiving, and the agent's user named", async () => {
     const { daytona, provider } = createProvider();
 
     await provider.create({ threadId: "thread-1", supervisorEnvironment });
@@ -144,7 +144,7 @@ describe("the Daytona sandbox provider", () => {
     expect(daytona.callsTo("createSandbox")[0]?.detail).toEqual({
       name: "barrack-thread-thread-1",
       snapshot: "barrack-sandbox-test",
-      envVars: supervisorEnvironment,
+      envVars: { BARRACK_AGENT_USER: "barrack-agent", ...supervisorEnvironment },
       labels: { "barrack.sandbox": "true", "barrack.thread-id": "thread-1" },
       public: false,
       autoStopInterval: 0,
@@ -166,7 +166,7 @@ describe("the Daytona sandbox provider", () => {
     expect(launches).toHaveLength(3);
     expect(launches[0]?.detail).toEqual({
       command: "/usr/local/bin/barrack-ensure-supervisor",
-      environment: supervisorEnvironment,
+      environment: { BARRACK_AGENT_USER: "barrack-agent", ...supervisorEnvironment },
     });
     expect(daytona.callsTo("startSandbox")).toHaveLength(1);
   });

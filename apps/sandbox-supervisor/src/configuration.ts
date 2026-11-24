@@ -34,6 +34,11 @@ const piVariablesSchema = sharedVariablesSchema.extend({
     .string()
     .regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "must be the name of an operating-system user")
     .optional(),
+  BARRACK_AGENT_SHARES_SUPERVISOR_USER: z
+    .literal("development-only", {
+      error: 'must be exactly "development-only", or unset',
+    })
+    .optional(),
 });
 
 const fakeVariablesSchema = sharedVariablesSchema.extend({
@@ -64,11 +69,13 @@ export type PiHarnessConfiguration = {
   model: string;
   workspaceDirectory: string;
   stateDirectory: string;
-  /**
-   * The operating-system user Pi runs as. Unset, or naming the supervisor's
-   * own user, Pi runs as the supervisor's user.
-   */
+  /** The operating-system user Pi runs as. */
   agentUserName: string | undefined;
+  /**
+   * Whether Pi may run as the supervisor's own user, where it can read the
+   * supervisor's token: an explicit choice, for local development only.
+   */
+  agentMayShareSupervisorUser: boolean;
 };
 
 export type AgentHarnessConfiguration = PiHarnessConfiguration | { kind: "fake" };
@@ -109,6 +116,8 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
             workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
             stateDirectory: variables.BARRACK_STATE_DIRECTORY,
             agentUserName: variables.BARRACK_AGENT_USER,
+            agentMayShareSupervisorUser:
+              variables.BARRACK_AGENT_SHARES_SUPERVISOR_USER === "development-only",
           },
   };
 }

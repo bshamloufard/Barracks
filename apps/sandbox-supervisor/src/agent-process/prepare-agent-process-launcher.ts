@@ -7,8 +7,13 @@ import { SeparateUserAgentLauncher } from "./separate-user-agent-launcher.js";
 import { lookUpUserAccount, type UserAccount } from "./user-account.js";
 
 export type AgentUserSettings = {
-  /** `BARRACK_AGENT_USER`: the user the agent should run as, if not the supervisor's own. */
+  /** `BARRACK_AGENT_USER`: the user the agent runs as. */
   agentUserName: string | undefined;
+  /**
+   * `BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only`: the agent may
+   * run as the supervisor's own user, as the local-process provider needs.
+   */
+  agentMayShareSupervisorUser: boolean;
   /** Directories the agent must be able to write to, checked at startup. */
   agentDirectories: readonly string[];
   runAsAgentPath?: string;
@@ -28,6 +33,11 @@ for (const directory of process.argv.slice(1)) {
   try { accessSync(directory, constants.W_OK | constants.X_OK); } catch { console.log(directory); }
 }`;
 
+const howToShareForDevelopment =
+  "For local development only, where the agent may read it, set BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only instead.";
+
+const unsetAgentUserProblem = `BARRACK_AGENT_USER: is not set, so the agent would run as this supervisor's own user and could read the supervisor's token. Set it to the agent's own user (barrack-agent in Barrack's sandbox image, which sets it unless the platform does not pass the image's environment on). ${howToShareForDevelopment}`;
+
 /**
  * Chooses how the agent is launched, and when it is to run as a separate
  * user, checks once at startup everything that launching it needs, so a
@@ -36,26 +46,49 @@ for (const directory of process.argv.slice(1)) {
  * same helper and Node the agent will use, so it also catches a sandbox
  * that cannot change user at all (missing capabilities, or
  * `no-new-privileges`).
+ *
+ * An agent running as the supervisor's own user can read the supervisor's
+ * token from the supervisor's environment in `/proc`, and with it act as
+ * the thread's supervisor. That would happen silently whenever the agent
+ * user is missing (a platform that does not pass the image's environment to
+ * the supervisor) or is the supervisor's own (a sandbox started with its
+ * user overridden), so it is allowed only when chosen by name.
  */
 export async function prepareAgentProcessLauncher(
   settings: AgentUserSettings,
 ): Promise<LauncherPreparation> {
   const { agentUserName } = settings;
-  if (agentUserName === undefined || agentUserName === findCurrentUserName()) {
-    return { ok: true, launcher: new SameUserAgentLauncher() };
+  if (agentUserName === undefined) {
+    return shareSupervisorUserIfChosen(settings, unsetAgentUserProblem);
+  }
+  if (agentUserName === findCurrentUserName()) {
+    return shareSupervisorUserIfChosen(settings, describeAgentUserIsOwnUser(agentUserName));
   }
   const lookup = await lookUpUserAccount(agentUserName);
   if (!lookup.found) {
     return { ok: false, problems: [`BARRACK_AGENT_USER: ${lookup.reason}`] };
   }
   if (lookup.account.userId === process.getuid?.()) {
-    return { ok: true, launcher: new SameUserAgentLauncher() };
+    return shareSupervisorUserIfChosen(settings, describeAgentUserIsOwnUser(agentUserName));
   }
   const runAsAgentPath = settings.runAsAgentPath ?? defaultRunAsAgentPath;
   const problems = await checkRunningAsAgent(runAsAgentPath, lookup.account, settings);
   return problems.length > 0
     ? { ok: false, problems }
     : { ok: true, launcher: new SeparateUserAgentLauncher(lookup.account, runAsAgentPath) };
+}
+
+function describeAgentUserIsOwnUser(agentUserName: string): string {
+  return `BARRACK_AGENT_USER: "${agentUserName}" is the user this supervisor runs as, so the agent could read the supervisor's token. Run the supervisor as a user of its own (barrack-supervisor in Barrack's sandbox image; check that the sandbox was not started with its user overridden). ${howToShareForDevelopment}`;
+}
+
+function shareSupervisorUserIfChosen(
+  settings: AgentUserSettings,
+  problemOtherwise: string,
+): LauncherPreparation {
+  return settings.agentMayShareSupervisorUser
+    ? { ok: true, launcher: new SameUserAgentLauncher() }
+    : { ok: false, problems: [problemOtherwise] };
 }
 
 async function checkRunningAsAgent(

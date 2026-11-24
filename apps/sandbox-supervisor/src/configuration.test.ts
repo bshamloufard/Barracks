@@ -67,6 +67,37 @@ describe("readConfiguration", () => {
     });
   });
 
+  it("lets the agent share the supervisor's user only when development use is declared exactly", () => {
+    const piVariables = {
+      ...sharedVariables,
+      BARRACK_MODEL: "openai/example-model",
+      BARRACK_WORKSPACE_DIRECTORY: "/workspace",
+      BARRACK_STATE_DIRECTORY: "/var/barrack",
+    };
+
+    expect(
+      readConfiguration({
+        ...piVariables,
+        BARRACK_AGENT_SHARES_SUPERVISOR_USER: "development-only",
+      }),
+    ).toMatchObject({
+      ok: true,
+      configuration: { agentHarness: { agentMayShareSupervisorUser: true } },
+    });
+    expect(readConfiguration(piVariables)).toMatchObject({
+      ok: true,
+      configuration: { agentHarness: { agentMayShareSupervisorUser: false } },
+    });
+    expect(
+      readConfiguration({ ...piVariables, BARRACK_AGENT_SHARES_SUPERVISOR_USER: "yes" }),
+    ).toEqual({
+      ok: false,
+      problems: [
+        'BARRACK_AGENT_SHARES_SUPERVISOR_USER: must be exactly "development-only", or unset',
+      ],
+    });
+  });
+
   it("rejects an agent user that cannot be a user name", () => {
     const result = readConfiguration({
       ...sharedVariables,

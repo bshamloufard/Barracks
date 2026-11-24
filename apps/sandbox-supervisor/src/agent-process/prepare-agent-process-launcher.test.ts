@@ -28,35 +28,68 @@ afterEach(async () => {
 });
 
 describe("prepareAgentProcessLauncher", () => {
-  it("runs the agent as the supervisor's own user when no agent user is configured", async () => {
+  it("refuses to run the agent as the supervisor's own user just because no agent user is configured", async () => {
     const preparation = await prepareAgentProcessLauncher({
       agentUserName: undefined,
+      agentMayShareSupervisorUser: false,
       agentDirectories: [workspaceDirectory],
     });
 
-    expect(preparation).toMatchObject({
-      ok: true,
-      launcher: { description: "the supervisor's own user" },
+    expect(preparation).toEqual({
+      ok: false,
+      problems: [
+        expect.stringMatching(
+          /^BARRACK_AGENT_USER: is not set, so the agent would run as this supervisor's own user and could read the supervisor's token\. Set it .*BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only/,
+        ),
+      ],
     });
   });
 
-  it("runs the agent as the supervisor's own user when that is the configured agent user", async () => {
+  it("refuses to run the agent as the supervisor's own user when that is the configured agent user", async () => {
     const preparation = await prepareAgentProcessLauncher({
       agentUserName: userInfo().username,
+      agentMayShareSupervisorUser: false,
       agentDirectories: [workspaceDirectory],
       runAsAgentPath: path.join(temporaryDirectory, "never-needed"),
     });
 
-    expect(preparation).toMatchObject({
-      ok: true,
-      launcher: { description: "the supervisor's own user" },
+    expect(preparation).toEqual({
+      ok: false,
+      problems: [
+        expect.stringMatching(
+          new RegExp(
+            `^BARRACK_AGENT_USER: "${userInfo().username}" is the user this supervisor runs as.*Run the supervisor as a user of its own`,
+          ),
+        ),
+      ],
     });
   });
+
+  it.each([
+    ["no agent user is configured", undefined],
+    ["the agent user is the supervisor's own", userInfo().username],
+  ])(
+    "runs the agent as the supervisor's own user when that was chosen for development and %s",
+    async (_case, agentUserName) => {
+      const preparation = await prepareAgentProcessLauncher({
+        agentUserName,
+        agentMayShareSupervisorUser: true,
+        agentDirectories: [workspaceDirectory],
+        runAsAgentPath: path.join(temporaryDirectory, "never-needed"),
+      });
+
+      expect(preparation).toMatchObject({
+        ok: true,
+        launcher: { description: "the supervisor's own user" },
+      });
+    },
+  );
 
   describe.runIf(isLinux)("with an agent user other than the supervisor's", () => {
     it("names an agent user that does not exist", async () => {
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: "barrack-no-such-user",
+        agentMayShareSupervisorUser: false,
         agentDirectories: [workspaceDirectory],
       });
 
@@ -71,6 +104,7 @@ describe("prepareAgentProcessLauncher", () => {
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
+        agentMayShareSupervisorUser: false,
         agentDirectories: [workspaceDirectory],
         runAsAgentPath: missingHelperPath,
       });
@@ -88,6 +122,7 @@ describe("prepareAgentProcessLauncher", () => {
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
+        agentMayShareSupervisorUser: false,
         agentDirectories: [workspaceDirectory],
         runAsAgentPath: failingHelperPath,
       });
@@ -108,6 +143,7 @@ describe("prepareAgentProcessLauncher", () => {
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
+        agentMayShareSupervisorUser: false,
         agentDirectories: [workspaceDirectory, missingDirectory],
         runAsAgentPath: workingHelperPath,
       });
@@ -127,6 +163,7 @@ describe("prepareAgentProcessLauncher", () => {
 
       const preparation = await prepareAgentProcessLauncher({
         agentUserName: otherUserName,
+        agentMayShareSupervisorUser: false,
         agentDirectories: [workspaceDirectory],
         runAsAgentPath: workingHelperPath,
       });

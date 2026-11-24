@@ -11,18 +11,19 @@ A small long-running Node process that lives inside a thread's sandbox: a contai
 
 Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed. The control plane sets them when it creates the thread's sandbox (see [its README](../control-plane/README.md#threads-and-their-sandboxes)), and the sandbox image sets the directories and the agent's user.
 
-| Variable                             | Required | Meaning                                                                                                 |
-| ------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------- |
-| `BARRACK_CONTROL_PLANE_URL`          | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                     |
-| `BARRACK_THREAD_ID`                  | yes      | The thread this sandbox belongs to                                                                      |
-| `BARRACK_SUPERVISOR_TOKEN`           | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it |
-| `BARRACK_SUPERVISOR_STATE_DIRECTORY` | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here           |
-| `BARRACK_AGENT_HARNESS`              | no       | `pi` (default) or `fake`                                                                                |
-| `BARRACK_MODEL`                      | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                 |
-| `BARRACK_WORKSPACE_DIRECTORY`        | for `pi` | The agent's working directory                                                                           |
-| `BARRACK_STATE_DIRECTORY`            | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)           |
-| `BARRACK_AGENT_USER`                 | no       | The operating-system user Pi runs as; see below. Unset, Pi runs as the supervisor's own user            |
-| `BARRACK_LOG_LEVEL`                  | no       | `debug`, `info` (default), `warn` or `error`                                                            |
+| Variable                               | Required | Meaning                                                                                                 |
+| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `BARRACK_CONTROL_PLANE_URL`            | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                     |
+| `BARRACK_THREAD_ID`                    | yes      | The thread this sandbox belongs to                                                                      |
+| `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it |
+| `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here           |
+| `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                |
+| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                 |
+| `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory                                                                           |
+| `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)           |
+| `BARRACK_AGENT_USER`                   | for `pi` | The operating-system user Pi runs as, other than the supervisor's; see below                            |
+| `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                          |
+| `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                            |
 
 Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings, every `PI_*` variable, and model provider keys such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed.
 
@@ -32,7 +33,7 @@ Leaving the token out of Pi's environment stops it from turning up in something 
 
 How Pi is started is decided in one place, [`src/agent-process`](src/agent-process), so the Pi harness has no idea which user it runs as:
 
-- **Same user** (`BARRACK_AGENT_USER` unset, or naming the supervisor's own user): Pi is spawned with the supervisor's Node, exactly as on a developer's machine, macOS included. The agent can read the supervisor's token through `/proc`; treat it as readable.
+- **Same user**, only when chosen by name with `BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only` (the local-process provider, and so `pnpm dev`, sets it) and `BARRACK_AGENT_USER` unset or naming the supervisor's own user: Pi is spawned with the supervisor's Node, exactly as on a developer's machine, macOS included. The agent can read the supervisor's token through `/proc`; treat it as readable. Without that setting the supervisor refuses to start Pi, saying which variable is wrong and how to fix it, since a missing `BARRACK_AGENT_USER` (a platform that does not pass the image's environment on) or a supervisor started as the agent's user (a user override) would otherwise hand the agent the token silently.
 - **Separate user** (the [sandbox image](../../sandbox-image) sets `BARRACK_AGENT_USER=barrack-agent` and runs the supervisor as `barrack-supervisor`): Pi is started as `/opt/barrack/bin/run-as-agent --reuid=<uid> --regid=<gid> --init-groups -- <node> <Pi> <arguments>`. `run-as-agent` is a copy of `setpriv` with the setuid and setgid file capabilities, which only the supervisor's group may run; it changes user and then executes Node in its own place, so Pi has no capabilities. `HOME`, `USER`, `LOGNAME` and `SHELL` are set to the agent user's. The supervisor cannot signal the agent's processes either, so to stop them it runs a short `kill(-1)` as the agent through the same helper, which reaches every process of that user, including commands that started a session of their own.
 
 At startup, before connecting, the supervisor checks a separate user thoroughly and exits with a message naming the problem: an unknown user, a missing or unusable helper, a helper that cannot change user (a sandbox without the `SETUID` and `SETGID` capabilities, or with `no-new-privileges`), and any of the workspace, `pi/agent` and `pi/sessions` that the agent cannot write to. The last check runs a real process as the agent through the helper, so it proves the whole route. The supervisor never creates the agent's directories in this mode; it needs only to pass through them (see the sandbox image's README).
@@ -55,7 +56,7 @@ BARRACK_AGENT_HARNESS=fake \
 node apps/sandbox-supervisor/dist/main.js
 ```
 
-Build it first (`pnpm build`). Add `BARRACK_SUPERVISOR_STATE_DIRECTORY` (any directory of your own) as well. For Pi instead of the fake agent, set `BARRACK_MODEL`, the model provider's key, `BARRACK_WORKSPACE_DIRECTORY` and `BARRACK_STATE_DIRECTORY` as in the table above. Run this way, Pi runs as your own user and can read the token, as with any supervisor and agent that share a user.
+Build it first (`pnpm build`). Add `BARRACK_SUPERVISOR_STATE_DIRECTORY` (any directory of your own) as well. For Pi instead of the fake agent, set `BARRACK_MODEL`, the model provider's key, `BARRACK_WORKSPACE_DIRECTORY` and `BARRACK_STATE_DIRECTORY` as in the table above. Run this way, Pi runs as your own user and can read the token, as with any supervisor and agent that share a user, so also set `BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only`.
 
 The fake agent quotes each message back word by word. A message containing `[tool]` makes it call a tool first; one containing `[fail]` makes it fail as if its process had crashed. `pnpm --filter @barrack/sandbox-supervisor exec pi --list-models <search>` lists the model identifiers Pi knows.
 
