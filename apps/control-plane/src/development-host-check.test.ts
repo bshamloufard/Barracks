@@ -2,7 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildClientEndpointPath, buildSupervisorEndpointPath } from "@barrack/protocol";
+import {
+  buildClientEndpointPath,
+  buildPublicationBundleUploadPath,
+  buildPublishThreadApiPath,
+  buildSupervisorEndpointPath,
+  githubCallbackPagePath,
+} from "@barrack/protocol";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { afterEach, describe, expect, it } from "vitest";
 import { developmentAccessToken } from "./authentication/development-single-user.js";
@@ -32,16 +38,17 @@ afterEach(async () => {
   );
 });
 
-/** A GET with exactly the headers given; `fetch` would not let a test choose `Host`. */
+/** A request with exactly the headers given; `fetch` would not let a test choose `Host`. */
 function getWithHost(
   path: string,
   host: string,
   headers: Record<string, string> = {},
+  method = "GET",
 ): Promise<{ statusCode: number; body: string }> {
   const port = new URL(controlPlane?.httpBaseUrl ?? "").port;
   return new Promise((resolve, reject) => {
     const outgoing = request(
-      { host: "127.0.0.1", port, path, method: "GET", headers: { ...headers, Host: host } },
+      { host: "127.0.0.1", port, path, method, headers: { ...headers, Host: host } },
       (response) => {
         let body = "";
         response.setEncoding("utf8");
@@ -99,16 +106,31 @@ describe("telling a request addressed to loopback from one that is not", () => {
 });
 
 describe("a control plane in development mode", () => {
-  it("refuses every HTTP request addressed to another name, on every path, without quoting it", async () => {
+  it("refuses every HTTP request addressed to another name, on every path, without quoting it, a supervisor's upload included", async () => {
     controlPlane = await TestControlPlane.start({ webClientDirectory: await webClientDirectory() });
-    await controlPlane.createThread();
     const authorization = { Authorization: `Bearer ${developmentAccessToken}` };
 
-    const answers = await Promise.all(
-      ["/api/threads", "/api/client-configuration", "/health", "/", "/index.html"].map((path) =>
-        getWithHost(path, rebindingHost, authorization),
+    const { threadId, supervisorToken } = await controlPlane.createThread();
+    const pagesAndApi = [
+      "/api/threads",
+      "/api/client-configuration",
+      "/api/github/connection",
+      buildPublishThreadApiPath(threadId),
+      "/health",
+      "/",
+      "/index.html",
+      githubCallbackPagePath,
+    ];
+
+    const answers = await Promise.all([
+      ...pagesAndApi.map((path) => getWithHost(path, rebindingHost, authorization)),
+      getWithHost(
+        buildPublicationBundleUploadPath(threadId, "publication-1"),
+        rebindingHost,
+        { Authorization: `Bearer ${supervisorToken}` },
+        "PUT",
       ),
-    );
+    ]);
 
     for (const answer of answers) {
       expect(answer.statusCode).toBe(403);
