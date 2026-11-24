@@ -17,6 +17,10 @@ This builds `barrack-sandbox:dev` from [`Dockerfile`](Dockerfile), with the repo
 - The sandbox itself is Ubuntu 24.04, the distribution coding tools and agents most often expect. The build stage runs on the official Node image.
 - `NODE_IMAGE` and `BASE_IMAGE` build arguments replace the two base images, for example with a mirror.
 
+### For Daytona
+
+The Daytona provider creates sandboxes from a Daytona snapshot of this image, named by `BARRACK_DAYTONA_SNAPSHOT`. Daytona's CLI can push a locally built image as a snapshot, for example `daytona snapshot push barrack-sandbox:dev --name barrack-sandbox-<version>`. Use a new name for each build, since Daytona rejects tags such as `latest`. This route has not yet been tried against a live Daytona account.
+
 ## What runs, and as whom
 
 `tini` is the first process. It starts the supervisor (`barrack-run-supervisor`), forwards stop signals to it, and reaps orphaned processes that the agent's commands leave behind. When the supervisor exits, the container stops, and its exit code tells a requested stop (0) from a failure.
@@ -27,10 +31,10 @@ This builds `barrack-sandbox:dev` from [`Dockerfile`](Dockerfile), with the repo
 
 The image has two users:
 
-| User                 | UID   | Owns                                                       |
-| -------------------- | ----- | ---------------------------------------------------------- |
+| User                 | UID   | Owns                                                                                                              |
+| -------------------- | ----- | ----------------------------------------------------------------------------------------------------------------- |
 | `barrack-supervisor` | 10001 | nothing the agent can reach; it is in `barrack-agent`'s group, so it can read the workspace and the agent's state |
-| `barrack-agent`      | 10002 | `/workspace`, `/var/lib/barrack/state` (including `pi/agent` and `pi/sessions`), `/home/barrack-agent` |
+| `barrack-agent`      | 10002 | `/workspace`, `/var/lib/barrack/state` (including `pi/agent` and `pi/sessions`), `/home/barrack-agent`            |
 
 The supervisor's token is only in its environment, and Linux shows a process's environment (`/proc/<pid>/environ`) only to the same user. So once the supervisor runs as `barrack-supervisor` and the agent as `barrack-agent`, the agent cannot read the token.
 
