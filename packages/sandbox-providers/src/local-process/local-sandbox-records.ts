@@ -44,13 +44,19 @@ export function isLocalSandboxId(sandboxId: string): boolean {
   return sandboxIdPattern.test(sandboxId);
 }
 
+/**
+ * Written beside its place and renamed into it: every creation reads every
+ * record, so one read half-written, while another thread's sandbox is being
+ * created or after a control plane was killed mid-write, would refuse it.
+ */
 export async function writeSandboxRecord(
   sandboxDirectory: string,
   record: LocalSandboxRecord,
 ): Promise<void> {
-  await writeFile(path.join(sandboxDirectory, recordFileName), JSON.stringify(record), {
-    mode: 0o600,
-  });
+  const recordPath = path.join(sandboxDirectory, recordFileName);
+  const temporaryPath = `${recordPath}.writing`;
+  await writeFile(temporaryPath, JSON.stringify(record), { mode: 0o600 });
+  await rename(temporaryPath, recordPath);
 }
 
 /** The record in a sandbox's directory, or undefined if there is none (no such sandbox). */

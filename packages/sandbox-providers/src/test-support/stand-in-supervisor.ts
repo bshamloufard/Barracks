@@ -5,18 +5,21 @@
  * environment and runs until it is signalled. It:
  *
  * - writes the environment it was given and its working directory to
- *   `stand-in-launch.json` in that directory, for a test to inspect;
+ *   `stand-in-launch.json` in that directory, for a test to inspect, beside
+ *   it first and then renamed into place, so a test that finds the file
+ *   never reads it half-written;
  * - connects to `STAND_IN_CONNECT_URL`, when given, so that a recorder
  *   standing in for the control plane can count its launches;
  * - exits at once with `STAND_IN_EXIT_CODE`, when given, as a crashing
  *   supervisor would.
  */
 const standInScript = `
-const { writeFileSync } = require("node:fs");
+const { renameSync, writeFileSync } = require("node:fs");
 writeFileSync(
-  "stand-in-launch.json",
+  "stand-in-launch.json.writing",
   JSON.stringify({ environment: process.env, workingDirectory: process.cwd() }),
 );
+renameSync("stand-in-launch.json.writing", "stand-in-launch.json");
 if (process.env.STAND_IN_EXIT_CODE !== undefined) {
   process.exit(Number(process.env.STAND_IN_EXIT_CODE));
 }
