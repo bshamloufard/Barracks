@@ -141,7 +141,7 @@ export class GithubConnections {
       logger.warn({ err: error, userId }, "Could not read a user's GitHub installations");
       return refuse("github_refused", describeError(error));
     } finally {
-      api.revokeUserToken(userToken).catch((error: unknown) => {
+      await api.revokeUserToken(userToken).catch((error: unknown) => {
         logger.warn(
           { err: error, userId },
           "Could not revoke a user's GitHub token after use; it expires within eight hours",

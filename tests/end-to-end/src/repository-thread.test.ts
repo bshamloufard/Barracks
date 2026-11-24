@@ -85,8 +85,16 @@ beforeAll(async () => {
     isPrivate: true,
     files: { "README.md": "# App\n", "notes.txt": "private notes\n" },
   });
-  publicRepository = await github.createRepository({ owner: "octo", name: "public", isPrivate: false });
-  github.addUser({ login: "octocat", name: "Octo Cat", push: [privateRepository, publicRepository] });
+  publicRepository = await github.createRepository({
+    owner: "octo",
+    name: "public",
+    isPrivate: false,
+  });
+  github.addUser({
+    login: "octocat",
+    name: "Octo Cat",
+    push: [privateRepository, publicRepository],
+  });
   github.installApp([privateRepository]);
   controlPlane = await startControlPlane({
     sandboxes: { kind: "local-process" },
@@ -121,7 +129,11 @@ describe("a thread on a repository", () => {
     await client.waitUntil("the clone", hasEvent("repository_cloned"));
     const workBranch = workBranchFor(thread.threadId);
     expect(eventsOf(client)).toEqual([
-      { type: "repository_clone_started", repositoryUrl: privateRepository.cloneUrl, baseBranch: "main" },
+      {
+        type: "repository_clone_started",
+        repositoryUrl: privateRepository.cloneUrl,
+        baseBranch: "main",
+      },
       {
         type: "repository_cloned",
         baseBranch: "main",
@@ -150,7 +162,10 @@ describe("a thread on a repository", () => {
 
     const secondCommit = await commitInWorkspace(workspace, "second.txt");
     const secondPublication = await publishThread(controlPlane, thread.threadId, true);
-    expect(secondPublication).toMatchObject({ commit: secondCommit, pullRequestUrl: firstPublication && `${privateRepository.htmlUrl}/pull/1` });
+    expect(secondPublication).toMatchObject({
+      commit: secondCommit,
+      pullRequestUrl: firstPublication && `${privateRepository.htmlUrl}/pull/1`,
+    });
     expect(await github.readBranch(privateRepository, workBranch)).toBe(secondCommit);
     expect(github.pullRequests).toEqual([
       expect.objectContaining({ number: 1, head: workBranch, base: "main" }),
@@ -216,18 +231,17 @@ describe("a thread on a repository", () => {
 
     client.send({ type: "send_user_message", text: "Please start" });
     await client.waitUntil("a second failed clone", hasEvent("repository_clone_failed", 2));
-    await client.waitUntil(
-      "the message to count as delivered",
-      (messages) =>
-        messages.some(
-          (message) =>
-            message.type === "user_message_delivery_status" &&
-            message.deliveredThroughSequence > 0,
-        ),
+    await client.waitUntil("the message to count as delivered", (messages) =>
+      messages.some(
+        (message) =>
+          message.type === "user_message_delivery_status" && message.deliveredThroughSequence > 0,
+      ),
     );
 
     const failure = eventsOf(client).find((event) => event.type === "repository_clone_failed");
-    expect(failure).toMatchObject({ errorMessage: expect.stringContaining(privateRepository.cloneUrl) });
+    expect(failure).toMatchObject({
+      errorMessage: expect.stringContaining(privateRepository.cloneUrl),
+    });
     expect(eventsOf(client).some((event) => event.type === "agent_run_started")).toBe(false);
   });
 });

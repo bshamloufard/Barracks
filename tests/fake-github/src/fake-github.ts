@@ -234,6 +234,10 @@ export class FakeGithub {
     this.#installations.get(installationId)?.delete(repository.id);
   }
 
+  addToInstallation(installationId: number, repository: FakeRepository): void {
+    this.#installations.get(installationId)?.add(repository.id);
+  }
+
   /**
    * What GitHub would put in the callback after the user approved the App:
    * a code for that user, bound to the PKCE challenge in the authorization

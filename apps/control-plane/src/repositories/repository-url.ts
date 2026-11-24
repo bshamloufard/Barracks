@@ -35,6 +35,11 @@ export function parseRepositoryUrl(
   if (text.length > maximumRepositoryUrlLength) {
     return refuse("is too long");
   }
+  // URL resolves `..` and percent-encoding away; a URL written with them is
+  // not one Barrack should guess the meaning of.
+  if (/%|\/\.{1,2}(\/|$)/.test(text)) {
+    return refuse("must not contain percent-encoding or '.' and '..' path parts");
+  }
   const url = URL.parse(text);
   if (url === null) {
     return refuse("is not a URL");

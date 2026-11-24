@@ -99,7 +99,9 @@ export async function publishThread(
 
 /** The one local-process sandbox's workspace under `sandboxesDirectory`. */
 export async function findOnlyLocalWorkspace(sandboxesDirectory: string): Promise<string> {
-  const sandboxes = (await readdir(sandboxesDirectory)).filter((entry) => entry.startsWith("local-"));
+  const sandboxes = (await readdir(sandboxesDirectory)).filter((entry) =>
+    entry.startsWith("local-"),
+  );
   const [sandbox] = sandboxes;
   if (sandbox === undefined || sandboxes.length !== 1) {
     throw new Error(`Expected one local sandbox, found ${sandboxes.length}.`);
