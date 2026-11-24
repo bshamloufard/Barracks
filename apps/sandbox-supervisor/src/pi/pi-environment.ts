@@ -39,44 +39,6 @@ const basicVariableNames = [
   "NODE_EXTRA_CA_CERTS",
 ];
 
-/**
- * The API key variables Pi reads for each provider.
- * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md
- *
- * Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are left out on purpose:
- * Pi would pick them up silently, and they usually grant far more than model
- * access.
- */
-const providerCredentialVariableNames = [
-  "ANTHROPIC_API_KEY",
-  "ANT_LING_API_KEY",
-  "OPENAI_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "NVIDIA_API_KEY",
-  "GEMINI_API_KEY",
-  "COPILOT_GITHUB_TOKEN",
-  "MISTRAL_API_KEY",
-  "GROQ_API_KEY",
-  "CEREBRAS_API_KEY",
-  "XAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "AI_GATEWAY_API_KEY",
-  "ZAI_API_KEY",
-  "ZAI_CODING_CN_API_KEY",
-  "OPENCODE_API_KEY",
-  "HF_TOKEN",
-  "FIREWORKS_API_KEY",
-  "TOGETHER_API_KEY",
-  "BASETEN_API_KEY",
-  "KIMI_API_KEY",
-  "MINIMAX_API_KEY",
-  "MINIMAX_CN_API_KEY",
-  "MOONSHOT_API_KEY",
-  "AZURE_OPENAI_API_KEY",
-  "AZURE_OPENAI_BASE_URL",
-  "AZURE_OPENAI_RESOURCE_NAME",
-];
-
 /** Pi's own settings, such as `PI_OFFLINE`. */
 const piSettingPrefix = "PI_";
 
@@ -101,10 +63,12 @@ export function buildPiEnvironment(
   };
 }
 
+/**
+ * Model provider keys are deliberately not passed, nor are ambient cloud
+ * credentials (`AWS_*`, `GOOGLE_*`): Pi would pick any of them up silently,
+ * and every command the agent runs would inherit them. The thread owner's
+ * key reaches Pi through its credential file instead (`pi-credential-file.ts`).
+ */
 function isPassedToPi(variableName: string): boolean {
-  return (
-    basicVariableNames.includes(variableName) ||
-    providerCredentialVariableNames.includes(variableName) ||
-    variableName.startsWith(piSettingPrefix)
-  );
+  return basicVariableNames.includes(variableName) || variableName.startsWith(piSettingPrefix);
 }

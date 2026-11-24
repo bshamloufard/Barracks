@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -36,7 +37,6 @@ describe("PiAgentHarness.stop", () => {
     const observer = new RecordingObserver();
     const harness = new PiAgentHarness(observer, {
       threadId: "thread-1",
-      model: "mock/mock-1",
       workspaceDirectory: temporaryDirectory,
       stateDirectory: path.join(temporaryDirectory, "state"),
       sourceEnvironment: { PI_STUB_COMMAND_PROCESS_ID_FILE: commandProcessIdFile },
@@ -50,6 +50,11 @@ describe("PiAgentHarness.stop", () => {
       },
     });
     await harness.start();
+    harness.configureModelAccess({
+      model: "mock/mock-1",
+      credential: { kind: "api_key", secret: "key-for-mock", settings: {} },
+    });
+    await waitUntil(() => existsSync(commandProcessIdFile), "the stand-in for Pi has started");
     const commandProcessId = Number(await readFile(commandProcessIdFile, "utf8"));
 
     const interrupted = harness.interrupt();

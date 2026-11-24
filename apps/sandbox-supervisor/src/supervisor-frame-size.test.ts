@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgentHarness, AgentHarnessObserver } from "./agent-harness.js";
 import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.js";
+import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
 import { createSilentLogger } from "./test-support/silent-logger.js";
 import { startTestControlPlane, type TestControlPlane } from "./test-support/test-control-plane.js";
@@ -22,6 +23,7 @@ vi.mock("./create-agent-harness.js", () => ({
     harnessObservers.push(observer);
     return {
       start: async () => {},
+      configureModelAccess: () => {},
       deliverUserMessage: () => {},
       interrupt: async () => {},
       stop: async () => {},
@@ -50,6 +52,7 @@ beforeEach(async () => {
     sourceEnvironment: {},
     agentProcessLauncher: new SameUserAgentLauncher(),
     logger: createSilentLogger(),
+    secretRedactor: new SecretRedactor(),
     onFatalError: (error) => {
       throw error;
     },

@@ -22,7 +22,6 @@ export function createAgentHarness(
   }
   return new PiAgentHarness(observer, {
     threadId: context.threadId,
-    model: configuration.model,
     workspaceDirectory: configuration.workspaceDirectory,
     stateDirectory: configuration.stateDirectory,
     sourceEnvironment: context.sourceEnvironment,

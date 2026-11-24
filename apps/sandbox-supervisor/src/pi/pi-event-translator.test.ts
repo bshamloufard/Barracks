@@ -141,7 +141,7 @@ describe("translatePiEvent", () => {
     expect(assistantMessages).toHaveLength(2);
   });
 
-  it("ends the assistant message as errored, with the provider's message, when the provider fails", () => {
+  it("ends the assistant message as errored, with the provider's message and the kind of failure, when the provider fails", () => {
     const { messages } = translateFixture("provider-error");
 
     expect(agentEvents(messages)).toEqual([
@@ -153,6 +153,7 @@ describe("translatePiEvent", () => {
         endReason: "errored",
         errorMessage:
           '401: {"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}',
+        errorKind: "credential_rejected",
       },
       { type: "agent_run_settled", wasInterrupted: false },
     ]);

@@ -34,9 +34,6 @@ const maximumSocketPathLength = 100;
 
 const piVariablesSchema = sharedVariablesSchema.extend({
   BARRACK_AGENT_HARNESS: z.literal("pi").default("pi"),
-  BARRACK_MODEL: z
-    .string()
-    .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/example-model"'),
   BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_STATE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_AGENT_USER: z
@@ -80,10 +77,13 @@ type SharedConfiguration = {
   logLevel: LogLevel;
 };
 
+/**
+ * Which model Pi runs on, and the key for it, are not configured here: the
+ * control plane sends them over the supervisor's connection
+ * (`configure_model_access`), so no key is ever in the sandbox's environment.
+ */
 export type PiHarnessConfiguration = {
   kind: "pi";
-  /** In Pi's `provider/model` form. */
-  model: string;
   workspaceDirectory: string;
   stateDirectory: string;
   /** The operating-system user Pi runs as. */
@@ -136,7 +136,6 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
         ? { kind: "fake" }
         : {
             kind: "pi",
-            model: variables.BARRACK_MODEL,
             workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
             stateDirectory: variables.BARRACK_STATE_DIRECTORY,
             agentUserName: variables.BARRACK_AGENT_USER,

@@ -3,8 +3,15 @@ import type {
   AgentEvent,
   AssistantContentBlock,
   AssistantMessageEndReason,
+  ModelAccessErrorKind,
 } from "@barrack/protocol";
-import type { AgentHarness, AgentHarnessObserver, UserMessage } from "../agent-harness.js";
+import type {
+  AgentHarness,
+  AgentHarnessObserver,
+  ModelAccess,
+  UserMessage,
+} from "../agent-harness.js";
+import { describeMissingModelAccess } from "../missing-model-access.js";
 
 /**
  * A scripted agent with no model and no network, so the whole system can run
@@ -15,11 +22,23 @@ import type { AgentHarness, AgentHarnessObserver, UserMessage } from "../agent-h
  * every path:
  * - `[tool]` makes it call a tool before replying.
  * - `[fail]` makes it fail as if its process had crashed.
+ * - `[model]` makes it say which model it runs on.
+ * - `[quota]` makes it fail as a model provider out of quota would.
+ *
+ * It needs no key, but keeps to the rule a real agent cannot escape: a
+ * thread given a model and no key for it is not answered, but told to add
+ * one. A thread with no model at all (allowed when the installation runs
+ * the fake agent) is answered as before.
  *
  * Messages that arrive while it is busy are answered in the same run, the
  * way a real agent takes up steering.
  */
-export const fakeAgentTriggers = { toolExecution: "[tool]", failure: "[fail]" } as const;
+export const fakeAgentTriggers = {
+  toolExecution: "[tool]",
+  failure: "[fail]",
+  model: "[model]",
+  quotaExhausted: "[quota]",
+} as const;
 
 export type FakeAgentOptions = {
   /** Pause before each step, so a viewer can watch the reply appear. */
@@ -38,6 +57,7 @@ export class FakeAgentHarness implements AgentHarness {
   readonly #observer: AgentHarnessObserver;
   readonly #options: FakeAgentOptions;
   readonly #pendingMessages: UserMessage[] = [];
+  #modelAccess: ModelAccess = { model: null, credential: null };
   #currentRun: { finished: Promise<void>; abortController: AbortController } | undefined;
   #isStopped = false;
 
@@ -48,6 +68,10 @@ export class FakeAgentHarness implements AgentHarness {
 
   async start(): Promise<void> {
     // There is no process to start.
+  }
+
+  configureModelAccess(access: ModelAccess): void {
+    this.#modelAccess = access;
   }
 
   deliverUserMessage(message: UserMessage): void {
@@ -126,6 +150,21 @@ export class FakeAgentHarness implements AgentHarness {
   }
 
   async #respondTo(message: UserMessage, abortSignal: AbortSignal): Promise<MessageOutcome> {
+    const { model, credential } = this.#modelAccess;
+    if (model !== null && credential === null) {
+      this.#emitErroredMessage(describeMissingModelAccess(this.#modelAccess), "credential_missing");
+      return "answered";
+    }
+    if (message.text.includes(fakeAgentTriggers.quotaExhausted)) {
+      this.#emitErroredMessage(
+        "429: The fake agent's provider says this account has exceeded its quota.",
+        "quota_exhausted",
+      );
+      return "answered";
+    }
+    if (message.text.includes(fakeAgentTriggers.model)) {
+      return this.#streamAssistantMessage(`Running on ${model ?? "no model"}.`, [], abortSignal);
+    }
     if (message.text.includes(fakeAgentTriggers.failure)) {
       return (await this.#waitForNextStep(abortSignal)) ? "failed" : "interrupted";
     }
@@ -208,6 +247,17 @@ export class FakeAgentHarness implements AgentHarness {
     endReason: Exclude<AssistantMessageEndReason, "errored">,
   ): void {
     this.#emitEvent({ type: "assistant_message", messageId, content, endReason });
+  }
+
+  #emitErroredMessage(errorMessage: string, errorKind: ModelAccessErrorKind): void {
+    this.#emitEvent({
+      type: "assistant_message",
+      messageId: this.#options.mintIdentifier(),
+      content: [],
+      endReason: "errored",
+      errorMessage,
+      errorKind,
+    });
   }
 
   #emitTextFragment(messageId: string, appendedText: string): void {

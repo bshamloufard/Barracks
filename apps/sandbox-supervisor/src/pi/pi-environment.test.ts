@@ -12,13 +12,12 @@ describe("buildPiEnvironment", () => {
     PI_OFFLINE: "1",
   };
 
-  it("passes basic variables, model provider keys and Pi's own settings", () => {
+  it("passes basic variables and Pi's own settings, and no model provider key", () => {
     const environment = buildPiEnvironment(sourceEnvironment, "/state/pi/agent");
 
     expect(environment).toEqual({
       PATH: "/usr/bin",
       HOME: "/home/agent",
-      ANTHROPIC_API_KEY: "provider-key",
       PI_OFFLINE: "1",
       PI_CODING_AGENT_DIR: "/state/pi/agent",
       PI_SKIP_VERSION_CHECK: "1",

@@ -4,6 +4,7 @@ import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.
 import { type AgentHarnessConfiguration, readConfiguration } from "./configuration.js";
 import { createLogger } from "./logger.js";
 import { getPiDirectories } from "./pi/pi-agent-harness.js";
+import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
 
 function exitWithProblems(problems: readonly string[]): never {
@@ -40,7 +41,8 @@ if (!configurationResult.ok) {
 
 const { configuration } = configurationResult;
 const agentProcessLauncher = await prepareLauncher(configuration.agentHarness);
-const logger = createLogger(configuration.logLevel, configuration.threadId);
+const secretRedactor = new SecretRedactor();
+const logger = createLogger(configuration.logLevel, configuration.threadId, secretRedactor);
 let isShuttingDown = false;
 
 const supervisor = new Supervisor({
@@ -52,6 +54,7 @@ const supervisor = new Supervisor({
   sourceEnvironment: process.env,
   agentProcessLauncher,
   logger,
+  secretRedactor,
   onFatalError: (error) => void shutDown(1, error.message),
 });
 

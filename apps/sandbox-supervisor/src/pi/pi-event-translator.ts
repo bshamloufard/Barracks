@@ -7,6 +7,7 @@ import {
   type StreamFragment,
   type StreamFragmentMessage,
 } from "@barrack/protocol";
+import { classifyModelAccessError } from "./classify-model-access-error.js";
 import type {
   PiAssistantContentBlock,
   PiAssistantMessage,
@@ -355,7 +356,7 @@ const endReasonByStopReason: Record<string, AssistantMessageEndReason> = {
   aborted: "interrupted",
 };
 
-type Ending = Pick<AssistantMessageEvent, "endReason" | "errorMessage">;
+type Ending = Pick<AssistantMessageEvent, "endReason" | "errorMessage" | "errorKind">;
 
 /**
  * Pi's other stop reasons (`pending`, `deferred`) do not occur on a completed
@@ -376,8 +377,10 @@ function translateEnding(message: PiAssistantMessage): {
   if (endReason !== "errored") {
     return { fields: { endReason }, unrecognized: [] };
   }
+  const errorMessage = describeProviderError(message.errorMessage);
+  const errorKind = classifyModelAccessError(errorMessage);
   return {
-    fields: { endReason, errorMessage: describeProviderError(message.errorMessage) },
+    fields: { endReason, errorMessage, ...(errorKind === undefined ? {} : { errorKind }) },
     unrecognized: [],
   };
 }

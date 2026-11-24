@@ -2,6 +2,7 @@ import type { ClientRequest, IncomingMessage } from "node:http";
 import {
   type AgentEventMessage,
   buildSupervisorEndpointPath,
+  type ConfigureModelAccess,
   type ControlPlaneToSupervisorMessage,
   type CreatePublicationBundle,
   closeCodes,
@@ -44,10 +45,15 @@ export const defaultConnectionTiming: ConnectionTiming = {
 
 /**
  * What the control plane asks of the agent and its workspace, carried out
- * in the order it arrives: the workspace is described before any user
- * message, so none reaches the agent before its repository does.
+ * in the order it arrives: the workspace and the model access are described
+ * before any user message, so none reaches the agent before its repository
+ * and its key do.
  */
-export type AgentRequest = DeliverUserMessage | InterruptAgentMessage | PrepareWorkspace;
+export type AgentRequest =
+  | DeliverUserMessage
+  | InterruptAgentMessage
+  | PrepareWorkspace
+  | ConfigureModelAccess;
 
 /** The workspace's requests and answers that need not wait their turn behind the agent's. */
 export type WorkspaceMessage = RepositoryCredential | CreatePublicationBundle;
@@ -365,6 +371,7 @@ export class ControlPlaneConnection {
       case "deliver_user_message":
       case "interrupt_agent":
       case "prepare_workspace":
+      case "configure_model_access":
         this.#settings.onAgentRequest(message);
         return;
       case "repository_credential":

@@ -4,8 +4,10 @@ import path from "node:path";
 import { type ControlPlaneToSupervisorMessage, closeCodes } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.js";
+import { fakeAgentTriggers } from "./fake-agent/fake-agent-harness.js";
+import { createLogger } from "./logger.js";
+import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
-import { createSilentLogger } from "./test-support/silent-logger.js";
 import { startTestControlPlane, type TestControlPlane } from "./test-support/test-control-plane.js";
 import { pause, waitUntil } from "./test-support/wait-until.js";
 
@@ -13,8 +15,14 @@ let controlPlane: TestControlPlane;
 let supervisorStateDirectory: string;
 let supervisor: Supervisor;
 let fatalErrors: Error[];
+/** Everything every supervisor in the test logged, at every level. */
+let logLines: string[];
 
 function createSupervisor(): Supervisor {
+  const secretRedactor = new SecretRedactor();
+  const logger = createLogger("debug", "thread-1", secretRedactor, {
+    write: (line: string) => logLines.push(line),
+  });
   return new Supervisor({
     configuration: {
       controlPlaneUrl: controlPlane.url,
@@ -28,7 +36,8 @@ function createSupervisor(): Supervisor {
     },
     sourceEnvironment: {},
     agentProcessLauncher: new SameUserAgentLauncher(),
-    logger: createSilentLogger(),
+    logger,
+    secretRedactor,
     onFatalError: (error) => fatalErrors.push(error),
     connectionTiming: { initialDelayInMilliseconds: 20, maximumDelayInMilliseconds: 40 },
   });
@@ -47,6 +56,7 @@ beforeEach(async () => {
   controlPlane = await startTestControlPlane();
   supervisorStateDirectory = await mkdtemp(path.join(tmpdir(), "barrack-supervisor-state-"));
   fatalErrors = [];
+  logLines = [];
   await startSupervisor();
 });
 
@@ -74,6 +84,13 @@ function receivedTypes(): string[] {
 
 function countReceived(type: string): number {
   return receivedTypes().filter((receivedType) => receivedType === type).length;
+}
+
+function lastAssistantText(): unknown {
+  const assistantMessages = controlPlane.receivedFrames
+    .map((frame) => JSON.parse(frame))
+    .filter((message) => message.event?.type === "assistant_message");
+  return assistantMessages.at(-1)?.event.content[0]?.text;
 }
 
 function lastReceivedEvent(): unknown {
@@ -167,6 +184,47 @@ describe("Supervisor", () => {
     await waitUntil(() => receivedTypes().includes("agent_run_settled"), "the run settles");
 
     expect(lastReceivedEvent()).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+  });
+
+  it("hands the agent the thread's model and key, and keeps the key out of every event and log line, even when the agent repeats it", async () => {
+    const secret = "sk-test-the-users-own-key-0123456789";
+    sendFromControlPlane({
+      type: "configure_model_access",
+      model: "example/model-1",
+      credential: { kind: "api_key", secret, settings: {} },
+    });
+    sendFromControlPlane(deliver(1, `${fakeAgentTriggers.model} and my key is ${secret}`));
+
+    await waitUntil(() => receivedTypes().includes("agent_run_settled"), "the run settles");
+
+    expect(lastAssistantText()).toBe("Running on example/model-1.");
+    sendFromControlPlane(deliver(2, `please repeat ${secret}`));
+    await waitUntil(() => countReceived("agent_run_settled") === 2, "the second run settles");
+    expect(lastAssistantText()).toBe('You said: "please repeat [redacted model credential]"');
+    expect(controlPlane.receivedFrames.join("\n")).not.toContain(secret);
+    expect(logLines.join("\n")).toContain("Configuring the agent's model access");
+    expect(logLines.join("\n")).not.toContain(secret);
+    expect(Object.values(process.env)).not.toContain(secret);
+  });
+
+  it("answers, without running, a message for a model it has no key for, saying what to add", async () => {
+    sendFromControlPlane({
+      type: "configure_model_access",
+      model: "example/model-1",
+      credential: null,
+    });
+    sendFromControlPlane(deliver(1, "hello"));
+
+    await waitUntil(() => receivedTypes().includes("agent_run_settled"), "the run settles");
+
+    const erroredMessage = controlPlane.receivedFrames
+      .map((frame) => JSON.parse(frame))
+      .find((message) => message.event?.type === "assistant_message")?.event;
+    expect(erroredMessage).toMatchObject({
+      endReason: "errored",
+      errorKind: "credential_missing",
+      errorMessage: expect.stringContaining('no API key for the provider "example"'),
+    });
   });
 
   it("reports a fatal error when a newer supervisor takes over the thread", async () => {

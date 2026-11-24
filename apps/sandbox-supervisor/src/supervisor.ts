@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   agentEventSchema,
+  type ConfigureModelAccess,
   type DeliverUserMessage,
   maximumAgentEventFrameLength,
   type StreamFragment,
@@ -23,6 +24,7 @@ import { createAgentHarness } from "./create-agent-harness.js";
 import { DeliveredUserMessages } from "./delivery/delivered-user-messages.js";
 import { fitAgentEventInFrame, measureAgentEventFrame } from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
+import type { SecretRedactor } from "./secret-redactor.js";
 import type { CredentialAnswer } from "./workspace/git-credential-server.js";
 import { sendPublicationBundle } from "./workspace/publication-bundle.js";
 import { ThreadWorkspace } from "./workspace/thread-workspace.js";
@@ -34,6 +36,11 @@ export type SupervisorSettings = {
   /** Decides which operating-system user the agent runs as. */
   agentProcessLauncher: AgentProcessLauncher;
   logger: Logger;
+  /**
+   * Learns each model credential as it arrives, and keeps every one out of
+   * what the agent reports; the logger should use the same one.
+   */
+  secretRedactor: SecretRedactor;
   /** Something happened that the supervisor cannot recover from; it should exit. */
   onFatalError: (error: Error) => void;
   connectionTiming?: Partial<ConnectionTiming>;
@@ -55,6 +62,7 @@ export class Supervisor {
   readonly #harness: AgentHarness;
   readonly #workspace: ThreadWorkspace;
   readonly #credentialRequestTimeoutInMilliseconds: number;
+  readonly #secretRedactor: SecretRedactor;
   /** Credential requests sent to the control plane, by request identifier. */
   readonly #pendingCredentialRequests = new Map<string, (answer: CredentialAnswer) => void>();
   /** Read from disk when the supervisor starts. */
@@ -66,6 +74,7 @@ export class Supervisor {
     const { configuration, logger } = settings;
     this.#configuration = configuration;
     this.#logger = logger;
+    this.#secretRedactor = settings.secretRedactor;
     this.#connection = new ControlPlaneConnection({
       controlPlaneUrl: configuration.controlPlaneUrl,
       threadId: configuration.threadId,
@@ -143,9 +152,11 @@ export class Supervisor {
    * The control plane closes the connection on any invalid frame, and an
    * event is sent again until it is recorded, so an event that would fail
    * its checks is held back here and logged instead. One too large for a
-   * frame is sent shrunk, saying what was left out.
+   * frame is sent shrunk, saying what was left out. A model credential is
+   * never sent, wherever in the event it turned up.
    */
-  #sendAgentEvent(event: AgentEvent): void {
+  #sendAgentEvent(reportedEvent: AgentEvent): void {
+    const event = this.#secretRedactor.redactValue(reportedEvent);
     const validation = agentEventSchema.safeParse(event);
     if (!validation.success) {
       this.#logger.error(
@@ -255,7 +266,8 @@ export class Supervisor {
   }
 
   /** A fragment that would fail the checks is dropped: the completed message that follows is the record. */
-  #sendStreamFragment(fragment: StreamFragment): void {
+  #sendStreamFragment(reportedFragment: StreamFragment): void {
+    const fragment = this.#secretRedactor.redactValue(reportedFragment);
     const validation = streamFragmentSchema.safeParse(fragment);
     if (!validation.success) {
       this.#logger.error(
@@ -296,6 +308,9 @@ export class Supervisor {
       case "prepare_workspace":
         await this.#workspace.prepare(request);
         return;
+      case "configure_model_access":
+        this.#configureModelAccess(request);
+        return;
       case "interrupt_agent":
         this.#logger.info("Received an interrupt");
         this.#harness.interrupt().catch((error: unknown) => {
@@ -303,6 +318,18 @@ export class Supervisor {
         });
         return;
     }
+  }
+
+  /** The credential is learnt by the redactor before anything could repeat it. */
+  #configureModelAccess(request: ConfigureModelAccess): void {
+    if (request.credential !== null) {
+      this.#secretRedactor.remember(request.credential.secret);
+    }
+    this.#logger.info(
+      { model: request.model, hasCredential: request.credential !== null },
+      "Configuring the agent's model access",
+    );
+    this.#harness.configureModelAccess({ model: request.model, credential: request.credential });
   }
 
   /**

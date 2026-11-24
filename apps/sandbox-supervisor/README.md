@@ -5,7 +5,7 @@ A small long-running Node process that lives inside a thread's sandbox: a contai
 1. starts the coding agent ([Pi](https://github.com/earendil-works/pi), or a scripted fake);
 2. dials **out** to the control plane over a WebSocket, so the sandbox needs no inbound networking;
 3. translates what the agent does into Barrack's protocol (`@barrack/protocol`) and sends it;
-4. carries out what the control plane asks: deliver a user message (each exactly once), interrupt the agent;
+4. carries out what the control plane asks: deliver a user message (each exactly once), interrupt the agent, and run on the thread's model with its owner's key (see [Model access](#model-access));
 5. prepares the agent's workspace: clones the thread's repository, as the agent, before the agent is given anything, answers Git's requests for read-only credentials by asking the control plane, and bundles the work branch's commits when the control plane publishes them (see [Working with a repository](#working-with-a-repository)).
 
 ## Configuration
@@ -19,7 +19,6 @@ Everything comes from environment variables, checked at startup. Every problem i
 | `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it                                                                              |
 | `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here                                                                                        |
 | `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                                                                                             |
-| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                                                                                              |
 | `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory, where the thread's repository is cloned; optional for `fake`                                                                                          |
 | `BARRACK_GIT_HELPER_SOCKET`            | no       | The Unix socket Git's credential helper asks the supervisor on; must be reachable by the agent and nobody outside the sandbox. Default: `git-credential.sock` in the state directory |
 | `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)                                                                                        |
@@ -27,7 +26,17 @@ Everything comes from environment variables, checked at startup. Every problem i
 | `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                                                                                                       |
 | `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                                                                                                         |
 
-Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings, every `PI_*` variable, and model provider keys such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed.
+Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings and every `PI_*` variable. Model provider keys (`ANTHROPIC_API_KEY` and the like) and ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed: neither the model nor its key is configured here.
+
+## Model access
+
+The thread's model and its owner's key arrive from the control plane, never from the environment: `configure_model_access`, right after `prepare_workspace` and again whenever either changes, carried out in the same queue as user messages, so a message never reaches the agent before its key.
+
+- **Where the key goes.** The Pi harness writes it to Pi's own credential file, `auth.json` in `pi/agent`, as the agent's user: a short Node program run through the agent launcher reads the contents from its standard input and renames a new 0600 file over the old ([`src/pi/pi-credential-file.ts`](src/pi/pi-credential-file.ts)). Pi rereads that file whenever it changes, so a replaced key is used from Pi's next request with no restart. The file is erased when the supervisor starts (one killed earlier may have left it), when the key is withdrawn, and when the supervisor stops. The key is in no process's environment, so nothing started in the sandbox through `docker exec` or a provider's command interface inherits it, and the agent's commands do not print it with `env`.
+- **What the agent can do with it.** Pi runs as the file's owner, so the agent can read its key, and so can any code a repository makes it run. That is inherent while the key is in the sandbox; see the sandbox image's README.
+- **When Pi runs.** Only with a model and a key: it starts once the first key arrives; with the key withdrawn it is stopped once its run ends, and a message is answered, without Pi, by an errored message saying a key is needed (`errorKind: "credential_missing"`); on another model it is started again once the run in progress ends, resuming its session, so the new model is sent the conversation so far (the pinned Pi cannot switch to a provider that had no key when it started).
+- **Failures.** A provider's refusal is classified from Pi's error report ([`src/pi/classify-model-access-error.ts`](src/pi/classify-model-access-error.ts)) into `credential_rejected`, `quota_exhausted` or `rate_limited`, the last only once Pi's own retries have run out, and carried as the errored assistant message's `errorKind`.
+- **Never logged or sent.** The supervisor remembers every key it is given and replaces it with `[redacted model credential]` wherever it turns up in an agent event, a stream fragment or a log line ([`src/secret-redactor.ts`](src/secret-redactor.ts)): a safety net against a provider echoing a key or a tool printing the file, not a boundary against an agent that means to send it.
 
 ### Which user the agent runs as
 
@@ -68,9 +77,9 @@ BARRACK_AGENT_HARNESS=fake \
 node apps/sandbox-supervisor/dist/main.js
 ```
 
-Build it first (`pnpm build`). Add `BARRACK_SUPERVISOR_STATE_DIRECTORY` (any directory of your own) as well. For Pi instead of the fake agent, set `BARRACK_MODEL`, the model provider's key, `BARRACK_WORKSPACE_DIRECTORY` and `BARRACK_STATE_DIRECTORY` as in the table above. Run this way, Pi runs as your own user and can read the token, as with any supervisor and agent that share a user, so also set `BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only`.
+Build it first (`pnpm build`). Add `BARRACK_SUPERVISOR_STATE_DIRECTORY` (any directory of your own) as well. For Pi instead of the fake agent, set `BARRACK_WORKSPACE_DIRECTORY` and `BARRACK_STATE_DIRECTORY` as in the table above; the model and its key come from the control plane once the supervisor is welcomed. Run this way, Pi runs as your own user and can read the token, as with any supervisor and agent that share a user, so also set `BARRACK_AGENT_SHARES_SUPERVISOR_USER=development-only`.
 
-The fake agent quotes each message back word by word. A message containing `[tool]` makes it call a tool first; one containing `[fail]` makes it fail as if its process had crashed. `pnpm --filter @barrack/sandbox-supervisor exec pi --list-models <search>` lists the model identifiers Pi knows.
+The fake agent quotes each message back word by word. A message containing `[tool]` makes it call a tool first; one containing `[fail]` makes it fail as if its process had crashed; `[model]` makes it name the thread's model; `[quota]` makes it fail as a provider out of quota would. Given a model and no key, it answers that a key is needed, as Pi's harness does. `pnpm --filter @barrack/sandbox-supervisor exec pi --list-models <search>` lists the model identifiers Pi knows.
 
 ## How it behaves
 
@@ -87,6 +96,6 @@ The fake agent quotes each message back word by word. A message containing `[too
 
 ## Tests
 
-`pnpm test` from the root runs them all. The Pi integration test ([`src/pi/pi-agent-harness.integration.test.ts`](src/pi/pi-agent-harness.integration.test.ts)) runs the pinned Pi against a mock model server on `127.0.0.1`, with no network and no API key. The mock is shared with the end-to-end tests as the workspace package [`@barrack/mock-model-server`](../../tests/mock-model-server). Stopping a Pi that answers nothing is tested with a stand-in ([`src/test-support/unresponsive-pi.mjs`](src/test-support/unresponsive-pi.mjs)).
+`pnpm test` from the root runs them all. The Pi integration test ([`src/pi/pi-agent-harness.integration.test.ts`](src/pi/pi-agent-harness.integration.test.ts)) runs the pinned Pi against a mock model server on `127.0.0.1`, with no network and no real key: it checks which key each request presented, that a replaced key is used without a restart, that a switched model is sent the conversation, and how a rejected key, an exhausted quota and a rate limit are reported. The mock is shared with the end-to-end tests as the workspace package [`@barrack/mock-model-server`](../../tests/mock-model-server). Stopping a Pi that answers nothing is tested with a stand-in ([`src/test-support/unresponsive-pi.mjs`](src/test-support/unresponsive-pi.mjs)).
 
 The separate-user launcher's signalling is not tested here: it signals every process of the user it runs as, which in a unit test would be the test runner's own. `pnpm test:docker` covers it, and everything else about the separate user, with the real image and the real Pi ([`tests/end-to-end/src/docker-agent-isolation.test.ts`](../../tests/end-to-end/src/docker-agent-isolation.test.ts)).

@@ -1,4 +1,9 @@
-import type { AgentEvent, DeliverUserMessage, StreamFragment } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  ConfigureModelAccess,
+  DeliverUserMessage,
+  StreamFragment,
+} from "@barrack/protocol";
 
 /**
  * The boundary around "an agent the supervisor can run". Everything a
@@ -21,9 +26,20 @@ export interface AgentHarness {
   start(): Promise<void>;
 
   /**
+   * Tells the agent which model to run on and its owner's credential for
+   * that model's provider, or that there is none. The control plane sends
+   * it before any user message and again whenever either changes. A
+   * replaced or withdrawn credential applies at once; another model from
+   * the agent's next run, with the conversation carrying on.
+   */
+  configureModelAccess(access: ModelAccess): void;
+
+  /**
    * Hands the agent a user message. An idle agent starts working on it; a
    * busy one takes it up after its current step. Failures, including the
-   * agent refusing the message, are reported as events.
+   * agent refusing the message, are reported as events. Without a model and
+   * a credential for it the agent cannot answer, and says so in an errored
+   * assistant message (`errorKind: "credential_missing"`).
    */
   deliverUserMessage(message: UserMessage): void;
 
@@ -42,6 +58,9 @@ export interface AgentHarness {
 }
 
 export type UserMessage = Pick<DeliverUserMessage, "messageId" | "text">;
+
+/** The thread's model and its owner's credential for it, as `configure_model_access` says. */
+export type ModelAccess = Omit<ConfigureModelAccess, "type">;
 
 /** How a harness tells the supervisor what the agent did. */
 export type AgentHarnessObserver = {

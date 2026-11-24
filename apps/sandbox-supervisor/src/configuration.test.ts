@@ -28,10 +28,9 @@ describe("readConfiguration", () => {
     });
   });
 
-  it("uses the Pi harness by default and resolves its directories to absolute paths", () => {
+  it("uses the Pi harness by default, with no model of its own, and resolves its directories to absolute paths", () => {
     const result = readConfiguration({
       ...sharedVariables,
-      BARRACK_MODEL: "openai/example-model",
       BARRACK_WORKSPACE_DIRECTORY: "workspace",
       BARRACK_STATE_DIRECTORY: "/var/barrack",
     });
@@ -41,7 +40,6 @@ describe("readConfiguration", () => {
       configuration: {
         agentHarness: {
           kind: "pi",
-          model: "openai/example-model",
           workspaceDirectory: path.resolve("workspace"),
           stateDirectory: "/var/barrack",
         },
@@ -52,7 +50,6 @@ describe("readConfiguration", () => {
   it("reads the user Pi should run as, and leaves it unset when not given", () => {
     const piVariables = {
       ...sharedVariables,
-      BARRACK_MODEL: "openai/example-model",
       BARRACK_WORKSPACE_DIRECTORY: "/workspace",
       BARRACK_STATE_DIRECTORY: "/var/barrack",
     };
@@ -72,7 +69,6 @@ describe("readConfiguration", () => {
   it("lets the agent share the supervisor's user only when development use is declared exactly", () => {
     const piVariables = {
       ...sharedVariables,
-      BARRACK_MODEL: "openai/example-model",
       BARRACK_WORKSPACE_DIRECTORY: "/workspace",
       BARRACK_STATE_DIRECTORY: "/var/barrack",
     };
@@ -103,7 +99,6 @@ describe("readConfiguration", () => {
   it("rejects an agent user that cannot be a user name", () => {
     const result = readConfiguration({
       ...sharedVariables,
-      BARRACK_MODEL: "openai/example-model",
       BARRACK_WORKSPACE_DIRECTORY: "/workspace",
       BARRACK_STATE_DIRECTORY: "/var/barrack",
       BARRACK_AGENT_USER: "--reuid=0",
@@ -122,7 +117,6 @@ describe("readConfiguration", () => {
       ok: false,
       problems: [
         "BARRACK_WORKSPACE_DIRECTORY: is required",
-        "BARRACK_MODEL: is required",
         "BARRACK_STATE_DIRECTORY: is required",
       ],
     });
@@ -164,9 +158,9 @@ describe("readConfiguration", () => {
   it("never repeats a variable's value in its problems", () => {
     const result = readConfiguration({
       BARRACK_SUPERVISOR_TOKEN: "x",
-      BARRACK_MODEL: "not a model",
+      BARRACK_CONTROL_PLANE_URL: "not a url",
     });
 
-    expect(JSON.stringify(result)).not.toContain("not a model");
+    expect(JSON.stringify(result)).not.toContain("not a url");
   });
 });

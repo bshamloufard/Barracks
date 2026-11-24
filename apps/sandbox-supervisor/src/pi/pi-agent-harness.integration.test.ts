@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +9,7 @@ import {
 } from "@barrack/mock-model-server";
 import { agentEventSchema } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ModelAccess } from "../agent-harness.js";
 import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher.js";
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
@@ -16,9 +18,10 @@ import { getPiDirectories, PiAgentHarness } from "./pi-agent-harness.js";
 
 /**
  * Runs the real Pi, pinned in package.json, against a mock model on
- * 127.0.0.1. Pi is told to stay offline, and its models.json points the
- * `mock` provider at the mock server, so the test needs no network and no
- * API key.
+ * 127.0.0.1. Pi is told to stay offline, and its models.json points two
+ * providers, `mock` and `backup`, at the mock server, with no key of their
+ * own: Pi gets the key the harness is handed, as a thread's owner's would
+ * be, so the mock sees which key each request presented.
  */
 
 const piTimeoutInMilliseconds = 30_000;
@@ -42,15 +45,20 @@ afterEach(async () => {
   await rm(temporaryDirectory, { recursive: true, force: true });
 });
 
-/** Two providers on the same mock: `mock` has a key, `keyless` reads one from a variable that is never set. */
+/** Two providers on the same mock, each with a model of its own, and no key in either. */
 async function writeMockModelConfiguration(stateDirectory: string, baseUrl: string): Promise<void> {
   const { agentDirectory } = getPiDirectories(stateDirectory);
   await mkdir(agentDirectory, { recursive: true });
-  const model = { id: "mock-1", name: "Mock 1", contextWindow: 100_000, maxTokens: 4_096 };
+  const describeModel = (id: string) => ({
+    id,
+    name: id,
+    contextWindow: 100_000,
+    maxTokens: 4_096,
+  });
   const modelsConfiguration = {
     providers: {
-      mock: { baseUrl, api: "openai-completions", apiKey: "not-a-real-key", models: [model] },
-      keyless: { baseUrl, api: "openai-completions", apiKey: "$UNSET_MOCK_KEY", models: [model] },
+      mock: { baseUrl, api: "openai-completions", models: [describeModel("mock-1")] },
+      backup: { baseUrl, api: "openai-completions", models: [describeModel("backup-1")] },
     },
   };
   await writeFile(path.join(agentDirectory, "models.json"), JSON.stringify(modelsConfiguration));
@@ -71,12 +79,25 @@ async function writeRetrySettings(stateDirectory: string, baseDelayInMillisecond
 
 const quickRetryDelayInMilliseconds = 10;
 
-async function startHarness(model = "mock/mock-1"): Promise<PiAgentHarness> {
+function accessTo(model: string, secret: string | undefined): ModelAccess {
+  return {
+    model,
+    credential: secret === undefined ? null : { kind: "api_key", secret, settings: {} },
+  };
+}
+
+const mockAccess = accessTo("mock/mock-1", "key-of-the-threads-owner");
+
+function credentialFilePath(): string {
+  const { agentDirectory } = getPiDirectories(path.join(temporaryDirectory, "state"));
+  return path.join(agentDirectory, "auth.json");
+}
+
+async function startHarness(access: ModelAccess = mockAccess): Promise<PiAgentHarness> {
   let identifierCount = 0;
   const { PATH } = process.env;
   harness = new PiAgentHarness(observer, {
     threadId: "integration-thread",
-    model,
     workspaceDirectory: path.join(temporaryDirectory, "workspace"),
     stateDirectory: path.join(temporaryDirectory, "state"),
     sourceEnvironment: { PATH, HOME: temporaryDirectory, PI_OFFLINE: "1" },
@@ -85,6 +106,7 @@ async function startHarness(model = "mock/mock-1"): Promise<PiAgentHarness> {
     mintIdentifier: () => `minted-${++identifierCount}`,
   });
   await harness.start();
+  harness.configureModelAccess(access);
   return harness;
 }
 
@@ -306,7 +328,7 @@ describe("PiAgentHarness with the real Pi", () => {
     ]);
   });
 
-  it("records a model provider error that Pi does not retry", {
+  it("reports a key the provider rejects as credential_rejected, without retrying", {
     timeout: piTimeoutInMilliseconds,
   }, async () => {
     const harness = await startHarness();
@@ -322,9 +344,131 @@ describe("PiAgentHarness with the real Pi", () => {
       expect.objectContaining({
         endReason: "errored",
         errorMessage: expect.stringContaining("Incorrect API key provided"),
+        errorKind: "credential_rejected",
       }),
       { type: "agent_run_settled", wasInterrupted: false },
     ]);
+  });
+
+  it("reports an exhausted quota as quota_exhausted, without retrying, though it comes as a 429", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.exhaustedQuota}`,
+    });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedConversations).toHaveLength(1);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      expect.objectContaining({
+        endReason: "errored",
+        errorMessage: expect.stringContaining("insufficient_quota"),
+        errorKind: "quota_exhausted",
+      }),
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("reports a rate limit as rate_limited once Pi's retries have run out", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.rateLimit}`,
+    });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedConversations).toHaveLength(4);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      expect.objectContaining({
+        endReason: "errored",
+        errorMessage: expect.stringContaining("Rate limit reached"),
+        errorKind: "rate_limited",
+      }),
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("hands Pi the owner's key in a file only its user can read, and erases it when stopped", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedCredentials).toEqual(["key-of-the-threads-owner"]);
+    expect((await stat(credentialFilePath())).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(credentialFilePath(), "utf8"))).toEqual({
+      mock: { type: "api_key", key: "key-of-the-threads-owner" },
+    });
+    await harness.stop();
+    expect(existsSync(credentialFilePath())).toBe(false);
+  });
+
+  it("uses a replaced key from the next request, without starting Pi again", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness(accessTo("mock/mock-1", "first-key-0001"));
+    harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
+    await waitUntil(hasEnded(1), "the first run settles", piTimeoutInMilliseconds);
+
+    harness.configureModelAccess(accessTo("mock/mock-1", "second-key-0002"));
+    harness.deliverUserMessage({ messageId: "user-2", text: "Say hello again" });
+    await waitUntil(hasEnded(2), "the second run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedCredentials).toEqual(["first-key-0001", "second-key-0002"]);
+    expect(observer.processEndings).toEqual([]);
+  });
+
+  it("moves to another provider's model for the next run, which is sent the conversation so far", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({ messageId: "user-1", text: "Remember the word heliotrope" });
+    await waitUntil(hasEnded(1), "the first run settles", piTimeoutInMilliseconds);
+
+    harness.configureModelAccess(accessTo("backup/backup-1", "key-for-the-backup"));
+    harness.deliverUserMessage({ messageId: "user-2", text: "Which word?" });
+    await waitUntil(hasEnded(2), "the second run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedModels).toEqual(["mock-1", "backup-1"]);
+    expect(modelServer.receivedCredentials).toEqual([
+      "key-of-the-threads-owner",
+      "key-for-the-backup",
+    ]);
+    expect(JSON.stringify(modelServer.receivedConversations.at(-1))).toContain("heliotrope");
+    expect(observer.countEvents("agent_failed")).toBe(0);
+  });
+
+  it("erases a withdrawn key at once, answers without the model until another comes, then carries on", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
+    await waitUntil(hasEnded(1), "the first run settles", piTimeoutInMilliseconds);
+
+    harness.configureModelAccess(accessTo("mock/mock-1", undefined));
+    harness.deliverUserMessage({ messageId: "user-2", text: "Are you there?" });
+    await waitUntil(hasEnded(2), "the refusal is reported", piTimeoutInMilliseconds);
+
+    expect(existsSync(credentialFilePath())).toBe(false);
+    expect(observer.events.at(-2)).toMatchObject({
+      endReason: "errored",
+      errorKind: "credential_missing",
+    });
+    expect(modelServer.receivedConversations).toHaveLength(1);
+
+    harness.configureModelAccess(accessTo("mock/mock-1", "a-new-key-0003"));
+    harness.deliverUserMessage({ messageId: "user-3", text: "And now?" });
+    await waitUntil(hasEnded(3), "the third run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedCredentials).toEqual(["key-of-the-threads-owner", "a-new-key-0003"]);
+    expect(JSON.stringify(modelServer.receivedConversations.at(-1))).toContain("Say hello");
   });
 
   it("records the error, and settles as interrupted, when interrupted while Pi waits to retry", {
@@ -353,10 +497,10 @@ describe("PiAgentHarness with the real Pi", () => {
     ]);
   });
 
-  it("shows a message Pi refuses as an errored assistant message in a run of its own", {
+  it("answers a message for a model it has no key for in an errored message of its own, without starting Pi", {
     timeout: piTimeoutInMilliseconds,
   }, async () => {
-    const harness = await startHarness("keyless/mock-1");
+    const harness = await startHarness(accessTo("mock/mock-1", undefined));
     harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
     await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
 
@@ -367,10 +511,12 @@ describe("PiAgentHarness with the real Pi", () => {
         messageId: "minted-1",
         content: [],
         endReason: "errored",
-        errorMessage: expect.stringContaining("Pi did not accept the message"),
+        errorMessage: expect.stringContaining('no API key for the provider "mock"'),
+        errorKind: "credential_missing",
       },
       { type: "agent_run_settled", wasInterrupted: false },
     ]);
     expect(modelServer.receivedConversations).toEqual([]);
+    expect(observer.processEndings).toEqual([]);
   });
 });
