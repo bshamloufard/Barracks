@@ -10,7 +10,12 @@ import type {
  */
 
 export interface SupervisorConnection {
-  send(message: ControlPlaneToSupervisorMessage): void;
+  /**
+   * Returns whether the socket accepted the message, which it does not once
+   * it is closing. Acceptance is not delivery: a half-open connection accepts
+   * messages that never arrive, which only acknowledged delivery can detect.
+   */
+  send(message: ControlPlaneToSupervisorMessage): boolean;
   close(closeCode: number, reason: string): void;
 }
 

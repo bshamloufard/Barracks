@@ -456,6 +456,24 @@ describe("user messages from a client", () => {
     });
     expect(await controlPlane.threadEventLog.readAfter(threadId, 0)).toEqual([]);
   });
+
+  it("are recorded, and the sender told they were not delivered, when the supervisor's connection is closing", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    const client = new FakeClientConnection();
+    relay.attachSupervisor(supervisor);
+    await relay.attachClient(client, 0);
+    supervisor.isAcceptingMessages = false;
+
+    relay.receiveFromClient(client, { type: "send_user_message", text: "Are you there?" });
+    await allPendingWorkSettled();
+
+    expect(await recordedEventTypes(threadEventLog)).toEqual(["user_message"]);
+    expect(client.inbox.messages.at(-1)).toEqual({
+      type: "client_message_rejected",
+      reason: expect.stringContaining("was recorded but could not be delivered to the agent"),
+    });
+  });
 });
 
 describe("interrupts from a client", () => {
@@ -486,6 +504,23 @@ describe("interrupts from a client", () => {
     ).toEqual({
       type: "client_message_rejected",
       reason: expect.stringContaining("nothing to interrupt"),
+    });
+  });
+
+  it("are rejected when the supervisor's connection is closing", async () => {
+    const { relay } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    const client = new FakeClientConnection();
+    relay.attachSupervisor(supervisor);
+    await relay.attachClient(client, 0);
+    supervisor.isAcceptingMessages = false;
+
+    relay.receiveFromClient(client, { type: "interrupt_agent" });
+    await allPendingWorkSettled();
+
+    expect(client.inbox.messages.at(-1)).toEqual({
+      type: "client_message_rejected",
+      reason: expect.stringContaining("could not be delivered to the agent"),
     });
   });
 });

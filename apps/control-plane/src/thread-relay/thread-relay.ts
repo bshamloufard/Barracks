@@ -200,8 +200,19 @@ export class ThreadRelay {
       return;
     }
     // Delivered only after it is recorded, so the agent never acts on a
-    // message that is missing from the thread's history.
-    supervisor.send({ type: "deliver_user_message", messageId, text });
+    // message that is missing from the thread's history: that could never be
+    // repaired. The opposite failure, a recorded message the agent did not
+    // get, is visible in the thread and reported to the sender below, and
+    // acknowledged delivery will be able to redeliver it from the log.
+    const isAccepted = supervisor.send({ type: "deliver_user_message", messageId, text });
+    if (!isAccepted) {
+      this.#logger.warn({ messageId }, "Recorded a user message the supervisor could not be sent");
+      this.#rejectClientMessage(
+        client,
+        "The message was recorded but could not be delivered to the agent, because its connection is closing. Send it again once the agent has reconnected.",
+      );
+      return;
+    }
     this.#logger.info({ messageId }, "Delivered a user message to the supervisor");
   }
 
@@ -214,7 +225,14 @@ export class ThreadRelay {
       );
       return;
     }
-    supervisor.send({ type: "interrupt_agent" });
+    const isAccepted = supervisor.send({ type: "interrupt_agent" });
+    if (!isAccepted) {
+      this.#rejectClientMessage(
+        client,
+        "The interrupt could not be delivered to the agent, because its connection is closing. Try again once the agent has reconnected.",
+      );
+      return;
+    }
     this.#logger.info("Forwarded an interrupt to the supervisor");
   }
 

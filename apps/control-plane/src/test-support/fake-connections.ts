@@ -17,13 +17,20 @@ export type ClosingRequest = { closeCode: number; reason: string };
 export class FakeSupervisorConnection implements SupervisorConnection {
   readonly inbox = new MessageInbox<ControlPlaneToSupervisorMessage>();
   closingRequest: ClosingRequest | undefined;
+  /** Cleared to act like a socket that is closing, as it is once `close` is called. */
+  isAcceptingMessages = true;
 
-  send(message: ControlPlaneToSupervisorMessage): void {
+  send(message: ControlPlaneToSupervisorMessage): boolean {
+    if (!this.isAcceptingMessages) {
+      return false;
+    }
     this.inbox.add(message);
+    return true;
   }
 
   close(closeCode: number, reason: string): void {
     this.closingRequest = { closeCode, reason };
+    this.isAcceptingMessages = false;
   }
 }
 

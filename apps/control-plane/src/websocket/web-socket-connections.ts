@@ -78,13 +78,13 @@ export class WebSocketSupervisorConnection implements SupervisorConnection {
     this.#logger = logger;
   }
 
-  send(message: ControlPlaneToSupervisorMessage): void {
+  send(message: ControlPlaneToSupervisorMessage): boolean {
     if (this.#socket.readyState !== WebSocket.OPEN) {
       this.#logger.warn(
         { messageType: message.type },
         "Could not send a message to the supervisor because its connection is closing",
       );
-      return;
+      return false;
     }
     this.#socket.send(JSON.stringify(message), (error) => {
       if (isWriteFailure(error)) {
@@ -94,6 +94,7 @@ export class WebSocketSupervisorConnection implements SupervisorConnection {
         );
       }
     });
+    return true;
   }
 
   close(closeCode: number, reason: string): void {
