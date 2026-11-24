@@ -10,7 +10,10 @@ import { z } from "zod";
  * - Anthropic Messages: `message_start` carries the model and the input
  *   (with cache reads and writes, which `input_tokens` excludes);
  *   `message_delta` carries cumulative counts, the output at least; a
- *   non-streamed answer has `usage` at the top.
+ *   non-streamed answer has `usage` at the top. A request Anthropic
+ *   answered in several sampling steps also lists each in
+ *   `usage.iterations`, which the top-level counts leave out (see
+ *   `readAnthropicUsage`).
  *   https://docs.anthropic.com/en/docs/build-with-claude/streaming
  * - OpenAI Responses: `response.completed` (or `.incomplete`, `.failed`)
  *   carries `response.usage`, whose `input_tokens` include the cached
@@ -21,6 +24,12 @@ import { z } from "zod";
  *   asked for it (`stream_options.include_usage`, which the proxy sets on
  *   every streamed request), whose `prompt_tokens` include the cached ones.
  *   https://platform.openai.com/docs/api-reference/chat-streaming
+ *
+ * Neither OpenAI format reports billed tokens anywhere else: reasoning
+ * tokens are within the output counts (`output_tokens_details`,
+ * `completion_tokens_details` only break them down), and what their
+ * provider-run tools cost is billed per call, not in tokens, and none of
+ * them is among what the pinned agent sends.
  *
  * Counts are kept apart so they never overlap: input excludes what was read
  * from or written to the prompt cache. Alongside, the meter counts the
@@ -158,12 +167,16 @@ const countSchema = z.int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(
 const textSchema = z.string().optional().catch(undefined);
 const modelSchema = z.string().min(1).optional().catch(undefined);
 
-const anthropicUsageSchema = z
-  .object({
-    input_tokens: countSchema,
-    output_tokens: countSchema,
-    cache_read_input_tokens: countSchema,
-    cache_creation_input_tokens: countSchema,
+const anthropicCountsSchema = z.object({
+  input_tokens: countSchema,
+  output_tokens: countSchema,
+  cache_read_input_tokens: countSchema,
+  cache_creation_input_tokens: countSchema,
+});
+
+const anthropicUsageSchema = anthropicCountsSchema
+  .extend({
+    iterations: z.array(anthropicCountsSchema.catch({})).optional().catch(undefined),
   })
   .optional()
   .catch(undefined);
@@ -197,6 +210,7 @@ const anthropicReasoningTypes = new Set([
 ]);
 
 type AnthropicUsage = z.infer<typeof anthropicUsageSchema>;
+type AnthropicCounts = z.infer<typeof anthropicCountsSchema>;
 
 function readAnthropicPayload(value: unknown, usage: MeteredUsage): void {
   const parsed = anthropicPayloadSchema.safeParse(value);
@@ -232,15 +246,36 @@ function readAnthropicPayload(value: unknown, usage: MeteredUsage): void {
   }
 }
 
-/** Counts in `message_delta` are cumulative, so each replaces what came before. */
+/**
+ * Counts in `message_delta` are cumulative, so each replaces what came
+ * before. Where Anthropic ran more than one sampling step for the request
+ * (a compaction, an advisor's model), the top-level counts leave the
+ * others out and `usage.iterations` lists each step; what is billed is the
+ * sum over the steps
+ * (https://platform.claude.com/docs/en/build-with-claude/compaction-threshold#understanding-usage).
+ * So each count is the larger of the top-level one and that sum, which
+ * errs high if the two ever overlap.
+ */
 function readAnthropicUsage(reported: AnthropicUsage, usage: MeteredUsage): void {
   if (reported === undefined) {
     return;
   }
-  usage.inputTokens = reported.input_tokens ?? usage.inputTokens;
-  usage.outputTokens = reported.output_tokens ?? usage.outputTokens;
-  usage.cacheReadTokens = reported.cache_read_input_tokens ?? usage.cacheReadTokens;
-  usage.cacheWriteTokens = reported.cache_creation_input_tokens ?? usage.cacheWriteTokens;
+  const iterations = reported.iterations ?? [];
+  const larger = (topLevel: number | undefined, field: keyof AnthropicCounts) => {
+    const summed = iterations.some((iteration) => iteration[field] !== undefined)
+      ? iterations.reduce((total, iteration) => total + (iteration[field] ?? 0), 0)
+      : undefined;
+    return summed === undefined || (topLevel !== undefined && topLevel >= summed)
+      ? topLevel
+      : summed;
+  };
+  usage.inputTokens = larger(reported.input_tokens, "input_tokens") ?? usage.inputTokens;
+  usage.outputTokens = larger(reported.output_tokens, "output_tokens") ?? usage.outputTokens;
+  usage.cacheReadTokens =
+    larger(reported.cache_read_input_tokens, "cache_read_input_tokens") ?? usage.cacheReadTokens;
+  usage.cacheWriteTokens =
+    larger(reported.cache_creation_input_tokens, "cache_creation_input_tokens") ??
+    usage.cacheWriteTokens;
 }
 
 const openAiResponseSchema = z.object({

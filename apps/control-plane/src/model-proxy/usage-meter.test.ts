@@ -82,6 +82,66 @@ describe("reading usage from an answer", () => {
     });
   });
 
+  it("counts every sampling step Anthropic lists in usage.iterations, which its top-level counts leave out", () => {
+    // As Anthropic's compaction guide shows it: the top level is the
+    // message iteration alone; what is billed is the sum of every iteration.
+    const iterations = [
+      {
+        type: "compaction",
+        input_tokens: 180_000,
+        output_tokens: 3_500,
+        cache_read_input_tokens: 0,
+      },
+      { type: "advisor_message", input_tokens: 9_000, output_tokens: 700 },
+      {
+        type: "message",
+        input_tokens: 23_000,
+        output_tokens: 1_000,
+        cache_read_input_tokens: 50,
+        cache_creation_input_tokens: 20,
+      },
+    ];
+    const whole = {
+      type: "message",
+      model: "claude-x",
+      usage: { input_tokens: 23_000, output_tokens: 1_000, iterations },
+    };
+    const streamed = sse([
+      { ...anthropicStart, message: { model: "claude-x", usage: { input_tokens: 23_000 } } },
+      {
+        type: "message_delta",
+        usage: { input_tokens: 23_000, output_tokens: 1_000, iterations },
+      },
+    ]);
+    const expected = {
+      inputTokens: 212_000,
+      outputTokens: 5_200,
+      cacheReadTokens: 50,
+      cacheWriteTokens: 20,
+      isFinal: true,
+    };
+
+    expect(
+      meterOf("anthropic_messages", JSON.stringify(whole), 7, "application/json"),
+    ).toMatchObject(expected);
+    expect(meterOf("anthropic_messages", streamed)).toMatchObject(expected);
+  });
+
+  it("keeps Anthropic's top-level counts when they exceed what its iterations list", () => {
+    const answer = {
+      type: "message",
+      usage: {
+        input_tokens: 500,
+        output_tokens: 40,
+        iterations: [{ type: "message", input_tokens: 10, output_tokens: 1 }],
+      },
+    };
+
+    expect(
+      meterOf("anthropic_messages", JSON.stringify(answer), 7, "application/json"),
+    ).toMatchObject({ inputTokens: 500, outputTokens: 40 });
+  });
+
   it("reads OpenAI's Responses usage from response.completed, taking the cached tokens out of the input", () => {
     const usage = meterOf(
       "openai_responses",
