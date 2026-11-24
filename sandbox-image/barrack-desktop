@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Runs the sandbox's graphical desktop in the foreground, as whoever runs it
+# (the supervisor runs it as the agent, BARRACK_DESKTOP_COMMAND), until its
+# standard input closes, which is how the supervisor stops it, or until the
+# X server or the window manager ends; the supervisor then starts it again.
+#
+#   - TigerVNC's Xvnc: the X server and a VNC server in one process, on the
+#     display DISPLAY names, serving VNC on 127.0.0.1 only
+#     (BARRACK_DESKTOP_VNC_PORT, 5900 unless set), with no password: only
+#     processes inside the sandbox can reach it, and those run as the agent,
+#     who owns the display anyway. Viewers cannot resize it (the agent's
+#     coordinates depend on its size), every viewer shares it, and it sends
+#     at most 15 updates a second, the main limit on bandwidth.
+#   - Openbox, a window manager that gives a window the keyboard when it is
+#     clicked, for the user and the agent alike, and needs no session bus.
+set -euo pipefail
+
+display=${DISPLAY:?DISPLAY must name the display to run, such as :1}
+display_number=${display#:}
+vnc_port=${BARRACK_DESKTOP_VNC_PORT:-5900}
+geometry=1280x800
+frame_rate=15
+own_user=$(id -u)
+
+# A desktop of ours may still be running, if the supervisor that started it
+# was restarted while the sandbox ran on. It is ended, so there is one.
+pkill -u "$own_user" -x openbox || true
+if pkill -u "$own_user" -x Xvnc; then
+  for _ in $(seq 50); do
+    pgrep -u "$own_user" -x Xvnc > /dev/null || break
+    sleep 0.1
+  done
+fi
+
+# A sandbox that was stopped keeps /tmp, and with it the X server's lock and
+# socket. Xvnc removes a lock whose process is gone, but process IDs start
+# from 1 again after a restart, so the lock's may now belong to a living
+# process, and Xvnc would refuse to start. No X server of ours runs now, so
+# both are stale.
+rm -f "/tmp/.X${display_number}-lock" "/tmp/.X11-unix/X${display_number}"
+
+# Standard input stays readable on descriptor 3 for the watcher below;
+# background jobs would otherwise get /dev/null.
+exec 3<&0
+
+Xvnc "$display" -geometry "$geometry" -depth 24 \
+  -rfbport "$vnc_port" -localhost -interface 127.0.0.1 -SecurityTypes None \
+  -AlwaysShared -AcceptSetDesktopSize=0 -FrameRate="$frame_rate" -nolisten tcp \
+  -desktop "Barrack sandbox" 3<&- &
+xvnc_pid=$!
+trap 'kill "$xvnc_pid" ${openbox_pid:+"$openbox_pid"} ${input_watcher_pid:+"$input_watcher_pid"} 2> /dev/null || true; wait' EXIT
+
+for _ in $(seq 200); do
+  xdotool getdisplaygeometry > /dev/null 2>&1 && break
+  kill -0 "$xvnc_pid" 2> /dev/null || exit 1
+  sleep 0.05
+done
+
+openbox 3<&- &
+openbox_pid=$!
+
+cat <&3 > /dev/null &
+input_watcher_pid=$!
+
+wait -n "$xvnc_pid" "$openbox_pid" "$input_watcher_pid"
