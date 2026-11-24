@@ -9,3 +9,6 @@ coverage/
 
 # Temporary checkouts created by coding-agent tooling
 .claude/worktrees/
+
+# Pi's workspace and state when `pnpm dev` runs the real agent
+.barrack-dev/
