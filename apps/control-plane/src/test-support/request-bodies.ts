@@ -10,11 +10,12 @@ import {
 /**
  * A request body checked as the proxy checks one: scanned, as it would be
  * while it arrives (in one chunk here), then inspected; or why it was
- * refused.
+ * refused, for a provider of no special kind unless told one.
  */
 export function inspectWholeBody(
   format: ProviderApiFormat,
   body: object | string | Buffer,
+  providerId = "a-provider",
 ): BodyInspection | { kind: "invalid"; reason: string } {
   const received = Buffer.isBuffer(body)
     ? body
@@ -27,6 +28,7 @@ export function inspectWholeBody(
   }
   return inspectRequestBody(
     format,
+    providerId,
     received,
     scanned.body,
     defaultModelProxyLimits.maximumRequestBytes,

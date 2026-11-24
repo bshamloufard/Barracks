@@ -2,6 +2,11 @@ import type { ProviderApiFormat } from "@barrack/model-catalogue";
 import { maximumModelIdLength } from "@barrack/protocol";
 import { estimateInputTokens } from "./answer-usage.js";
 import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
+import {
+  findModelChangingRouting,
+  type OpenRouterRoutingFields,
+  openRouterRoutingFields,
+} from "./openrouter-routing.js";
 import { type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
 import {
   type ReasoningFields,
@@ -70,6 +75,9 @@ const readKeys = new Set([
   ...reasoningFields,
 ]);
 
+/** OpenRouter's requests are also read for the fields that route them. */
+const openRouterReadKeys = new Set([...readKeys, ...openRouterRoutingFields]);
+
 /**
  * Checks a request's body, scanned as it arrived (`json-body-scanner.ts`),
  * and makes the changes the proxy makes to it. Refused: anything but a
@@ -79,11 +87,16 @@ const readKeys = new Set([
  */
 export function inspectRequestBody(
   format: ProviderApiFormat,
+  providerId: string,
   received: Buffer,
   scanned: ScannedJsonBody,
   maximumBytes: number,
 ): BodyInspection {
-  const members = readTopLevelMembers(received, scanned, readKeys);
+  const members = readTopLevelMembers(
+    received,
+    scanned,
+    providerId === "openrouter" ? openRouterReadKeys : readKeys,
+  );
   if ("problem" in members) {
     return refused(proxyRefusals.invalidRequestBody, members.problem);
   }
@@ -91,6 +104,10 @@ export function inspectRequestBody(
   const model = fields.model;
   if (typeof model !== "string" || model === "" || model.length > maximumModelIdLength) {
     return refused(proxyRefusals.invalidRequestBody, "the body names no model");
+  }
+  const routing = providerId === "openrouter" ? findModelChangingRouting(fields) : undefined;
+  if (routing !== undefined) {
+    return refused(proxyRefusals.modelRoutingRefused, routing);
   }
   const detachment = findDetachedGeneration(format, fields);
   if (detachment !== undefined) {
@@ -128,6 +145,7 @@ export function inspectRequestBody(
 
 /** The fields the proxy reads, of a body that may hold anything else too. */
 type RequestFields = ReasoningFields &
+  OpenRouterRoutingFields &
   Partial<
     Record<
       | "model"

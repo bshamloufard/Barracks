@@ -60,6 +60,12 @@ export const proxyRefusals = {
     message:
       "Barrack's model proxy does not relay background or deferred requests: what the provider generated after answering could not be counted towards the usage cap.",
   },
+  modelRoutingRefused: {
+    status: 403,
+    errorType: "permission_error",
+    message:
+      "Barrack's model proxy relays this thread's requests only to its own model, and this request could be answered by another (OpenRouter's models, route, preset, provider options or a model-choosing plugin).",
+  },
   requestTooLarge: {
     status: 413,
     errorType: "request_too_large",

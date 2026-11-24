@@ -341,6 +341,7 @@ export class ModelProxy {
     exchange.hold(reading.held.release);
     const inspection = inspectRequestBody(
       route.format,
+      target.providerId,
       reading.bytes,
       reading.scanned,
       limits.maximumRequestBytes,

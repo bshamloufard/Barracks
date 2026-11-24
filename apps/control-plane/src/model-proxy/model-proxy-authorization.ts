@@ -1,4 +1,4 @@
-import { findCatalogueProvider } from "@barrack/model-catalogue";
+import { findModelLimits } from "@barrack/model-catalogue";
 import { parseModelReference } from "@barrack/protocol";
 import type { OwnerAdmission } from "../authentication/owner-admission.js";
 import { UnreadableCredentialError } from "../model-access/credential-keyring.js";
@@ -121,9 +121,8 @@ export class ModelProxyAuthorization {
    * compaction and summaries use the model it runs on too), so a request
    * for any other is refused: otherwise a sandbox could spend its owner's
    * key on the dearest model the key allows. The one exception is the
-   * model before a switch, for the run still open on it. Anthropic's
-   * `fallbacks`, which the agent sends for some models, may name only
-   * models its catalogue lists for the provider. Throws when it cannot
+   * model before a switch, for the run still open on it. `fallbacks`
+   * may name only what `allowedFallbacks` allows. Throws when it cannot
    * decide.
    */
   async checkRequestedModels(
@@ -140,13 +139,11 @@ export class ModelProxyAuthorization {
           await this.#options.modelSwitchAllowances.findPreviousModel(threadId),
           providerId,
         );
-    const listedModelIds = new Set(
-      findCatalogueProvider(providerId)?.models.map((model) => model.modelId),
+    const allowed = allowedFallbacks(providerId, requested.model);
+    const areFallbacksAllowed = requested.fallbackModels.every((fallback) =>
+      allowed.includes(fallback),
     );
-    const areFallbacksListed = requested.fallbackModels.every((fallback) =>
-      listedModelIds.has(fallback),
-    );
-    if (!isOwnModel || !areFallbacksListed) {
+    if (!isOwnModel || !areFallbacksAllowed) {
       return refused(modelRefusal(threadModel ?? "none"), "the request names another model");
     }
     return undefined;
@@ -205,6 +202,20 @@ export class ModelProxyAuthorization {
       throw error;
     }
   }
+}
+
+/**
+ * The models a request for `model` may name as `fallbacks`: for Anthropic,
+ * those the pinned agent sends for that very model (its server-side
+ * fallbacks, which it adds for some models); for OpenRouter's Anthropic
+ * format, where the field is OpenRouter's own routing to other models,
+ * only the model itself; for any other provider, none.
+ */
+function allowedFallbacks(providerId: string, model: string): readonly string[] {
+  if (providerId === "openrouter") {
+    return [model];
+  }
+  return findModelLimits(providerId, model)?.fallbackModelIds ?? [];
 }
 
 /** The model's identifier at its provider, if `model` is that provider's. */

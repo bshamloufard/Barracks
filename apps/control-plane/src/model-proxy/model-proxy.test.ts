@@ -3,7 +3,7 @@ import {
   mockModelTriggers,
   startMockModelServer,
 } from "@barrack/mock-model-server";
-import { findCatalogueProvider } from "@barrack/model-catalogue";
+import { findCatalogueProvider, findModelLimits } from "@barrack/model-catalogue";
 import {
   type AgentEvent,
   buildResumeThreadApiPath,
@@ -52,6 +52,7 @@ const keys = {
   adasGroq: "fake-groq-key-of-ada-0003",
   gracesAnthropic: "fake-anthropic-key-of-grace-0004",
   adasReplacement: "fake-anthropic-key-of-ada-replaced-0005",
+  adasOpenRouter: "fake-openrouter-key-of-ada-0006",
 };
 
 let modelServer: MockModelServer;
@@ -599,30 +600,85 @@ describe("the model proxy", () => {
     },
   );
 
-  it("relays only the thread's own model, and fallbacks the agent's catalogue lists for its provider", async () => {
+  it("relays only the thread's own model, and only the fallbacks the agent sends for that model", async () => {
     await start();
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
-    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropicModelIds = findCatalogueProvider("anthropic")?.models.map((m) => m.modelId);
+    const withFallbacks =
+      anthropicModelIds?.find(
+        (modelId) => (findModelLimits("anthropic", modelId)?.fallbackModelIds.length ?? 0) > 0,
+      ) ?? "";
+    const ownFallback = findModelLimits("anthropic", withFallbacks)?.fallbackModelIds[0] ?? "";
+    const otherListedModel =
+      anthropicModelIds?.find(
+        (modelId) =>
+          modelId !== withFallbacks &&
+          !findModelLimits("anthropic", withFallbacks)?.fallbackModelIds.includes(modelId),
+      ) ?? "";
+    const { access } = await startThread(adaToken, `anthropic/${withFallbacks}`);
     const anthropic = relayedFormatExamples.anthropic;
     const asking = (overrides: object) =>
       callModelProxy(controlPlane, access, anthropic, "Hi", {
-        body: JSON.stringify({ ...anthropic.body("Hi"), ...overrides }),
+        body: JSON.stringify({ ...anthropic.body("Hi"), model: withFallbacks, ...overrides }),
       });
-    const listedModel = findCatalogueProvider("anthropic")?.models[0]?.modelId ?? "";
 
     const otherModel = await asking({ model: "the-dearest-model" });
     const unlistedFallback = await asking({ fallbacks: [{ model: "the-dearest-model" }] });
-    const listedFallback = await asking({ fallbacks: [{ model: listedModel }] });
-    await readWholeAnswer(listedFallback);
+    const anotherModelsFallback = await asking({ fallbacks: [{ model: otherListedModel }] });
+    const ownModelsFallback = await asking({ fallbacks: [{ model: ownFallback }] });
+    await readWholeAnswer(ownModelsFallback);
 
-    for (const refused of [otherModel, unlistedFallback]) {
+    for (const refused of [otherModel, unlistedFallback, anotherModelsFallback]) {
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({
-        error: { message: expect.stringContaining('only for its own model, "anthropic/a-model"') },
+        error: {
+          message: expect.stringContaining(`only for its own model, "anthropic/${withFallbacks}"`),
+        },
       });
     }
-    expect(listedFallback.status).toBe(200);
-    expect(modelServer.receivedModels).toEqual(["a-model"]);
+    expect(ownModelsFallback.status).toBe(200);
+    expect(modelServer.receivedModels).toEqual([withFallbacks]);
+  });
+
+  it("relays OpenRouter's routing only among hosts of the thread's own model, never to another model", async () => {
+    await start();
+    await controlPlane.saveModelCredential("openrouter", keys.adasOpenRouter, adaToken);
+    const { access } = await startThread(adaToken, "openrouter/anthropic/example-model");
+    const model = "anthropic/example-model";
+    const chat = (fields: object) =>
+      callModelProxy(controlPlane, access, relayedFormatExamples.groq, "", {
+        apiPath: "/chat/completions",
+        body: JSON.stringify({ ...relayedFormatExamples.groq.body("Hi"), model, ...fields }),
+      });
+    const messages = (fields: object) =>
+      callModelProxy(controlPlane, access, relayedFormatExamples.anthropic, "", {
+        apiPath: "/v1/messages",
+        headers: { "x-api-key": "", authorization: `Bearer ${access.token}` },
+        body: JSON.stringify({ ...relayedFormatExamples.anthropic.body("Hi"), model, ...fields }),
+      });
+
+    const refusals = [
+      await chat({ models: [model, "openai/the-dearest-model"] }),
+      await chat({ route: "fallback" }),
+      await chat({ preset: "@preset/anything" }),
+      await chat({ model: `${model}@preset/anything` }),
+      await chat({ model: `${model}:nitro` }),
+      await chat({ provider: { options: { anthropic: { model: "the-dearest-model" } } } }),
+      await chat({ plugins: [{ id: "auto-router", allowed_models: ["*"] }] }),
+      await messages({ fallbacks: [{ model: "openai/the-dearest-model" }] }),
+    ];
+    const allowed = [
+      await chat({ provider: { order: ["a-host", "another-host"], allow_fallbacks: true } }),
+      await chat({ plugins: [{ id: "web" }] }),
+      await messages({ fallbacks: [{ model }] }),
+    ];
+
+    expect(refusals.map((response) => response.status)).toEqual(Array(8).fill(403));
+    for (const response of allowed) {
+      await readWholeAnswer(response);
+    }
+    expect(allowed.map((response) => response.status)).toEqual([200, 200, 200]);
+    expect(modelServer.receivedModels).toEqual([model, model, model]);
   });
 
   it("keeps the model before a switch usable for the run then open, and for no later run", async () => {
