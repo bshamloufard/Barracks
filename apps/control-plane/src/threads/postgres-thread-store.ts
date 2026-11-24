@@ -328,7 +328,7 @@ export class PostgresThreadStore implements ThreadStore {
     const counts = await client.query<{ owned: string; everyone: string }>(
       `select count(*) filter (where owner_user_id = $1) as owned, count(*) as everyone
         from ${this.#table}
-        where sandbox_state = any($2::text[]) and thread_id <> $3`,
+        where ${placeOccupyingCondition} and thread_id <> $3`,
       [ownerUserId ?? null, placeOccupyingStates, admittedThreadId],
     );
     const { owned, everyone } = counts.rows[0] ?? { owned: "0", everyone: "0" };
@@ -338,7 +338,7 @@ export class PostgresThreadStore implements ThreadStore {
     }
     const occupying = await client.query<ThreadRow>(
       `select ${threadColumns} from ${this.#table}
-        where owner_user_id = $1 and sandbox_state = any($2::text[]) and thread_id <> $3
+        where owner_user_id = $1 and ${placeOccupyingCondition} and thread_id <> $3
         order by last_activity_at desc, thread_id desc`,
       [ownerUserId ?? null, placeOccupyingStates, admittedThreadId],
     );
@@ -365,6 +365,10 @@ export class PostgresThreadStore implements ThreadStore {
     }
   }
 }
+
+/** `isPlaceOccupying` in SQL, with `placeOccupyingStates` as `$2`. */
+const placeOccupyingCondition = `(sandbox_state = any($2::text[])
+  or (sandbox_state = 'deleting' and sandbox_id is not null))`;
 
 function statesThatMayBecome(target: SandboxState): SandboxState[] {
   return sandboxStates.filter((from) => legalSandboxTransitions[from].includes(target));

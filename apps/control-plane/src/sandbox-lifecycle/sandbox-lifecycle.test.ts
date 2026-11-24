@@ -372,6 +372,29 @@ describe("the limit on running sandboxes", () => {
     expect(await eventsOf(threadId)).toEqual([]);
   });
 
+  it("counts a thread being deleted until its sandbox is destroyed, so deleting is no way past the limit", async () => {
+    await start({
+      lifecycleSettings: { admission: { maximumPerUser: 1, maximumInInstallation: undefined } },
+    });
+    const { threadId } = await controlPlane.createThread();
+    const releaseDestroy = controlPlane.sandboxProvider.holdNextOperation("destroy");
+
+    const deletion = await deleteThread(threadId);
+    const whileDestroying = await ask("POST", threadsApiPath);
+    releaseDestroy();
+    await controlPlane.whenOperationsSettle();
+    const once = await ask("POST", threadsApiPath);
+
+    expect(deletion.status).toBe(202);
+    expect(whileDestroying).toMatchObject({
+      status: 409,
+      message: expect.stringContaining(
+        "Stop one of yours first: a thread with no messages yet (being deleted; wait a moment).",
+      ),
+    });
+    expect(once.status).toBe(201);
+  });
+
   it("refuses anyone at the installation's limit", async () => {
     await start({
       lifecycleSettings: { admission: { maximumPerUser: 5, maximumInInstallation: 1 } },

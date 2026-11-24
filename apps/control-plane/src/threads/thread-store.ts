@@ -118,7 +118,11 @@ export const operatingStates = [
 
 /**
  * States that take one of the places the running-sandbox limit counts: the
- * sandbox runs, or is about to, or has not finished stopping.
+ * sandbox runs, or is about to, or has not finished stopping. A thread being
+ * deleted takes one too for as long as it still has a sandbox
+ * (`isPlaceOccupying`): a destroy that fails returns it to the state the
+ * provider reports, running perhaps, and deleting must not be a way past
+ * the limit.
  */
 export const placeOccupyingStates = [
   "creating",
@@ -166,8 +170,12 @@ export function isOperatingState(state: SandboxState): boolean {
   return (operatingStates as readonly SandboxState[]).includes(state);
 }
 
-export function isPlaceOccupyingState(state: SandboxState): boolean {
-  return (placeOccupyingStates as readonly SandboxState[]).includes(state);
+/** Whether a thread's sandbox takes one of the places the running-sandbox limit counts. */
+export function isPlaceOccupying(sandbox: ThreadSandboxRecord): boolean {
+  if (sandbox.state === "deleting") {
+    return sandbox.sandboxId !== undefined;
+  }
+  return (placeOccupyingStates as readonly SandboxState[]).includes(sandbox.state);
 }
 
 /**

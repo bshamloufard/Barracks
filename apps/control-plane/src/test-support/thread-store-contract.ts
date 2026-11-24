@@ -493,6 +493,35 @@ export function describeThreadStoreContract(
       expect(await store.find("thread-new")).toBeUndefined();
     });
 
+    it("counts a thread being deleted while it still has a sandbox, and not once it has none", async () => {
+      const store = await createEmptyStore();
+      await threadIn(store, "deleting", "thread-deleting-with-sandbox");
+      const failed = await threadIn(store, "failed", "thread-deleting-without-sandbox");
+      const lost = await store.transition({
+        threadId: failed.threadId,
+        fromVersion: failed.version,
+        to: { state: "failed", sandboxId: undefined, reason: "Gone." },
+        at: startTime,
+      });
+      await store.transition({
+        threadId: failed.threadId,
+        fromVersion: lost.kind === "changed" ? lost.thread.version : 0,
+        to: { state: "deleting", sandboxId: undefined, leaseExpiresAt: startTime },
+        at: startTime,
+      });
+      const admission = { maximumPerUser: 1, maximumInInstallation: undefined };
+
+      const refused = await store.create(newThread("thread-new", ownerA), {
+        at: startTime,
+        leaseExpiresAt: startTime,
+        admission,
+      });
+
+      expect(
+        refused.kind === "limit_reached" && refused.occupying.map((thread) => thread.threadId),
+      ).toEqual(["thread-deleting-with-sandbox"]);
+    });
+
     it("refuses anyone once the installation's limit is reached", async () => {
       const store = await createEmptyStore();
       await threadIn(store, "running", "thread-of-b", ownerB);

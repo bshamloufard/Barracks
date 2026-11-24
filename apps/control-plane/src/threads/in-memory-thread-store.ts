@@ -5,7 +5,7 @@ import {
   checkTransition,
   type FinishStoppingRequest,
   findBrokenLimit,
-  isPlaceOccupyingState,
+  isPlaceOccupying,
   type NewThread,
   type SandboxAdmission,
   type SandboxState,
@@ -195,8 +195,7 @@ export class InMemoryThreadStore implements ThreadStore {
     admission: SandboxAdmission,
   ): AdmissionOutcome | undefined {
     const occupying = this.#threads.filter(
-      (record) =>
-        record.threadId !== admittedThreadId && isPlaceOccupyingState(record.sandbox.state),
+      (record) => record.threadId !== admittedThreadId && isPlaceOccupying(record.sandbox),
     );
     const occupyingOwned = occupying.filter((record) => record.ownerUserId === ownerUserId);
     const brokenLimit = findBrokenLimit(admission, occupyingOwned.length, occupying.length);

@@ -55,6 +55,8 @@ function describeOccupyingThread(thread: ThreadRecord): string {
   switch (thread.sandbox.state) {
     case "stopping":
       return `${name} (already stopping; wait a moment)`;
+    case "deleting":
+      return `${name} (being deleted; wait a moment)`;
     case "creating":
     case "starting":
       return `${name} (starting)`;
