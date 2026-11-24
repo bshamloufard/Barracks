@@ -7,6 +7,12 @@ import {
 import { catalogueFileUrl } from "./catalogue-file.js";
 import { isRelayedProvider } from "./relayed-providers.js";
 
+export {
+  type AgentRequestShape,
+  findAgentRequestShape,
+  isAllowedValue,
+} from "./agent-request-shapes.js";
+export type { MemberRule, ObjectType } from "./agent-request-shapes-file.js";
 export { findLargestMaxOutputTokens, findModelLimits } from "./model-limits.js";
 export type { ModelLimits } from "./model-limits-file.js";
 export {

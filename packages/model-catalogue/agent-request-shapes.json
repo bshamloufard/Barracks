@@ -1,0 +1,220 @@
+{
+  "agent": { "name": "Pi", "version": "1.6.0" },
+  "formats": {
+    "anthropic_messages": {
+      "itemTypes": [null],
+      "partTypes": [
+        "image",
+        "redacted_thinking",
+        "text",
+        "thinking",
+        "tool_addition",
+        "tool_removal",
+        "tool_result",
+        "tool_use"
+      ],
+      "imageSourceTypes": ["base64"],
+      "toolTypes": [null],
+      "toolChangeTypes": ["tool_definition", "tool_reference"],
+      "cacheControlTypes": ["ephemeral"],
+      "betaHeaderValues": [
+        "inline-tools-2026-09-15",
+        "interleaved-thinking-2025-05-14",
+        "mid-conversation-output-config-2026-07-01",
+        "server-side-fallback-2026-07-01",
+        "thinking-binding-controls-2026-08-01"
+      ],
+      "membersByProvider": {
+        "anthropic": {
+          "fallbacks": [
+            [{ "model": "claude-opus-4-8" }, { "model": "claude-opus-5" }],
+            [{ "model": "claude-opus-5" }]
+          ],
+          "max_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "output_config": [
+            { "effort": "high" },
+            { "effort": "low" },
+            { "effort": "max" },
+            { "effort": "medium" },
+            { "effort": "xhigh" }
+          ],
+          "stream": [true],
+          "system": "scanned",
+          "thinking": [
+            {
+              "type": "adaptive",
+              "display": "summarized",
+              "block_binding": { "prefix_mismatch_behavior": "drop_block" }
+            },
+            { "type": "adaptive", "display": "summarized" },
+            { "type": "disabled" },
+            { "type": "enabled", "budget_tokens": "<count>", "display": "summarized" }
+          ],
+          "tools": "scanned"
+        },
+        "openrouter": {
+          "max_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "output_config": [
+            { "effort": "high" },
+            { "effort": "low" },
+            { "effort": "max" },
+            { "effort": "medium" },
+            { "effort": "xhigh" }
+          ],
+          "stream": [true],
+          "system": "scanned",
+          "thinking": [
+            {
+              "type": "adaptive",
+              "display": "summarized",
+              "block_binding": { "prefix_mismatch_behavior": "drop_block" }
+            },
+            { "type": "adaptive", "display": "summarized" },
+            { "type": "disabled" },
+            { "type": "enabled", "budget_tokens": "<count>", "display": "summarized" }
+          ],
+          "tools": "scanned"
+        }
+      }
+    },
+    "openai_responses": {
+      "itemTypes": [
+        null,
+        "additional_tools",
+        "configuration_update",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "function_call",
+        "function_call_output",
+        "message",
+        "reasoning"
+      ],
+      "partTypes": ["input_image", "input_text", "output_text", "reasoning_text"],
+      "imageSourceTypes": [],
+      "toolTypes": ["custom", "function"],
+      "toolChangeTypes": [],
+      "cacheControlTypes": [],
+      "betaHeaderValues": [],
+      "membersByProvider": {
+        "openai": {
+          "include": [["reasoning.encrypted_content"]],
+          "input": "scanned",
+          "max_output_tokens": ["<count>"],
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "prompt_cache_options": [{ "mode": "explicit" }, { "ttl": "30m" }],
+          "prompt_cache_retention": ["24h"],
+          "reasoning": [
+            { "effort": "high", "summary": "auto" },
+            { "effort": "low", "summary": "auto" },
+            { "effort": "max", "summary": "auto" },
+            { "effort": "medium", "summary": "auto" },
+            { "effort": "minimal", "summary": "auto" },
+            { "effort": "none" },
+            { "effort": "xhigh", "summary": "auto" }
+          ],
+          "store": [false],
+          "stream": [true],
+          "tools": "scanned"
+        },
+        "xai": {
+          "include": [["reasoning.encrypted_content"]],
+          "input": "scanned",
+          "max_output_tokens": ["<count>"],
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "reasoning": [
+            { "effort": "high", "summary": "auto" },
+            { "effort": "low", "summary": "auto" },
+            { "effort": "medium", "summary": "auto" },
+            { "effort": "none" },
+            { "effort": "xhigh", "summary": "auto" }
+          ],
+          "store": [false],
+          "stream": [true],
+          "tools": "scanned"
+        }
+      }
+    },
+    "openai_chat_completions": {
+      "itemTypes": [null],
+      "partTypes": ["image_url", "text"],
+      "imageSourceTypes": [null],
+      "toolTypes": ["function"],
+      "toolChangeTypes": [],
+      "cacheControlTypes": ["ephemeral"],
+      "betaHeaderValues": [],
+      "membersByProvider": {
+        "cerebras": {
+          "max_completion_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "prompt_cache_retention": ["24h"],
+          "reasoning_effort": ["high", "low", "medium", "none"],
+          "stream": [true],
+          "stream_options": [{ "include_usage": true }],
+          "tools": "scanned"
+        },
+        "deepseek": {
+          "max_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "prompt_cache_retention": ["24h"],
+          "reasoning_effort": ["high", "low", "max"],
+          "stream": [true],
+          "stream_options": [{ "include_usage": true }],
+          "thinking": [{ "type": "disabled" }, { "type": "enabled" }],
+          "tools": "scanned"
+        },
+        "groq": {
+          "max_completion_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "prompt_cache_retention": ["24h"],
+          "reasoning_effort": ["default", "high", "low", "medium", "none"],
+          "store": [false],
+          "stream": [true],
+          "stream_options": [{ "include_usage": true }],
+          "tools": "scanned"
+        },
+        "openrouter": {
+          "max_completion_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "prompt_cache_key": ["<text>"],
+          "prompt_cache_retention": ["24h"],
+          "reasoning": [
+            { "effort": "high" },
+            { "effort": "low" },
+            { "effort": "max" },
+            { "effort": "medium" },
+            { "effort": "minimal" },
+            { "effort": "none" },
+            { "effort": "xhigh" }
+          ],
+          "store": [false],
+          "stream": [true],
+          "stream_options": [{ "include_usage": true }],
+          "tools": "scanned"
+        },
+        "together": {
+          "max_tokens": ["<count>"],
+          "messages": "scanned",
+          "model": ["<text>"],
+          "reasoning": [{ "enabled": false }, { "enabled": true }],
+          "reasoning_effort": ["high", "low", "medium"],
+          "stream": [true],
+          "stream_options": [{ "include_usage": true }],
+          "tools": "scanned"
+        }
+      }
+    }
+  }
+}

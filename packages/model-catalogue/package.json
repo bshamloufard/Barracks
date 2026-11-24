@@ -14,7 +14,8 @@
   "files": [
     "dist",
     "model-catalogue.json",
-    "model-limits.json"
+    "model-limits.json",
+    "agent-request-shapes.json"
   ],
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
