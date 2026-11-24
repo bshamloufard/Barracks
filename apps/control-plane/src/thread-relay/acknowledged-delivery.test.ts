@@ -19,7 +19,8 @@ import {
 import { readWholeThread } from "../test-support/read-whole-thread.js";
 import { TestControlPlane, type TestThread } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor } from "../test-support/test-peers.js";
-import { abandonedRunErrorMessage, ThreadRelay } from "./thread-relay.js";
+import { abandonedRunErrorMessage } from "./supervisor-attachment.js";
+import { ThreadRelay } from "./thread-relay.js";
 
 /*
  * The guarantees of acknowledged delivery between a supervisor and the

@@ -119,7 +119,7 @@ Threads created before sign-in existed have no owner and are shown to nobody; gi
 | `src/database/`               | Database settings, the connection pool, the migration runner, and waiting for the database at startup (`pg`).                                                                                      |
 | `migrations/`                 | The SQL migrations, applied in name order.                                                                                                                                                         |
 | `src/thread-event-log/`       | The `ThreadEventLog` interface, which assigns sequences, with its Postgres and in-memory implementations.                                                                                          |
-| `src/thread-relay/`           | `ThreadRelay`: per-thread recording, acknowledgements, redelivery, paged replay and in-progress text. No sockets here.                                                                             |
+| `src/thread-relay/`           | `ThreadRelay` and its parts: the queue, the clients' replay and fan-out, supervisor attachment and acknowledged delivery, in-progress text. No sockets here.                                       |
 | `src/websocket/`              | Upgrade routing, per-thread supervisor tokens, each client's and desktop viewer's session (authentication, ownership, expiry), desktop streams, frame validation, heartbeats, slow clients (`ws`). |
 | `src/test-support/`           | Fake peers and connections, a pausable event log, the store and log contract suites, test database helpers. Not built.                                                                             |
 
