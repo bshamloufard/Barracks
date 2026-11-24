@@ -859,3 +859,9 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Nothing specific.
 - **What we did:** `configure_model_access` may carry a `proxy_token` credential (a secret and a base URL) besides an `api_key`; assistant messages may carry `usage`; `usage_cap_reached` joins the error kinds. The version moves from 5 to 6, once.
 - **Why:** A version 5 supervisor would refuse the new credential and close, and a version 5 page would not know the new error kind.
+
+## 2026-11-24: A sandbox whose supervisor is attached is never failed for want of one
+
+- **What the plan said:** Clear handling of sandbox failures.
+- **What we did:** Reconciliation asks whether the thread's supervisor is attached to this control plane before failing its sandbox for a supervisor that never attached, and if it is, notes the attachment again instead, at every check until the note holds. The stop it makes is conditional on the sandbox still awaiting its supervisor since the time it read (`onlyIfAwaitingSupervisorSince`, in the same statement as the version check; no migration).
+- **Why:** The attachment was noted by one write that nobody retried, so a single database blip left the sandbox recorded as awaiting its supervisor, and five minutes later its working thread was failed. Asking the relays alone would not do during a redeploy's overlap, when the supervisor may be attached to the other control plane, which is why the record exists; that control plane repairs the record at its own next check, every 30 seconds by default against a five-minute deadline. The condition closes the race in which an attachment noted between reconciliation's read and its stop, which does not move the version, still lost.

@@ -294,6 +294,10 @@ export type ThreadRecord = Omit<
  *   counting this thread.
  * - `onlyIfLastActiveAt`: for idle shutdown: the change is made only if no
  *   activity was recorded since the thread was read.
+ * - `onlyIfAwaitingSupervisorSince`: for failing a sandbox whose supervisor
+ *   never attached: the change is made only if the sandbox still awaits its
+ *   supervisor since then, so an attachment noted meanwhile, which does not
+ *   move the version, still wins.
  * - `addedSupervisorTokenDigest`: accepted from now on besides the earlier
  *   ones, for a creation taken over that gives the sandbox a new token.
  */
@@ -304,6 +308,7 @@ export type SandboxTransition = {
   at: Date;
   admission?: SandboxAdmission;
   onlyIfLastActiveAt?: Date;
+  onlyIfAwaitingSupervisorSince?: Date;
   addedSupervisorTokenDigest?: Buffer;
 };
 
@@ -318,7 +323,8 @@ export type FinishStoppingRequest = {
 /**
  * - `changed`: done; `thread` is the record as it now is.
  * - `conflict`: not done, because the thread is gone, has moved past
- *   `fromVersion`, or was active after `onlyIfLastActiveAt`.
+ *   `fromVersion`, was active after `onlyIfLastActiveAt`, or no longer
+ *   awaits its supervisor since `onlyIfAwaitingSupervisorSince`.
  * - `limit_reached`: not done, because of the admission limit; `occupying`
  *   lists the owner's threads that take a place.
  */
@@ -348,7 +354,8 @@ export class IllegalSandboxTransitionError extends Error {
 
 /**
  * Checks a transition against a record read at its version, the same way
- * for every store: the version, the activity condition, then legality.
+ * for every store: the version, the activity and awaiting conditions, then
+ * legality.
  */
 export function checkTransition(
   current: ThreadRecord | undefined,
@@ -361,6 +368,13 @@ export function checkTransition(
   if (
     onlyIfLastActiveAt !== undefined &&
     current.lastActivityAt.getTime() !== onlyIfLastActiveAt.getTime()
+  ) {
+    return "conflict";
+  }
+  const { onlyIfAwaitingSupervisorSince } = transition;
+  if (
+    onlyIfAwaitingSupervisorSince !== undefined &&
+    current.awaitingSupervisorSince?.getTime() !== onlyIfAwaitingSupervisorSince.getTime()
   ) {
     return "conflict";
   }

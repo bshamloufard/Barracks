@@ -312,6 +312,7 @@ export class PostgresThreadStore implements ThreadStore {
         where thread_id = $1 and state_version = $2
           and sandbox_state = any($10::text[])
           and ($11::timestamptz is null or last_activity_at = $11)
+          and ($12::timestamptz is null or awaiting_supervisor_since = $12)
         returning ${threadColumns}`,
       [
         transition.threadId,
@@ -325,6 +326,7 @@ export class PostgresThreadStore implements ThreadStore {
         transition.addedSupervisorTokenDigest ?? null,
         statesThatMayBecome(to.state),
         transition.onlyIfLastActiveAt ?? null,
+        transition.onlyIfAwaitingSupervisorSince ?? null,
       ],
     );
     const row = result.rows[0];

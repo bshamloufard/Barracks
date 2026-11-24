@@ -13,7 +13,7 @@ import {
   testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
-import type { ThreadRecord, ThreadSandboxRecord } from "../threads/thread-store.js";
+import type { SandboxState, ThreadRecord, ThreadSandboxRecord } from "../threads/thread-store.js";
 import {
   runEndedBySandboxStoppingMessage,
   sandboxLostReason,
@@ -136,6 +136,32 @@ class ThreadStoreFailingFirstAttachment extends InMemoryThreadStore {
       throw new Error("The database did not answer in time.");
     }
     await super.recordSupervisorAttached(threadId);
+  }
+}
+
+/**
+ * Notes a supervisor attaching, as another control plane would, just after
+ * the next listing of threads is read, so reconciliation acts on a reading
+ * that has just gone stale.
+ */
+class ThreadStoreAttachingAfterListing extends InMemoryThreadStore {
+  #threadIdToAttach: string | undefined;
+
+  attachAfterNextListing(threadId: string): void {
+    this.#threadIdToAttach = threadId;
+  }
+
+  override async listInStates(
+    states: readonly SandboxState[],
+    limit: number,
+  ): Promise<ThreadRecord[]> {
+    const threads = await super.listInStates(states, limit);
+    const threadId = this.#threadIdToAttach;
+    if (threadId !== undefined && states.includes("running")) {
+      this.#threadIdToAttach = undefined;
+      await this.recordSupervisorAttached(threadId);
+    }
+    return threads;
   }
 }
 
@@ -482,6 +508,24 @@ describe("a sandbox whose supervisor never connects", () => {
     expect((await recordedSandboxOf(controlPlane, threadId)).awaitingSupervisorSince).toBe(
       undefined,
     );
+  });
+
+  it("is left running when its supervisor attaches between the deadline being read and acted on", async () => {
+    clock = new ControllableClock();
+    const threadStore = new ThreadStoreAttachingAfterListing();
+    const controlPlane = await TestControlPlane.start({
+      sandboxProvider: new FakeSandboxProvider(),
+      threadStore,
+      clock: clock.now,
+    });
+    controlPlanes.push(controlPlane);
+    const { threadId } = await controlPlane.createThread();
+
+    clock.advanceBy(deadline);
+    threadStore.attachAfterNextListing(threadId);
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
   });
 
   it("is given the whole deadline again when resumed", async () => {

@@ -80,9 +80,10 @@ export class SandboxReconciler {
   }
 
   /**
-   * Moved to `stopping` from the version read, so a supervisor attaching
-   * meanwhile, which does not move the version, still loses the race only
-   * by moments, and two control planes never both stop it.
+   * Moved to `stopping` from the version read, so two control planes never
+   * both stop it, and only while it still awaits its supervisor since the
+   * time read, so a supervisor whose attachment is noted meanwhile, which
+   * does not move the version, still wins.
    *
    * A thread whose supervisor is attached here is never failed for it: the
    * note that it attached was lost (a failed write), and is made again
@@ -113,6 +114,7 @@ export class SandboxReconciler {
         leaseExpiresAt: operations.leaseExpiry(),
       },
       at: clock(),
+      onlyIfAwaitingSupervisorSince: awaitingSupervisorSince,
     });
     if (outcome.kind !== "changed") {
       return;
