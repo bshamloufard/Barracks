@@ -249,7 +249,7 @@ export class ModelProxy {
     const { request, response, target, route, cancellation, logger } = relayed;
     let authorization: Awaited<ReturnType<ModelProxyAuthorization["decide"]>>;
     try {
-      authorization = await this.#options.authorization.decide(target);
+      authorization = await this.#options.authorization.decide(target, body);
     } catch (error) {
       logger.error({ err: error }, "Could not decide whether to relay a model request");
       sendRefusal(response, route.format, proxyRefusals.cannotDecide);

@@ -25,8 +25,19 @@ export class InMemoryModelProxyTokenStore implements ModelProxyTokenStore {
   }
 
   async revokeThread(threadId: string): Promise<void> {
+    this.#removeWhere((token) => token.threadId === threadId);
+  }
+
+  async retainProviders(threadId: string, keptProviderIds: readonly string[]): Promise<void> {
+    this.#removeWhere(
+      (token) => token.threadId === threadId && !keptProviderIds.includes(token.providerId),
+    );
+  }
+
+  #removeWhere(isRemoved: (token: AcceptedModelProxyToken) => boolean): void {
     for (let index = this.#tokens.length - 1; index >= 0; index -= 1) {
-      if (this.#tokens[index]?.threadId === threadId) {
+      const token = this.#tokens[index];
+      if (token !== undefined && isRemoved(token)) {
         this.#tokens.splice(index, 1);
       }
     }

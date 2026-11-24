@@ -142,8 +142,13 @@ export class OwnerModelAccess implements ThreadModelAccess {
     if (!(await this.#options.credentials.has(ownerUserId, providerId))) {
       return null;
     }
+    // A switch retires other providers' tokens, so one handed out before
+    // may no longer be accepted if the thread has switched back since.
     let token = connection.proxyTokens.get(providerId);
-    if (token === undefined) {
+    if (
+      token === undefined ||
+      !(await this.#options.proxyTokens.isAccepted(threadId, providerId, token))
+    ) {
       token = await this.#options.proxyTokens.mint(threadId, providerId);
       connection.proxyTokens.set(providerId, token);
     }

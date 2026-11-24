@@ -3,7 +3,6 @@ import type { UserAdmission } from "../authentication/user-admission.js";
 import type { Logger } from "../logger.js";
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
-import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ThreadEndingListener } from "../thread-relay/thread-relay-registry.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { UserStore } from "../users/user-store.js";
@@ -11,10 +10,11 @@ import { ModelProxy } from "./model-proxy.js";
 import { ModelProxyAuthorization } from "./model-proxy-authorization.js";
 import { defaultModelProxyLimits, type ModelProxyLimits } from "./model-proxy-limits.js";
 import type { ModelProxyTokens } from "./model-proxy-tokens.js";
+import type { ModelSwitchAllowances } from "./model-switch-allowances.js";
 
 export type ModelProxyAssembly = {
   threadStore: ThreadStore;
-  threadEventLog: ThreadEventLog;
+  modelSwitchAllowances: ModelSwitchAllowances;
   userStore: UserStore;
   admission: UserAdmission;
   credentials: ModelCredentials;
@@ -40,7 +40,7 @@ export function assembleModelProxy(assembly: ModelProxyAssembly): ModelProxy {
   const proxy = new ModelProxy({
     authorization: new ModelProxyAuthorization({
       threadStore: assembly.threadStore,
-      threadEventLog: assembly.threadEventLog,
+      modelSwitchAllowances: assembly.modelSwitchAllowances,
       tokens,
       credentials: assembly.credentials,
       ownerAdmission: new OwnerAdmission(assembly.admission, assembly.userStore),

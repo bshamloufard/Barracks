@@ -70,6 +70,11 @@ export class ModelProxyTokens {
   revokeThread(threadId: string): Promise<void> {
     return this.#store.revokeThread(threadId);
   }
+
+  /** Retires the thread's tokens for every provider but these. */
+  retainProviders(threadId: string, keptProviderIds: readonly string[]): Promise<void> {
+    return this.#store.retainProviders(threadId, keptProviderIds);
+  }
 }
 
 function digestToken(token: string): Buffer {

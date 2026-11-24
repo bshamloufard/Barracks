@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
+import type {
+  ModelSwitchAllowance,
+  ModelSwitchAllowanceStore,
+} from "../model-proxy/model-switch-allowance-store.js";
 import type { AnswerUsage, ModelUsageStore } from "../model-usage/model-usage-store.js";
 
 /**
@@ -78,6 +82,71 @@ export function describeModelProxyTokenStoreContract(
       expect(await first.listDigests("thread-a", "anthropic")).toEqual([]);
       expect(await first.listDigests("thread-a", "openai")).toEqual([]);
       expect(await first.listDigests("thread-b", "anthropic")).toEqual([digest(3)]);
+    });
+
+    it("retires a thread's tokens for every provider but those kept, and no other thread's", async () => {
+      const [first, second] = await createStores();
+      for (const [index, providerId] of ["anthropic", "openai", "groq"].entries()) {
+        await first.accept({
+          threadId: "thread-a",
+          providerId,
+          digest: digest(index),
+          mintedAt: at(0),
+        });
+      }
+      await first.accept({
+        threadId: "thread-b",
+        providerId: "groq",
+        digest: digest(9),
+        mintedAt: at(0),
+      });
+
+      await second.retainProviders("thread-a", ["openai"]);
+
+      expect(await first.listDigests("thread-a", "anthropic")).toEqual([]);
+      expect(await first.listDigests("thread-a", "openai")).toEqual([digest(1)]);
+      expect(await first.listDigests("thread-a", "groq")).toEqual([]);
+      expect(await first.listDigests("thread-b", "groq")).toEqual([digest(9)]);
+    });
+  });
+}
+
+export function describeModelSwitchAllowanceStoreContract(
+  implementationName: string,
+  createStores: () => Promise<[ModelSwitchAllowanceStore, ModelSwitchAllowanceStore]>,
+): void {
+  describe(`${implementationName} as a model switch allowance store`, () => {
+    const allowance = (overrides: Partial<ModelSwitchAllowance> = {}): ModelSwitchAllowance => ({
+      threadId: "thread-a",
+      previousModel: "anthropic/model-before",
+      runStartedAtSequence: 7,
+      allowedUntil: new Date(Date.UTC(2026, 10, 24, 12, 30)),
+      ...overrides,
+    });
+
+    it("keeps one allowance per thread, the newest, seen from either instance", async () => {
+      const [first, second] = await createStores();
+
+      await first.save(allowance());
+      await first.save(allowance({ previousModel: "openai/model-later", runStartedAtSequence: 9 }));
+      await first.save(allowance({ threadId: "thread-b" }));
+
+      expect(await second.find("thread-a")).toEqual(
+        allowance({ previousModel: "openai/model-later", runStartedAtSequence: 9 }),
+      );
+      expect(await second.find("thread-b")).toEqual(allowance({ threadId: "thread-b" }));
+    });
+
+    it("removes a thread's allowance, and no other's", async () => {
+      const [first, second] = await createStores();
+      await first.save(allowance());
+      await first.save(allowance({ threadId: "thread-b" }));
+
+      await second.remove("thread-a");
+      await second.remove("thread-a");
+
+      expect(await first.find("thread-a")).toBeUndefined();
+      expect(await first.find("thread-b")).toEqual(allowance({ threadId: "thread-b" }));
     });
   });
 }

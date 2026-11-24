@@ -28,9 +28,12 @@ import { ModelCredentials } from "../model-access/model-credentials.js";
 import { OwnerModelAccess } from "../model-access/owner-model-access.js";
 import { assembleModelProxy } from "../model-proxy/assemble-model-proxy.js";
 import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
 import type { ModelProxyLimits } from "../model-proxy/model-proxy-limits.js";
 import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
 import { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
+import type { ModelSwitchAllowanceStore } from "../model-proxy/model-switch-allowance-store.js";
+import { ModelSwitchAllowances } from "../model-proxy/model-switch-allowances.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import { ModelUsage, type ModelUsageCapSettings } from "../model-usage/model-usage.js";
 import type { ModelUsageStore } from "../model-usage/model-usage-store.js";
@@ -118,6 +121,7 @@ export type TestControlPlaneOptions = {
   modelCredentialStore?: ModelCredentialStore;
   /** Defaults to an in-memory store. */
   modelProxyTokenStore?: ModelProxyTokenStore;
+  modelSwitchAllowanceStore?: ModelSwitchAllowanceStore;
   /** Defaults to an in-memory store. */
   modelUsageStore?: ModelUsageStore;
   /** No cap by default, over a day. */
@@ -241,6 +245,12 @@ export class TestControlPlane {
     const modelProxyTokens = new ModelProxyTokens(
       options.modelProxyTokenStore ?? new InMemoryModelProxyTokenStore(),
     );
+    const modelSwitchAllowances = new ModelSwitchAllowances({
+      store: options.modelSwitchAllowanceStore ?? new InMemoryModelSwitchAllowanceStore(),
+      threadEventLog,
+      tokens: modelProxyTokens,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
     const modelUsage = new ModelUsage({
       store: options.modelUsageStore ?? new InMemoryModelUsageStore(),
       settings: { installationCapTokens: undefined, windowHours: 24, ...options.modelUsageCap },
@@ -281,7 +291,7 @@ export class TestControlPlane {
     );
     const modelProxy = assembleModelProxy({
       threadStore,
-      threadEventLog,
+      modelSwitchAllowances,
       userStore,
       admission,
       credentials: modelCredentials,
@@ -307,7 +317,7 @@ export class TestControlPlane {
       repositoryServices,
       modelAccess: {
         credentials: modelCredentials,
-        changes: new ModelAccessChanges(threadStore, threadServices.relays),
+        changes: new ModelAccessChanges(threadStore, threadServices.relays, modelSwitchAllowances),
         isModelRequired,
       },
       modelProxy,

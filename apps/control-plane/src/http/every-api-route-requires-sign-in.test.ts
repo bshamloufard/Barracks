@@ -12,6 +12,10 @@ import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import { ModelCredentials } from "../model-access/model-credentials.js";
+import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
+import { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
+import { ModelSwitchAllowances } from "../model-proxy/model-switch-allowances.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import { ModelUsage } from "../model-usage/model-usage.js";
 import { assembleRepositoryServices } from "../repositories/assemble-repository-services.js";
@@ -87,7 +91,15 @@ function createApp() {
           store: new InMemoryModelCredentialStore(new CredentialKeyring(Buffer.alloc(32, 1))),
           logger,
         }),
-        changes: new ModelAccessChanges(threadStore, relays),
+        changes: new ModelAccessChanges(
+          threadStore,
+          relays,
+          new ModelSwitchAllowances({
+            store: new InMemoryModelSwitchAllowanceStore(),
+            threadEventLog,
+            tokens: new ModelProxyTokens(new InMemoryModelProxyTokenStore()),
+          }),
+        ),
         isModelRequired: true,
       },
       logger,

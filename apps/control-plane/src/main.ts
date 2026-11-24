@@ -11,6 +11,7 @@ import { ModelCredentials } from "./model-access/model-credentials.js";
 import { OwnerModelAccess } from "./model-access/owner-model-access.js";
 import { assembleModelProxy } from "./model-proxy/assemble-model-proxy.js";
 import { ModelProxyTokens } from "./model-proxy/model-proxy-tokens.js";
+import { ModelSwitchAllowances } from "./model-proxy/model-switch-allowances.js";
 import { ModelUsage } from "./model-usage/model-usage.js";
 import {
   defaultGitChildLimits,
@@ -57,6 +58,11 @@ async function main(): Promise<void> {
     logger,
   );
   const proxyTokens = new ModelProxyTokens(storage.modelProxyTokenStore);
+  const modelSwitchAllowances = new ModelSwitchAllowances({
+    store: storage.modelSwitchAllowanceStore,
+    threadEventLog: storage.threadEventLog,
+    tokens: proxyTokens,
+  });
   const modelUsage = new ModelUsage({
     store: storage.modelUsageStore,
     settings: configuration.modelUsageCap,
@@ -91,7 +97,7 @@ async function main(): Promise<void> {
   });
   const modelProxy = assembleModelProxy({
     threadStore: storage.threadStore,
-    threadEventLog: storage.threadEventLog,
+    modelSwitchAllowances,
     userStore: storage.userStore,
     admission: authentication.admission,
     credentials,
@@ -111,7 +117,11 @@ async function main(): Promise<void> {
     repositoryServices,
     modelAccess: {
       credentials,
-      changes: new ModelAccessChanges(storage.threadStore, threadServices.relays),
+      changes: new ModelAccessChanges(
+        storage.threadStore,
+        threadServices.relays,
+        modelSwitchAllowances,
+      ),
       isModelRequired,
     },
     modelProxy,

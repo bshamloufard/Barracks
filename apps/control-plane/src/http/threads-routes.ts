@@ -189,19 +189,19 @@ async function changeModel(
   const { model } = request.data;
   const { credentials, changes } = dependencies.modelAccess;
   try {
-    if ((await dependencies.threadStore.findOwnedBy(userId, threadId)) === undefined) {
+    const owned = await dependencies.threadStore.findOwnedBy(userId, threadId);
+    if (owned === undefined) {
       return respondThreadNotFound(context, threadId);
     }
     const missing = await credentials.describeMissingCredential(userId, model, "switch again");
     if (missing !== undefined) {
       return respondWithApiError(context, 409, "model_credential_missing", missing);
     }
-    const thread = await dependencies.threadStore.changeModel(userId, threadId, model);
+    const thread = await changes.switchThreadModel(userId, threadId, owned.model, model);
     if (thread === undefined) {
       return respondThreadNotFound(context, threadId);
     }
     dependencies.logger.info({ threadId, model }, "Switched a thread's model");
-    changes.threadModelChanged(threadId);
     return await respondWithThread(context, thread, 200, dependencies);
   } catch (error) {
     dependencies.logger.error({ err: error, threadId }, "Could not switch a thread's model");

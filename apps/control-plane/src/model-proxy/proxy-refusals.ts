@@ -104,6 +104,14 @@ export function credentialMissingRefusal(providerId: string): ProxyRefusal {
   };
 }
 
+export function modelRefusal(threadModel: string): ProxyRefusal {
+  return {
+    status: 403,
+    errorType: "permission_error",
+    message: `Barrack's model proxy relays this thread's requests only for its own model, "${threadModel}", and this request names another.`,
+  };
+}
+
 export function usageCapRefusal(explanation: string): ProxyRefusal {
   return { status: 403, errorType: "permission_error", message: explanation };
 }
