@@ -1,0 +1,26 @@
+{
+  "name": "@barrack/control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Relays between thread sandbox supervisors and clients, recording every thread event before it is shown.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --project tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@barrack/protocol": "workspace:*",
+    "@hono/node-server": "2.1.11",
+    "hono": "4.13.21",
+    "pino": "10.4.0",
+    "ws": "8.23.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2",
+    "tsx": "4.23.15"
+  }
+}
