@@ -1,13 +1,29 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { planDesktopReply, type ScriptedReply } from "./desktop-scripts.js";
+import {
+  type ChatMessage,
+  createReplyWriter,
+  describeUsage,
+  type MockFailureKind,
+  type MockUsage,
+  type ReplyWriter,
+  readConversation,
+  readCredential,
+  type WireFormat,
+  wireFormatOf,
+  writeFailure,
+} from "./wire-formats.js";
 
 export { desktopTestPageColours, desktopTriggers } from "./desktop-scripts.js";
+export type { ChatMessage, MockUsage, WireFormat } from "./wire-formats.js";
 
 /**
- * A stand-in for an OpenAI-compatible model, so tests can run the real Pi
- * with no network and no API key. It streams chat completions as server-sent
- * events, the way Pi's `openai-completions` API expects:
- * https://platform.openai.com/docs/api-reference/chat-streaming
+ * A stand-in for a model provider, so tests can run the real Pi with no
+ * network and no API key. It speaks three providers' wire formats (see
+ * `wire-formats.ts`), told apart by path: OpenAI's Chat Completions
+ * (`…/chat/completions`), Anthropic's Messages (`…/v1/messages`) and
+ * OpenAI's Responses (`…/responses`), streaming each answer as that
+ * provider does, with its usage.
  *
  * What it says depends on the newest user message:
  * - containing `RUN_TOOL`: a `bash` tool call that runs `echo hi`;
@@ -21,7 +37,8 @@ export { desktopTestPageColours, desktopTriggers } from "./desktop-scripts.js";
  *   retries run out;
  * - containing `REJECT_KEY`: an invalid key error, which Pi does not retry;
  * - containing `EXHAUST_QUOTA`: an exhausted quota error (status 429, as
- *   OpenAI sends it), which Pi does not retry either;
+ *   OpenAI sends it; Anthropic's credit message with 400), which Pi does
+ *   not retry either;
  * - containing `RATE_LIMIT`: a rate limit error every time, which Pi retries
  *   until its retries run out;
  * - containing `OVERFLOW_ONCE`: a context overflow error the first time, so
@@ -29,14 +46,13 @@ export { desktopTestPageColours, desktopTriggers } from "./desktop-scripts.js";
  * - containing `REPLY_SLOWLY`: a long reply, one word every 100 ms, so a test
  *   can act while the agent is busy;
  * - anything else: "Hello there.".
- * The agent's computer tool has scripts of its own (`desktop-scripts.ts`).
- * A tool result gets the reply "Done.".
+ * The agent's computer tool has scripts of its own (`desktop-scripts.ts`),
+ * in the Chat Completions format. A tool result gets the reply "Done.".
  *
- * Every request's credential (its `Authorization: Bearer` value) is
- * recorded, and a test can declare a credential's quota exhausted, so that
- * every request presenting it fails as `EXHAUST_QUOTA` does. The error
- * bodies are OpenAI's own, as its API documents them:
- * https://platform.openai.com/docs/guides/error-codes
+ * Every request is recorded: its format, path, credential (`x-api-key` or
+ * `Authorization: Bearer`), model, headers, and the usage its answer
+ * reported. A test can declare a credential's quota exhausted, so that
+ * every request presenting it fails as `EXHAUST_QUOTA` does.
  */
 export const mockModelTriggers = {
   toolExecution: "RUN_TOOL",
@@ -54,38 +70,30 @@ export const mockModelTriggers = {
 const slowReplyWordCount = 50;
 const slowReplyWordDelayInMilliseconds = 100;
 
-type MockFailure = { statusCode: number; message: string; type?: string; code?: string };
-
-const overloadedFailure: MockFailure = { statusCode: 503, message: "The model is overloaded." };
-const invalidKeyFailure: MockFailure = {
-  statusCode: 401,
-  message: "Incorrect API key provided",
-  type: "invalid_request_error",
-  code: "invalid_api_key",
+/** One request as the mock received it, and how it answered. */
+export type ReceivedModelRequest = {
+  format: WireFormat;
+  /** The path and query it was sent to. */
+  target: string;
+  credential: string | undefined;
+  model: string;
+  /** Every header, by lower-case name. */
+  headers: Record<string, string | string[] | undefined>;
+  conversation: ChatMessage[];
+  /** What its answer reported using, in Barrack's terms; undefined if it failed or was cut off. */
+  usage: MockUsage | undefined;
+  /** Whether the client hung up before the answer ended. */
+  wasAbandoned: boolean;
 };
-const exhaustedQuotaFailure: MockFailure = {
-  statusCode: 429,
-  message: "You exceeded your current quota, please check your plan and billing details.",
-  type: "insufficient_quota",
-  code: "insufficient_quota",
-};
-const rateLimitFailure: MockFailure = {
-  statusCode: 429,
-  message: "Rate limit reached for requests",
-  type: "requests",
-  code: "rate_limit_exceeded",
-};
-const contextOverflowFailure: MockFailure = {
-  statusCode: 400,
-  message: "Your input exceeds the context window of this model.",
-};
-
-export type ChatMessage = { role: string; content: unknown };
 
 export type MockModelServer = {
   /** The `baseUrl` for Pi's models.json, ending in `/v1`. */
   baseUrl: string;
+  /** `http://host:port`, for pointing the model proxy at the mock. */
+  origin: string;
   port: number;
+  /** Every request received, oldest first. */
+  receivedRequests: ReceivedModelRequest[];
   /** The messages of every request received, oldest request first. */
   receivedConversations: ChatMessage[][];
   /** The credential each of those requests presented, or undefined for none. */
@@ -97,117 +105,124 @@ export type MockModelServer = {
   close(): Promise<void>;
 };
 
-type ReceivedRequests = Pick<
-  MockModelServer,
-  "receivedConversations" | "receivedCredentials" | "receivedModels"
-> & { exhaustedCredentials: Set<string> };
-
-type ChunkWriter = (delta: object, finishReason: string | null) => void;
-type ReplyWriter = { writeChunk: ChunkWriter; hasClientLeft: () => boolean };
+type ReceivedState = {
+  requests: ReceivedModelRequest[];
+  exhaustedCredentials: Set<string>;
+};
 
 /**
  * Listens on loopback unless given another local address, such as the one
  * Docker containers reach the host on.
  */
 export async function startMockModelServer(host = "127.0.0.1"): Promise<MockModelServer> {
-  const received: ReceivedRequests = {
-    receivedConversations: [],
-    receivedCredentials: [],
-    receivedModels: [],
-    exhaustedCredentials: new Set(),
-  };
+  const state: ReceivedState = { requests: [], exhaustedCredentials: new Set() };
   const server = createServer((request, response) => {
-    void answerRequest(request, response, received);
+    void answerRequest(request, response, state);
   });
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const address = server.address();
   if (address === null || typeof address === "string") {
     throw new Error("The mock model server is not listening on a TCP port.");
   }
+  const origin = `http://${host}:${address.port}`;
   return {
-    baseUrl: `http://${host}:${address.port}/v1`,
+    baseUrl: `${origin}/v1`,
+    origin,
     port: address.port,
-    receivedConversations: received.receivedConversations,
-    receivedCredentials: received.receivedCredentials,
-    receivedModels: received.receivedModels,
-    exhaustQuotaOf: (credential) => received.exhaustedCredentials.add(credential),
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    receivedRequests: state.requests,
+    get receivedConversations() {
+      return state.requests.map((request) => request.conversation);
+    },
+    get receivedCredentials() {
+      return state.requests.map((request) => request.credential);
+    },
+    get receivedModels() {
+      return state.requests.map((request) => request.model);
+    },
+    exhaustQuotaOf: (credential) => state.exhaustedCredentials.add(credential),
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }
 
 async function answerRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  received: ReceivedRequests,
+  state: ReceivedState,
 ): Promise<void> {
-  if (!request.url?.endsWith("/chat/completions")) {
+  const format = wireFormatOf(request.url);
+  if (format === undefined || request.method !== "POST") {
     response.writeHead(404).end();
     return;
   }
-  const body: { model: string; messages: ChatMessage[] } = JSON.parse(await readBody(request));
-  const credential = readBearerCredential(request);
-  received.receivedConversations.push(body.messages);
-  received.receivedCredentials.push(credential);
-  received.receivedModels.push(body.model);
-  const failure =
-    credential !== undefined && received.exhaustedCredentials.has(credential)
-      ? exhaustedQuotaFailure
-      : chooseFailure(body.messages, received.receivedConversations);
+  const body = JSON.parse(await readBody(request));
+  const conversation = readConversation(format, body);
+  const received: ReceivedModelRequest = {
+    format,
+    target: request.url ?? "",
+    credential: readCredential(request),
+    model: body.model,
+    headers: { ...request.headers },
+    conversation,
+    usage: undefined,
+    wasAbandoned: false,
+  };
+  state.requests.push(received);
+  const failure = chooseFailure(received, state);
   if (failure !== undefined) {
-    const { statusCode, ...error } = failure;
-    response.writeHead(statusCode, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error }));
+    writeFailure(response, format, failure);
     return;
   }
-  response.writeHead(200, { "content-type": "text/event-stream" });
-  const writeChunk: ChunkWriter = (delta, finishReason) => {
-    const chunk = {
-      id: "mock-completion",
-      object: "chat.completion.chunk",
-      created: 0,
-      model: body.model,
-      choices: [{ index: 0, delta, finish_reason: finishReason }],
-    };
-    response.write(`data: ${JSON.stringify(chunk)}\n\n`);
-  };
-  const replyWriter = { writeChunk, hasClientLeft: () => response.destroyed };
-  const desktopReply = planDesktopReply(body.messages);
-  if (desktopReply === undefined) {
-    await writeReply(body.messages.at(-1), replyWriter);
-  } else {
-    await writeScriptedReply(desktopReply, replyWriter, body.messages.length);
+  const writer = createReplyWriter(format, response, body.model, (outputPieces) =>
+    describeUsage(format, conversation, outputPieces),
+  );
+  const desktopReply = format === "chat_completions" ? planDesktopReply(conversation) : undefined;
+  const endReason =
+    desktopReply === undefined
+      ? await writeReply(conversation.at(-1), writer)
+      : writeScriptedReply(desktopReply, writer, conversation.length);
+  if (endReason === "abandoned") {
+    received.wasAbandoned = true;
+    return;
   }
-  response.end("data: [DONE]\n\n");
+  writer.finish(endReason);
+  received.usage = describeUsage(format, conversation, writer.outputPieces);
 }
 
-/** `receivedConversations` includes this request's. */
+/** `state.requests` includes this request. */
 function chooseFailure(
-  messages: ChatMessage[],
-  receivedConversations: ChatMessage[][],
-): MockFailure | undefined {
-  const lastUserText = describeUserMessage(messages.at(-1));
+  received: ReceivedModelRequest,
+  state: ReceivedState,
+): MockFailureKind | undefined {
+  if (received.credential !== undefined && state.exhaustedCredentials.has(received.credential)) {
+    return "exhausted_quota";
+  }
+  const lastUserText = describeUserMessage(received.conversation.at(-1));
   if (lastUserText.includes(mockModelTriggers.invalidKey)) {
-    return invalidKeyFailure;
+    return "invalid_key";
   }
   if (lastUserText.includes(mockModelTriggers.persistentFailure)) {
-    return overloadedFailure;
+    return "overloaded";
   }
   if (lastUserText.includes(mockModelTriggers.exhaustedQuota)) {
-    return exhaustedQuotaFailure;
+    return "exhausted_quota";
   }
   if (lastUserText.includes(mockModelTriggers.rateLimit)) {
-    return rateLimitFailure;
+    return "rate_limit";
   }
   const isFirstRequestWith = (trigger: string) =>
     lastUserText.includes(trigger) &&
-    receivedConversations.filter((conversation) =>
-      describeUserMessage(conversation.at(-1)).includes(trigger),
+    state.requests.filter((request) =>
+      describeUserMessage(request.conversation.at(-1)).includes(trigger),
     ).length === 1;
   if (isFirstRequestWith(mockModelTriggers.transientFailure)) {
-    return overloadedFailure;
+    return "overloaded";
   }
   if (isFirstRequestWith(mockModelTriggers.contextOverflow)) {
-    return contextOverflowFailure;
+    return "context_overflow";
   }
   return undefined;
 }
@@ -236,92 +251,66 @@ function readUserText(message: ChatMessage | undefined): string {
 
 async function writeReply(
   lastMessage: ChatMessage | undefined,
-  replyWriter: ReplyWriter,
-): Promise<void> {
+  writer: ReplyWriter,
+): Promise<"stop" | "tool_use" | "abandoned"> {
   const lastUserText = describeUserMessage(lastMessage);
-  const { writeChunk } = replyWriter;
   const commandRequest = readUserText(lastMessage);
   if (commandRequest.startsWith(mockModelTriggers.command)) {
-    writeBashCall(writeChunk, commandRequest.slice(mockModelTriggers.command.length));
-  } else if (lastUserText.includes(mockModelTriggers.toolExecution)) {
-    writeBashCall(writeChunk, "echo hi");
-  } else if (lastUserText.includes(mockModelTriggers.crash)) {
-    writeBashCall(writeChunk, "kill -9 $PPID");
-  } else if (lastUserText.includes(mockModelTriggers.slowReply)) {
-    const words = Array.from({ length: slowReplyWordCount }, (_, index) => `word${index} `);
-    await writeTextReply(replyWriter, words, slowReplyWordDelayInMilliseconds);
-  } else {
-    const words = lastMessage?.role === "tool" ? ["Done", "."] : ["Hello", " there."];
-    await writeTextReply(replyWriter, words, 0);
+    return writeBashCall(writer, commandRequest.slice(mockModelTriggers.command.length));
   }
+  if (lastUserText.includes(mockModelTriggers.toolExecution)) {
+    return writeBashCall(writer, "echo hi");
+  }
+  if (lastUserText.includes(mockModelTriggers.crash)) {
+    return writeBashCall(writer, "kill -9 $PPID");
+  }
+  if (lastUserText.includes(mockModelTriggers.slowReply)) {
+    const words = Array.from({ length: slowReplyWordCount }, (_, index) => `word${index} `);
+    return writeTextReply(writer, words, slowReplyWordDelayInMilliseconds);
+  }
+  const words = lastMessage?.role === "tool" ? ["Done", "."] : ["Hello", " there."];
+  return writeTextReply(writer, words, 0);
 }
 
 async function writeTextReply(
-  { writeChunk, hasClientLeft }: ReplyWriter,
+  writer: ReplyWriter,
   words: string[],
   wordDelayInMilliseconds: number,
-): Promise<void> {
-  writeChunk({ role: "assistant", content: "" }, null);
+): Promise<"stop" | "abandoned"> {
   for (const word of words) {
     if (wordDelayInMilliseconds > 0) {
       await new Promise((resolve) => setTimeout(resolve, wordDelayInMilliseconds));
     }
-    if (hasClientLeft()) {
-      return;
+    if (writer.hasClientLeft()) {
+      return "abandoned";
     }
-    writeChunk({ content: word }, null);
+    writer.writeText(word);
   }
-  writeChunk({}, "stop");
+  return "stop";
 }
 
-function writeBashCall(writeChunk: ChunkWriter, command: string): void {
-  writeToolCall(writeChunk, {
+function writeBashCall(writer: ReplyWriter, command: string): "tool_use" {
+  writer.writeToolCall({
     text: "Running it.",
     toolName: "bash",
     toolArguments: { command },
     toolCallId: "call_1",
   });
-}
-
-function writeToolCall(
-  writeChunk: ChunkWriter,
-  call: { text: string; toolName: string; toolArguments: object; toolCallId: string },
-): void {
-  writeChunk({ role: "assistant", content: call.text }, null);
-  writeChunk(
-    {
-      tool_calls: [
-        {
-          index: 0,
-          id: call.toolCallId,
-          type: "function",
-          function: { name: call.toolName, arguments: "" },
-        },
-      ],
-    },
-    null,
-  );
-  const toolArguments = JSON.stringify(call.toolArguments);
-  writeChunk({ tool_calls: [{ index: 0, function: { arguments: toolArguments } }] }, null);
-  writeChunk({}, "tool_calls");
+  return "tool_use";
 }
 
 /** A step of a desktop script; each tool call is named after its place in the conversation. */
-async function writeScriptedReply(
+function writeScriptedReply(
   reply: ScriptedReply,
-  replyWriter: ReplyWriter,
+  writer: ReplyWriter,
   conversationLength: number,
-): Promise<void> {
+): "stop" | "tool_use" {
   if (reply.kind === "text") {
-    await writeTextReply(replyWriter, [reply.text], 0);
-    return;
+    writer.writeText(reply.text);
+    return "stop";
   }
-  writeToolCall(replyWriter.writeChunk, { ...reply, toolCallId: `call_${conversationLength}` });
-}
-
-function readBearerCredential(request: IncomingMessage): string | undefined {
-  const { authorization } = request.headers;
-  return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+  writer.writeToolCall({ ...reply, toolCallId: `call_${conversationLength}` });
+  return "tool_use";
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {
