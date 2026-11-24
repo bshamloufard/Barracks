@@ -16,9 +16,11 @@
  * - `provider`, the hosts to prefer, allow, ignore or sort by: relayed,
  *   but for its `options`, settings forwarded to a host as they stand,
  *   which could change anything: refused.
- * - `plugins`: relayed only if each is one that picks no model (`web`
- *   search, `file-parser` for documents, `response-healing`); any other,
- *   such as `auto-router`, refused.
+ * - `plugins`, every one: some choose the model (`auto-router`), and the
+ *   rest are charges per call that the cap does not count (web search per
+ *   request, file parsing per page;
+ *   https://openrouter.ai/docs/guides/features/plugins). The pinned agent
+ *   never sends any.
  * - A model suffix such as `:nitro`, `:floor` or `:free`: the model check
  *   refuses any model other than the thread's own, suffix and all.
  * - Anthropic-format `fallbacks`: may name only the thread's own model
@@ -36,9 +38,7 @@ export type OpenRouterRoutingFields = Partial<
   Record<(typeof openRouterRoutingFields)[number], unknown>
 >;
 
-const pluginsThatPickNoModel = new Set(["web", "file-parser", "response-healing"]);
-
-/** Why the request could be answered by another model than it names, if it could. */
+/** Why the request could be answered by another model than it names, or run plugins, if it could. */
 export function findModelChangingRouting(fields: OpenRouterRoutingFields): string | undefined {
   if (isSet(fields.models)) {
     return "it names other models to fall back to (`models`)";
@@ -52,20 +52,10 @@ export function findModelChangingRouting(fields: OpenRouterRoutingFields): strin
   if (isObject(fields.provider) && isSet(fields.provider.options)) {
     return "it sets options forwarded to a host as they stand (`provider.options`)";
   }
-  if (isSet(fields.plugins) && !arePluginsThatPickNoModel(fields.plugins)) {
-    return "it asks for a plugin that may choose the model (`plugins`)";
+  if (isSet(fields.plugins)) {
+    return "it asks for plugins (`plugins`)";
   }
   return undefined;
-}
-
-function arePluginsThatPickNoModel(plugins: unknown): boolean {
-  return (
-    Array.isArray(plugins) &&
-    plugins.every(
-      (plugin: unknown) =>
-        isObject(plugin) && typeof plugin.id === "string" && pluginsThatPickNoModel.has(plugin.id),
-    )
-  );
 }
 
 /** Present with any value but `null`, which a provider takes as unset. */
@@ -73,6 +63,6 @@ function isSet(value: unknown): boolean {
   return value !== undefined && value !== null;
 }
 
-function isObject(value: unknown): value is Partial<Record<"options" | "id", unknown>> {
+function isObject(value: unknown): value is Partial<Record<"options", unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

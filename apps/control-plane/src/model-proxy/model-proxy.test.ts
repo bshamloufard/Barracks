@@ -739,20 +739,22 @@ describe("the model proxy", () => {
       await chat({ model: `${model}:nitro` }),
       await chat({ provider: { options: { anthropic: { model: "the-dearest-model" } } } }),
       await chat({ plugins: [{ id: "auto-router", allowed_models: ["*"] }] }),
+      // Plugins the agent never sends, each a charge per call the cap does not count.
+      await chat({ plugins: [{ id: "web" }] }),
+      await chat({ plugins: [{ id: "file-parser" }] }),
       await messages({ fallbacks: [{ model: "openai/the-dearest-model" }] }),
     ];
     const allowed = [
       await chat({ provider: { order: ["a-host", "another-host"], allow_fallbacks: true } }),
-      await chat({ plugins: [{ id: "web" }] }),
       await messages({ fallbacks: [{ model }] }),
     ];
 
-    expect(refusals.map((response) => response.status)).toEqual(Array(8).fill(403));
+    expect(refusals.map((response) => response.status)).toEqual(Array(10).fill(403));
     for (const response of allowed) {
       await readWholeAnswer(response);
     }
-    expect(allowed.map((response) => response.status)).toEqual([200, 200, 200]);
-    expect(modelServer.receivedModels).toEqual([model, model, model]);
+    expect(allowed.map((response) => response.status)).toEqual([200, 200]);
+    expect(modelServer.receivedModels).toEqual([model, model]);
   });
 
   it("keeps the model before a switch usable for the run then open, and for no later run", async () => {

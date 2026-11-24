@@ -64,7 +64,7 @@ export const proxyRefusals = {
     status: 403,
     errorType: "permission_error",
     message:
-      "Barrack's model proxy relays this thread's requests only to its own model, and this request could be answered by another (OpenRouter's models, route, preset, provider options or a model-choosing plugin).",
+      "Barrack's model proxy relays this thread's requests only to its own model, without OpenRouter's plugins, and this request asks for another model or a plugin (OpenRouter's models, route, preset, provider options or plugins).",
   },
   requestTooLarge: {
     status: 413,
