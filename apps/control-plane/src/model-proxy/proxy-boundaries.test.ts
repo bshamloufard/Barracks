@@ -120,6 +120,62 @@ describe("what the proxy reads from a request's body", () => {
   });
 });
 
+/**
+ * Some providers' JSON decoders match a field's name regardless of case,
+ * and fold Unicode as they do (Go's `encoding/json` reads `ſtream`, with a
+ * long s, as `stream`), so a key the proxy does not read could be read
+ * there as one it does.
+ */
+describe("keys a provider might read as ones the proxy reads", () => {
+  function refusalOf(
+    body: string,
+    format: Parameters<typeof inspectWholeBody>[0] = "openai_chat_completions",
+  ) {
+    const inspection = inspectWholeBody(format, body);
+    return inspection.kind === "refused" ? inspection.reason : inspection.kind;
+  }
+
+  it.each([
+    ["another case of a key read", '{"model":"m","Model":"the-dearest-model","messages":[]}'],
+    ["only another case of a key read", '{"MODEL":"m","model":"m","messages":[]}'],
+    ["a Kelvin sign for a k", '{"model":"m","max_tokens":1,"max_toKens":100000}'],
+    ["a long s for an s", '{"model":"m","ſtream":true,"messages":[]}'],
+    ["a full-width letter", '{"model":"m","ｍax_tokens":100000,"messages":[]}'],
+    ["a key read, alone, in capitals", '{"model":"m","MAX_TOKENS":100000,"messages":[]}'],
+  ])("refuses %s at the top level", (_description, body) => {
+    expect(refusalOf(body)).toMatch(/spell/);
+  });
+
+  it("refuses two keys of the body that a provider could read as one, even keys the proxy does not read", () => {
+    expect(refusalOf('{"model":"m","temperature":0,"Temperature":2,"messages":[]}')).toMatch(
+      /spell/,
+    );
+    expect(refusalOf('{"model":"m","Messages":[],"messages":[]}')).toMatch(/spell/);
+  });
+
+  it.each([
+    [
+      "stream_options",
+      '{"model":"m","stream":true,"stream_options":{"include_usage":true,"INCLUDE_USAGE":false}}',
+    ],
+    ["thinking", '{"model":"m","thinking":{"TYPE":"enabled"},"messages":[]}'],
+    [
+      "reasoning, nested deeper",
+      '{"model":"m","reasoning":{"a":[{"Effort":"none"}]},"messages":[]}',
+    ],
+  ])("refuses a key not in its folded form inside %s, a member the proxy reads", (_name, body) => {
+    expect(refusalOf(body)).toMatch(/spell/);
+  });
+
+  it("relays keys the proxy does not read in any case, and an escaped spelling of a key it reads", () => {
+    expect(refusalOf('{"model":"m","Metadata":{},"messages":[{"Role":"user"}]}')).toBe("relayable");
+    expect(refusalOf('{"mod\\u0065l":"m","messages":[]}')).toBe("relayable");
+    expect(refusalOf('{"model":"m","stream":true,"stream_options":{"include_usage":true}}')).toBe(
+      "relayable",
+    );
+  });
+});
+
 describe("the headers that cross the proxy", () => {
   it("takes the agent's token from either header its clients use", () => {
     expect(readPresentedToken({ "x-api-key": "token-a" })).toBe("token-a");

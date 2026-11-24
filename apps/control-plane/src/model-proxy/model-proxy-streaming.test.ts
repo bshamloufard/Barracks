@@ -161,6 +161,10 @@ describe("the model proxy as a streaming path", () => {
     ["is not an object", "[1]"],
     ["names no model", '{"max_tokens":5,"messages":[]}'],
     ["names its model twice", '{"model":"another-model","model":"a-model","max_tokens":5}'],
+    [
+      "names its model again in another case",
+      '{"model":"a-model","Model":"another-model","max_tokens":5}',
+    ],
     ["is not UTF-8", Buffer.from([...Buffer.from('{"model":"a-model","x":"'), 0xff, 0x22, 0x7d])],
   ])("refuses a body that %s, sending the provider nothing", async (_description, body) => {
     let upstreamRequests = 0;
