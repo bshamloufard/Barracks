@@ -12,3 +12,4 @@ export * from "./sequence.js";
 export * from "./stream-fragments.js";
 export * from "./supervisor-messages.js";
 export * from "./thread-events.js";
+export * from "./threads-api.js";
