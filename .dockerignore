@@ -1,11 +1,16 @@
-# Only what sandbox-image/Dockerfile copies is sent to the Docker daemon,
-# so unrelated changes never invalidate the image's cached layers.
+# Two images are built from the repository root: the control plane's
+# (Dockerfile) and the sandbox's (sandbox-image/Dockerfile). Only what they
+# copy is sent to the Docker daemon, which keeps the build context small and
+# keeps local build output and dependencies out of it.
 *
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !tsconfig.base.json
 !packages/protocol
+!packages/sandbox-providers
+!apps/control-plane
+!apps/web
 !apps/sandbox-supervisor
 !sandbox-image
 **/node_modules
