@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { threadIdSchema } from "./identifier.js";
 import { maximumErrorMessageLength } from "./limits.js";
+import {
+  commitIdSchema,
+  threadRepositoryRequestSchema,
+  threadRepositorySummarySchema,
+} from "./repositories.js";
 
 /**
  * The control plane's HTTP API for threads: create one, list them, fetch
@@ -9,9 +14,11 @@ import { maximumErrorMessageLength } from "./limits.js";
  * through these schemas, so the shapes are defined once, like the WebSocket
  * messages.
  *
- * - `POST /api/threads` with `{}`: create (201), or 409
- *   `sandbox_limit_reached` when the user already runs as many sandboxes as
- *   allowed, saying which.
+ * - `POST /api/threads` with `{}`, or `{ "repository": … }` to start from a
+ *   Git repository: create (201), or 409 `sandbox_limit_reached` when the
+ *   user already runs as many sandboxes as allowed, saying which; 400 for a
+ *   repository URL Barrack does not accept, 403 `repository_not_allowed`
+ *   for a repository the user has not been verified to have access to.
  * - `GET /api/threads`: the user's threads, the most recently active first.
  * - `GET /api/threads/{threadId}`: one thread.
  * - `POST /api/threads/{threadId}/stop` with `{}`: stop its sandbox, files
@@ -22,6 +29,12 @@ import { maximumErrorMessageLength } from "./limits.js";
  * - `DELETE /api/threads/{threadId}`: destroy its sandbox and remove it and
  *   its history for good (202, then it disappears). 409 `conflict` while its
  *   sandbox is starting or stopping.
+ * - `POST /api/threads/{threadId}/publication` with
+ *   `{ "openPullRequest": boolean }`: push the work branch to the
+ *   repository, and open a pull request for it if asked and none is open
+ *   (200, once done). 409 `conflict` when publishing is not available or the
+ *   sandbox is not running, 409 `publication_failed` when it was tried and
+ *   failed; the thread's history records the outcome either way.
  *
  * Accepted changes are carried out in the background; the answer is the
  * thread as the request left it, and fetching it again shows how it went.
@@ -48,6 +61,10 @@ export function buildStopThreadApiPath(threadId: string): string {
 
 export function buildResumeThreadApiPath(threadId: string): string {
   return `${buildThreadApiPath(threadId)}/resume`;
+}
+
+export function buildPublishThreadApiPath(threadId: string): string {
+  return `${buildThreadApiPath(threadId)}/publication`;
 }
 
 /** Why a requested change did not happen, or what went wrong; for the user. */
@@ -93,10 +110,25 @@ export const threadSummarySchema = z.strictObject({
   /** The agent is in the middle of a run. */
   isAgentWorking: z.boolean(),
   sandbox: threadSandboxSchema,
+  /** The repository the thread started from, or null for an empty workspace. */
+  repository: threadRepositorySummarySchema.nullable(),
 });
 
-/** A new thread takes no settings yet; the body is an empty JSON object. */
-export const createThreadRequestSchema = z.strictObject({});
+/** A new thread starts from an empty workspace, or from one repository. */
+export const createThreadRequestSchema = z.strictObject({
+  repository: threadRepositoryRequestSchema.optional(),
+});
+
+/** Publishing pushes the work branch; `openPullRequest` also opens a pull request for it. */
+export const publishThreadRequestSchema = z.strictObject({ openPullRequest: z.boolean() });
+
+/** What a publication did: the commit pushed, and the pull request for the branch, if any. */
+export const publishThreadResponseSchema = z.strictObject({
+  workBranch: z.string().min(1),
+  commit: commitIdSchema,
+  branchUrl: z.url(),
+  pullRequestUrl: z.url().nullable(),
+});
 
 /** Stopping and resuming take no settings; the body is an empty JSON object. */
 export const threadActionRequestSchema = z.strictObject({});
@@ -123,6 +155,10 @@ export const threadListResponseSchema = z.strictObject({
  *   the message says why.
  * - `sandbox_limit_reached` (409): starting a sandbox would exceed how many
  *   may run at once; the message names the user's running sandboxes.
+ * - `repository_not_allowed` (403): the user has not been verified to have
+ *   the access to a repository that what they asked for needs.
+ * - `publication_failed` (409): publishing was tried and did not happen;
+ *   the message says why.
  */
 export const apiErrorResponseSchema = z.strictObject({
   error: z.strictObject({
@@ -137,6 +173,8 @@ export const apiErrorResponseSchema = z.strictObject({
       "not_found",
       "conflict",
       "sandbox_limit_reached",
+      "repository_not_allowed",
+      "publication_failed",
       "unavailable",
     ]),
     message: z.string().min(1),
@@ -147,6 +185,8 @@ export type ThreadSandbox = z.infer<typeof threadSandboxSchema>;
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 export type CreateThreadRequest = z.infer<typeof createThreadRequestSchema>;
 export type ThreadActionRequest = z.infer<typeof threadActionRequestSchema>;
+export type PublishThreadRequest = z.infer<typeof publishThreadRequestSchema>;
+export type PublishThreadResponse = z.infer<typeof publishThreadResponseSchema>;
 export type ThreadResponse = z.infer<typeof threadResponseSchema>;
 export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;

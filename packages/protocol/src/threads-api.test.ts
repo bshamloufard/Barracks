@@ -13,6 +13,7 @@ const runningThread = {
   title: "Fix the build",
   isAgentWorking: false,
   sandbox: { state: "running" },
+  repository: null,
 };
 
 describe("the threads API", () => {

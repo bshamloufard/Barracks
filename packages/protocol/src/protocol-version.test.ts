@@ -7,7 +7,7 @@ describe("protocolVersion", () => {
     expect(protocolVersion).toBeGreaterThan(0);
   });
 
-  it("is 2, the first version with acknowledged delivery between supervisor and control plane", () => {
-    expect(protocolVersion).toBe(2);
+  it("is 3, the first version that works with a Git repository", () => {
+    expect(protocolVersion).toBe(3);
   });
 });

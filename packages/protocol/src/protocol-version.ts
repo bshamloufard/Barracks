@@ -17,5 +17,8 @@
  *   clients authenticating with an `authenticate` first message. Both came
  *   in together, before any version 1 peer was deployed, so one increment
  *   covers them.
+ * - 3: working with a Git repository: `prepare_workspace` after the
+ *   welcome, repository credential requests and answers, publication
+ *   bundles, and the repository's thread events.
  */
-export const protocolVersion = 2;
+export const protocolVersion = 3;

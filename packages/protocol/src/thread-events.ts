@@ -2,6 +2,7 @@ import { z } from "zod";
 import { agentEventSchema } from "./agent-events.js";
 import { identifierSchema } from "./identifier.js";
 import { maximumUserMessageLength } from "./limits.js";
+import { repositoryEventSchema } from "./repository-events.js";
 import { sequenceSchema } from "./sequence.js";
 
 export const userMessageTextSchema = z.string().min(1).max(maximumUserMessageLength);
@@ -22,6 +23,7 @@ export const userMessageEventSchema = z.strictObject({
 export const threadEventSchema = z.discriminatedUnion("type", [
   userMessageEventSchema,
   ...agentEventSchema.options,
+  ...repositoryEventSchema.options,
 ]);
 
 /** A thread event as the control plane stored it, with its place in the thread. */
