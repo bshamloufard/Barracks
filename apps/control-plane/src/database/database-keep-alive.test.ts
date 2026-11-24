@@ -1,3 +1,4 @@
+import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTestPool,
@@ -164,11 +165,15 @@ describe("the keep-alive interval setting", () => {
 });
 
 describeWithTestDatabase("the keep-alive query", () => {
-  const pool = createTestPool(1);
-  const schemas = new TestSchemas(pool);
+  // Created in beforeAll, not here: this body also runs when the suite is
+  // skipped for want of a test database, and a pool cannot be made then.
+  let pool: Pool;
+  let schemas: TestSchemas;
   let schema: string;
 
   beforeAll(async () => {
+    pool = createTestPool(1);
+    schemas = new TestSchemas(pool);
     schema = await schemas.createMigrated();
   });
 
