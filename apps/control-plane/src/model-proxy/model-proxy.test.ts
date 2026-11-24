@@ -554,6 +554,33 @@ describe("the model proxy", () => {
     expect(agents.status).toBe(200);
   });
 
+  it("lets a token accepted moments ago through without the lookups that strangers can use up", async () => {
+    await start({
+      modelProxyLimits: { authenticationBurst: 1, authenticationsPerSecond: 0.001 },
+    });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const first = await callModelProxy(controlPlane, access, anthropic, "Hi");
+    await readWholeAnswer(first);
+
+    const stranger = await callModelProxy(
+      controlPlane,
+      { ...access, token: "A".repeat(43) },
+      anthropic,
+      "Hi",
+    );
+    await stranger.arrayBuffer();
+    const again = await callModelProxy(controlPlane, access, anthropic, "Hi again");
+    await readWholeAnswer(again);
+    await controlPlane.sendApi("POST", buildStopThreadApiPath(thread.threadId), adaToken);
+    const afterTheStop = await callModelProxy(controlPlane, access, anthropic, "Hi");
+    await afterTheStop.arrayBuffer();
+
+    expect([first.status, stranger.status, again.status]).toEqual([200, 503, 200]);
+    expect(afterTheStop.status).not.toBe(200);
+  });
+
   it("bounds how many token lookups callers not yet authenticated cause, whatever thread they name", async () => {
     await start({ modelProxyLimits: { authenticationBurst: 5, authenticationsPerSecond: 1 } });
     const statuses: number[] = [];

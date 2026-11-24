@@ -227,7 +227,10 @@ export class ModelProxy {
    * be one is refused without a lookup, and lookups for callers not yet
    * authenticated are bounded for the whole instance, so nobody who lacks
    * the token can use up a thread's allowance or make the database work
-   * without limit. The refusal is the same whether the thread exists or not.
+   * without limit. A token a lookup accepted in the last 30 seconds is
+   * accepted again without one, outside that bound, so strangers using it
+   * up cannot keep a working agent out. The refusal is the same whether
+   * the thread exists or not.
    */
   async #authenticate(exchange: ProxyExchange): Promise<string | undefined> {
     const { request, response, route, target, logger } = exchange;
@@ -235,6 +238,9 @@ export class ModelProxy {
     if (presentedToken === undefined || !ModelProxyTokens.isWellFormed(presentedToken)) {
       sendRefusal(response, route.format, proxyRefusals.tokenRefused);
       return undefined;
+    }
+    if (this.#options.authorization.isRecentlyAuthenticated(target, presentedToken)) {
+      return presentedToken;
     }
     const lookup = this.#authentications.enter();
     if (lookup.kind === "busy") {

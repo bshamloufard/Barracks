@@ -84,6 +84,19 @@ export class ModelProxyAuthorization {
   }
 
   /**
+   * Whether the token was accepted by a lookup moments ago, from memory
+   * alone (see `ModelProxyTokens.isRecentlyAccepted`); if not, it must be
+   * looked up.
+   */
+  isRecentlyAuthenticated(request: ProxyAuthorizationRequest, presentedToken: string): boolean {
+    return this.#options.tokens.isRecentlyAccepted(
+      request.threadId,
+      request.providerId,
+      presentedToken,
+    );
+  }
+
+  /**
    * Whether an authenticated request may spend its owner's key, as far as
    * that can be known without its body. Throws when it cannot decide (the
    * database is unreachable, say), which is not a refusal.
