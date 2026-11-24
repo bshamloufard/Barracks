@@ -1,0 +1,2070 @@
+{
+  "anthropic": {
+    "claude-fable-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": ["claude-opus-4-8", "claude-opus-5"]
+    },
+    "claude-fable-5-1": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-fable-5-2": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": ["claude-opus-5"]
+    },
+    "claude-haiku-4-5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-haiku-4-5-20251001": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-haiku-5-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-4-5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-4-5-20251101": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-4-6": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-4-7": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-4-8": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-opus-5-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-sonnet-4-5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-sonnet-4-5-20250929": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "claude-sonnet-4-6": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-sonnet-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "claude-sonnet-5-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    }
+  },
+  "openai": {
+    "chat-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-4": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "gpt-4-turbo": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "gpt-4.1": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "gpt-4.1-mini": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "gpt-4.1-nano": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "gpt-4o": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "gpt-4o-2024-05-13": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "gpt-4o-2024-08-06": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "gpt-4o-2024-11-20": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "gpt-4o-mini": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "gpt-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5-chat-latest": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "gpt-5-mini": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5-nano": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.1": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.2": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.2-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.3-codex": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.3-codex-spark": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.4": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.4-mini": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.4-nano": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.4-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.5-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.6-cyber": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.6-luna": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.6-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-5.6-terra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6-astra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6-cyber": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6-luna": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6.1-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6.1-terra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6.2-astra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-6.2-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-daybreak-blue-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "gpt-daybreak-red-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "o1": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "o1-pro": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "o3": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "o3-mini": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "o3-pro": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "o4-mini": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    }
+  },
+  "openrouter": {
+    "~anthropic/claude-fable-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~anthropic/claude-haiku-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~anthropic/claude-opus-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~anthropic/claude-sonnet-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~deepseek/deepseek-flash-latest": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "~deepseek/deepseek-pro-latest": {
+      "maxOutputTokens": 393216,
+      "fallbackModelIds": []
+    },
+    "~deepseek/deepseek-v4-flash-latest": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "~google/gemini-flash-latest": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "~google/gemini-pro-latest": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "~moonshotai/kimi-latest": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "~openai/gpt-astra-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~openai/gpt-luna-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~openai/gpt-mini-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~openai/gpt-sol-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~openai/gpt-terra-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "~unbiased/pareto-latest": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "~x-ai/grok-latest": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "~z-ai/glm-flash-latest": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "~z-ai/glm-latest": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "aion-labs/aion-2.0": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "aion-labs/aion-3.0": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "aion-labs/aion-3.0-mini": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "aion-labs/aion-3.5": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "aion-labs/aion-3.5-mini": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "amazon/nova-2-lite-v1": {
+      "maxOutputTokens": 65535,
+      "fallbackModelIds": []
+    },
+    "amazon/nova-lite-v1": {
+      "maxOutputTokens": 5120,
+      "fallbackModelIds": []
+    },
+    "amazon/nova-micro-v1": {
+      "maxOutputTokens": 5120,
+      "fallbackModelIds": []
+    },
+    "amazon/nova-premier-v1": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "amazon/nova-pro-v1": {
+      "maxOutputTokens": 5120,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5.1": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5.1:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5.2": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-fable-5.2:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-haiku-4.5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-haiku-4.5:batch": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-haiku-5.5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-haiku-5.5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.1": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.1:batch": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.5:batch": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.6": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.6:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.7": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.7:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.8": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-4.8:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-5.5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-opus-5.5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-4.5": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-4.5:batch": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-4.6": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-4.6:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-5.5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "anthropic/claude-sonnet-5.5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "auto": {
+      "maxOutputTokens": 30000,
+      "fallbackModelIds": []
+    },
+    "baidu/ernie-5.5-flash-preview:free": {
+      "maxOutputTokens": 921600,
+      "fallbackModelIds": []
+    },
+    "baidu/ernie-light-dt-1.0-intl": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "bytedance-seed/seed-2-1-turbo": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "bytedance-seed/seed-2.0-lite": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "bytedance-seed/seed-2.0-mini": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "cohere/command-a": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "cohere/command-a-plus": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "cohere/command-r-08-2024": {
+      "maxOutputTokens": 4000,
+      "fallbackModelIds": []
+    },
+    "cohere/command-r-plus-08-2024": {
+      "maxOutputTokens": 4000,
+      "fallbackModelIds": []
+    },
+    "cohere/command-r7b-12-2024": {
+      "maxOutputTokens": 4000,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-chat": {
+      "maxOutputTokens": 16000,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-chat-v3-0324": {
+      "maxOutputTokens": 115200,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-chat-v3.1": {
+      "maxOutputTokens": 147456,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-r1-0528": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v3.1-terminus": {
+      "maxOutputTokens": 147456,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v3.2": {
+      "maxOutputTokens": 147456,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v3.2-exp": {
+      "maxOutputTokens": 147456,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-flash": {
+      "maxOutputTokens": 393216,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-flash-0731": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-flash-0731:batch": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-flash-vision-exp": {
+      "maxOutputTokens": 943717,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-pro": {
+      "maxOutputTokens": 393216,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4-pro-0813": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4.1-flash-1017": {
+      "maxOutputTokens": 393216,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4.1-flash-1017:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "deepseek/deepseek-v4.1-flash:batch": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    },
+    "dots-studio/dots-3-note-preview:free": {
+      "maxOutputTokens": 460800,
+      "fallbackModelIds": []
+    },
+    "elorian/glimpse": {
+      "maxOutputTokens": 256000,
+      "fallbackModelIds": []
+    },
+    "fireworks/ember-1": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-2.5-flash": {
+      "maxOutputTokens": 65535,
+      "fallbackModelIds": []
+    },
+    "google/gemini-2.5-flash-lite": {
+      "maxOutputTokens": 65535,
+      "fallbackModelIds": []
+    },
+    "google/gemini-2.5-pro": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-2.5-pro-preview": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3-flash-preview": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3-flash-preview:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3-pro-image": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-flash-lite": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-flash-lite-preview": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-flash-lite:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-pro-preview": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-pro-preview-customtools": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.1-pro-preview:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.5-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.5-flash-lite": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.5-flash-lite:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.5-flash:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.6-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.6-flash:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.7-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.7-flash:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.8-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-3.8-flash:batch": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-argon": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-argon:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-carbon": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-carbon:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-hydrogen": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-hydrogen:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-neon": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-4-neon:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "google/gemini-nano-banana-2.1": {
+      "maxOutputTokens": 58982,
+      "fallbackModelIds": []
+    },
+    "google/gemma-3-12b-it": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "google/gemma-3-27b-it": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "google/gemma-4-26b-a4b-it": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "google/gemma-4-26b-a4b-it:free": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "google/gemma-4-31b-it": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "google/gemma-4-31b-it:free": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "ibm-granite/granite-4.2-8b": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "inclusionai/ling-3.0-flash": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "inclusionai/ling-3.0-tiny": {
+      "maxOutputTokens": 250000,
+      "fallbackModelIds": []
+    },
+    "inclusionai/ling-3.1-flash": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "inclusionai/ling-3.2-flash:free": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "kt/midm-k-3.0-pro": {
+      "maxOutputTokens": 235615,
+      "fallbackModelIds": []
+    },
+    "liquid/lfm-2.5-24b-a2b": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "liquid/lfm-3-1.7b": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "liquid/lfm-3-1.7b:free": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "meituan/longcat-2.0": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "meta-llama/llama-3.1-70b-instruct": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "meta-llama/llama-3.1-8b-instruct": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "meta-llama/llama-3.3-70b-instruct": {
+      "maxOutputTokens": 115200,
+      "fallbackModelIds": []
+    },
+    "meta-llama/llama-4-maverick": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "meta-llama/llama-4-scout": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "meta/muse-ember": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-glimmer-30b": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "meta/muse-glimmer-30b:batch": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-1.1": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-1.2": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-1.2-contributor": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-1.3": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-1.3-contributor": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-spark-open": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "meta/muse-wonder": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "minimax/minimax-m2.5": {
+      "maxOutputTokens": 176947,
+      "fallbackModelIds": []
+    },
+    "minimax/minimax-m2.7": {
+      "maxOutputTokens": 176947,
+      "fallbackModelIds": []
+    },
+    "minimax/minimax-m3": {
+      "maxOutputTokens": 512000,
+      "fallbackModelIds": []
+    },
+    "minimax/minimax-m3:batch": {
+      "maxOutputTokens": 512000,
+      "fallbackModelIds": []
+    },
+    "minimax/minimax-m3.1-flash": {
+      "maxOutputTokens": 524288,
+      "fallbackModelIds": []
+    },
+    "mistralai/codestral-2508": {
+      "maxOutputTokens": 204800,
+      "fallbackModelIds": []
+    },
+    "mistralai/devstral-2512": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/ministral-14b-2512": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/ministral-3b-2512": {
+      "maxOutputTokens": 104857,
+      "fallbackModelIds": []
+    },
+    "mistralai/ministral-8b-2512": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-large": {
+      "maxOutputTokens": 102400,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-large-2407": {
+      "maxOutputTokens": 104857,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-large-2512": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-large-4-0": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-medium-3": {
+      "maxOutputTokens": 104857,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-medium-3-5": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-medium-3-5:batch": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-medium-3.1": {
+      "maxOutputTokens": 104857,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-nemo": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-saba": {
+      "maxOutputTokens": 26214,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-small-2603": {
+      "maxOutputTokens": 209715,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-small-3.1-24b-instruct": {
+      "maxOutputTokens": 102400,
+      "fallbackModelIds": []
+    },
+    "mistralai/mistral-small-3.2-24b-instruct": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "mistralai/mixtral-8x22b-instruct": {
+      "maxOutputTokens": 52428,
+      "fallbackModelIds": []
+    },
+    "mistralai/voxtral-small-24b-2507": {
+      "maxOutputTokens": 26214,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2": {
+      "maxOutputTokens": 98304,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2-0905": {
+      "maxOutputTokens": 98304,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2-thinking": {
+      "maxOutputTokens": 98304,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2.5": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2.6": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k2.7-code": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k3": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k3:batch": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k3.1-pro": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "moonshotai/kimi-k3.1-pro:batch": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "motif-technologies/motif-3": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nex-agi/nex-n2.5-pro": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nex-agi/nex-n2.6": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3-nano-30b-a3b": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3-super-120b-a12b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b:free": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3.5-lightning": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3.5-lightning:free": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3.5-super-vl": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "nvidia/nemotron-3.5-super-vl:free": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-3.5-turbo-0613": {
+      "maxOutputTokens": 3685,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-3.5-turbo-16k": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4-turbo:batch": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1-mini": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1-mini:batch": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1-nano": {
+      "maxOutputTokens": 942818,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1-nano:batch": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4.1:batch": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-2024-05-13": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-2024-08-06": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-2024-11-20": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-mini": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-mini-2024-07-18": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o-mini:batch": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-4o:batch": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-mini": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-mini:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-nano": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-nano:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.1": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.1-codex": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.1-codex-max": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.1-codex-mini": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.1:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2-chat": {
+      "maxOutputTokens": 32000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2-codex": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.2:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.3-codex": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-mini": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-mini:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-nano": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-nano:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.4:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.5": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.5-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.5-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.5:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-luna": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-luna-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-luna-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-luna:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-sol-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-sol-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-sol:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-terra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-terra-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-terra-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-5.6-terra:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-astra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-astra-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-astra-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-astra:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-luna": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-luna-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-luna-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-luna:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-sol-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-sol-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6-sol:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-sol-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-sol-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-sol:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-terra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-terra-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-terra-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.1-terra:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-astra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-astra-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-astra-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-astra:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-sol": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-sol-pro": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-sol-pro:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-6.2-sol:batch": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-audio": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-audio-mini": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-chat-latest": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-120b": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-120b:batch": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-20b": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-20b:batch": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "openai/o3": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "openai/o3-mini:batch": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "openai/o3-pro": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "openai/o3:batch": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "openai/o4-mini:batch": {
+      "maxOutputTokens": 100000,
+      "fallbackModelIds": []
+    },
+    "openrouter/auto": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openrouter/auto-beta": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openrouter/auto-code": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "openrouter/free": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "openrouter/fusion": {
+      "maxOutputTokens": 30000,
+      "fallbackModelIds": []
+    },
+    "openrouter/pareto-code": {
+      "maxOutputTokens": 4096,
+      "fallbackModelIds": []
+    },
+    "particle-ai/particle-1": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "particle-ai/particle-1:free": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "perceptron/perceptron-mk1.5": {
+      "maxOutputTokens": 8192,
+      "fallbackModelIds": []
+    },
+    "prism-ml/ternary-bonsai-2-27b": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "prism-ml/ternary-bonsai-2-9b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen-2.5-72b-instruct": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen-plus": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-14b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-235b-a22b-2507": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-235b-a22b-thinking-2507": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-30b-a3b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-30b-a3b-instruct-2507": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-32b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-coder": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-coder-30b-a3b-instruct": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-coder-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-coder-next": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-next-80b-a3b-instruct": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-vl-235b-a22b-instruct": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-vl-30b-a3b-instruct": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3-vl-8b-instruct": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-122b-a10b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-27b": {
+      "maxOutputTokens": 81920,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-35b-a3b": {
+      "maxOutputTokens": 81920,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-397b-a17b": {
+      "maxOutputTokens": 81920,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-9b": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-flash-02-23": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-plus-02-15": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.5-plus-20260420": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.6-27b": {
+      "maxOutputTokens": 81920,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.6-35b-a3b": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.6-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.6-plus": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.7-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.7-max": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.7-plus": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.7-plus:batch": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-2.4t-a95b": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-27b": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-27b:batch": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-flash": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-max-0902": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-max-0902:batch": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-max-prime": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-omni-flash": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen4-max": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "recursive/flint-v1.0:free": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "reflection/beam-1.0-501b-a23b": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "rekaai/reka-edge": {
+      "maxOutputTokens": 14745,
+      "fallbackModelIds": []
+    },
+    "relace/relace-search": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "ricursiveai/ripple-65b-preview": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "sakana/fugu-max": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "sakana/fugu-ultra": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "sakana/fugu-ultra-v2": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "sakana/sakana-namazu": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "stepfun/step-3.7-flash": {
+      "maxOutputTokens": 230400,
+      "fallbackModelIds": []
+    },
+    "stepfun/step-5-preview": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "tencent/hy3": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "tencent/hy3-preview": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "tencent/hy4": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "tencent/hy4-flash": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "tencent/hy4-preview": {
+      "maxOutputTokens": 64000,
+      "fallbackModelIds": []
+    },
+    "thinkingmachines/inkling": {
+      "maxOutputTokens": 471859,
+      "fallbackModelIds": []
+    },
+    "thinkingmachines/inkling-2-small": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "thinkingmachines/inkling-small": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "thinkingmachines/inkling-small:batch": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "typesafe/jev-router": {
+      "maxOutputTokens": 128000,
+      "fallbackModelIds": []
+    },
+    "unbiased/pareto-26.10": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "unbiased/pareto-26.10-preview": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "unbiased/pareto-26.9": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "upstage/solar-mini4": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "upstage/solar-pro4": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.20": {
+      "maxOutputTokens": 1800000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.3": {
+      "maxOutputTokens": 900000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.3:batch": {
+      "maxOutputTokens": 900000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.5": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.6": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.6:batch": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.7": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "x-ai/grok-4.7:batch": {
+      "maxOutputTokens": 450000,
+      "fallbackModelIds": []
+    },
+    "xiaomi/mimo-v2.5": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "xiaomi/mimo-v2.5-pro": {
+      "maxOutputTokens": 235929,
+      "fallbackModelIds": []
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "xiaomi/mimo-v2.6-pro": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.5": {
+      "maxOutputTokens": 98304,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.5-air": {
+      "maxOutputTokens": 98304,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.5v": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.6": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.6v": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.7": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-4.7-flash": {
+      "maxOutputTokens": 117964,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5-turbo": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.1": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.2": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.2:batch": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3": {
+      "maxOutputTokens": 943718,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3-flash": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3-flash:batch": {
+      "maxOutputTokens": 943717,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3-flashx": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3-flashx-legal": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3-prime": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5.3:batch": {
+      "maxOutputTokens": 943717,
+      "fallbackModelIds": []
+    },
+    "z-ai/glm-5v-turbo": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    }
+  },
+  "xai": {
+    "grok-4.3": {
+      "maxOutputTokens": 30000,
+      "fallbackModelIds": []
+    },
+    "grok-4.5": {
+      "maxOutputTokens": 500000,
+      "fallbackModelIds": []
+    },
+    "grok-4.6": {
+      "maxOutputTokens": 500000,
+      "fallbackModelIds": []
+    },
+    "grok-4.7": {
+      "maxOutputTokens": 500000,
+      "fallbackModelIds": []
+    }
+  },
+  "deepseek": {
+    "deepseek-flash": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    },
+    "deepseek-v4-pro": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    }
+  },
+  "groq": {
+    "llama-3.1-8b-instant": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "llama-3.3-70b-versatile": {
+      "maxOutputTokens": 32768,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-120b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-20b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.6-27b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    },
+    "qwen/qwen3.8-27b": {
+      "maxOutputTokens": 16384,
+      "fallbackModelIds": []
+    }
+  },
+  "cerebras": {
+    "gpt-oss-120b": {
+      "maxOutputTokens": 40960,
+      "fallbackModelIds": []
+    },
+    "qwen-3.8-27b": {
+      "maxOutputTokens": 40960,
+      "fallbackModelIds": []
+    }
+  },
+  "together": {
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      "maxOutputTokens": 384000,
+      "fallbackModelIds": []
+    },
+    "meta-models/Muse-Spark-Open-816B-A42B": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      "maxOutputTokens": 524288,
+      "fallbackModelIds": []
+    },
+    "moonshotai/Kimi-K3": {
+      "maxOutputTokens": 1048576,
+      "fallbackModelIds": []
+    },
+    "moonshotai/Kimi-K3.1-Pro": {
+      "maxOutputTokens": 1048576,
+      "fallbackModelIds": []
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "openai/gpt-oss-120b": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "Qwen/Qwen3.5-9B": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "Qwen/Qwen3.6-Plus": {
+      "maxOutputTokens": 65536,
+      "fallbackModelIds": []
+    },
+    "Qwen/Qwen3.7-Max": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "reflection/Beam-1.0-501B-A23B": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "thinkingmachines/Inkling": {
+      "maxOutputTokens": 131072,
+      "fallbackModelIds": []
+    },
+    "zai-org/GLM-5.2": {
+      "maxOutputTokens": 164000,
+      "fallbackModelIds": []
+    },
+    "zai-org/GLM-5.3": {
+      "maxOutputTokens": 262144,
+      "fallbackModelIds": []
+    },
+    "zai-org/GLM-5.3-Flash": {
+      "maxOutputTokens": 400000,
+      "fallbackModelIds": []
+    }
+  }
+}

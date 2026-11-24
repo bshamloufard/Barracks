@@ -1,32 +1,80 @@
+import { findLargestMaxOutputTokens, findModelLimits } from "@barrack/model-catalogue";
 import { maximumModelIdLength, maximumTokensPerAnswer } from "@barrack/protocol";
 import type { AnswerUsage } from "../model-usage/model-usage-store.js";
+import type { ScannedJsonBody } from "./json-body-scanner.js";
 import type { RelayOutcome } from "./relay-request.js";
 import type { MeteredUsage } from "./usage-meter.js";
 
 /** What the request asked for, as the proxy read it. */
 export type RequestedAnswer = {
   model: string;
-  /** The size of the request's body as the agent sent it. */
-  requestBytes: number;
-  maximumOutputTokens: number | undefined;
   isStreamed: boolean;
+  /** The input the relayed body suggests, in tokens (`estimateInputTokens`). */
+  estimatedInputTokens: number;
+  /** The most output the answer may hold (`resolveMaximumOutputTokens`). */
+  maximumOutputTokens: number;
 };
 
-/** Roughly what a token is worth in characters, for English and code alike. */
-const charactersPerToken = 4;
+/** Roughly what a token is worth in bytes of text, for English and code alike. */
+const bytesPerToken = 4;
 
 /**
- * The output counted for an unanswered request that stated no maximum. Of
- * the relayed formats only Anthropic's requires one; a provider otherwise
- * stops at the model's own limit, which for current models is tens of
- * thousands of tokens and for some more. Erring high is the safe side: it
- * counts against the cap only requests that were never answered, which the
- * agent's own client, always streaming and always stating a maximum, does
- * not leave so.
+ * What one image is counted as, whatever its bytes: a provider counts an
+ * image by its size in pixels, not by its file's bytes, and a desktop
+ * screenshot of a few hundred kilobytes is a thousand or two tokens. The
+ * largest any relayed provider documents for an image at its default
+ * detail is Anthropic's 4,784 for its high-resolution tier (OpenAI's
+ * patch-based models cap at 3,000 at high detail, xAI at 1,792); this is
+ * above all of them. Two cases can cost more and are counted low: OpenAI's
+ * `original` detail (up to 30,000 patches) and the few models OpenAI bills
+ * many times over per tile.
+ * https://platform.claude.com/docs/en/build-with-claude/vision
+ * https://developers.openai.com/api/docs/guides/images-vision
+ * https://docs.x.ai/docs/guides/image-understanding
  */
-export const defaultMaximumOutputTokens = 32_768;
+export const tokensPerImage = 5_000;
+
+/**
+ * The output counted for a request that states no maximum, for a model
+ * neither the catalogue nor its provider's list gives one for: none of the
+ * relayed providers' flagship models allows more than this, though some
+ * hosts list models that do (and those are counted at their own).
+ */
+export const defaultMaximumOutputTokens = 128_000;
 
 type CountedUsage = Omit<AnswerUsage, "ownerUserId" | "threadId" | "providerId" | "at">;
+
+/**
+ * The input a relayed body suggests, erring high: its bytes over four,
+ * leaving out the whitespace between tokens, which no provider counts, and
+ * the base64 data of its images, each counted at `tokensPerImage` instead.
+ */
+export function estimateInputTokens(relayedBytes: number, scanned: ScannedJsonBody): number {
+  const textBytes = Math.max(
+    0,
+    relayedBytes - scanned.insignificantBytes - scanned.base64ImageBytes,
+  );
+  return Math.ceil(textBytes / bytesPerToken) + scanned.imageCount * tokensPerImage;
+}
+
+/**
+ * The most output an answer may hold: what the request states, which the
+ * provider enforces; failing that, the model's own maximum as the pinned
+ * agent lists it; failing that, the largest of any model it lists for the
+ * provider; and failing that, `defaultMaximumOutputTokens`.
+ */
+export function resolveMaximumOutputTokens(
+  providerId: string,
+  model: string,
+  stated: number | undefined,
+): number {
+  return (
+    stated ??
+    findModelLimits(providerId, model)?.maxOutputTokens ??
+    findLargestMaxOutputTokens(providerId) ??
+    defaultMaximumOutputTokens
+  );
+}
 
 /**
  * What to count for one relayed request:
@@ -37,13 +85,13 @@ type CountedUsage = Omit<AnswerUsage, "ownerUserId" | "threadId" | "providerId" 
  *   answer's headers come only once it is all generated, so the provider
  *   has probably billed it in full by then;
  * - for an answer that began but ended without the provider's figures, an
- *   estimate too: the input as the provider reported it or as the request's
- *   size suggests, and the output from what was seen generated, or, for a
+ *   estimate too: the input as the provider reported it or as the body
+ *   suggests, and the output from what was seen generated, or, for a
  *   non-streamed answer, which arrives whole once generated, the most the
  *   request allowed.
  * Without these an agent could hang up before every answer ended and never
  * be counted. A request the provider refused, or never received whole,
- * counts nothing.
+ * counts nothing. Estimates err high, by design.
  */
 export function describeAnswerUsage(
   outcome: RelayOutcome,
@@ -70,7 +118,7 @@ export function describeAnswerUsage(
   return {
     modelId,
     source: "estimated",
-    inputTokens: bounded(usage.inputTokens ?? estimateInput(requested)),
+    inputTokens: bounded(usage.inputTokens ?? requested.estimatedInputTokens),
     outputTokens: bounded(estimateOutput(usage, requested)),
     cacheReadTokens: bounded(usage.cacheReadTokens),
     cacheWriteTokens: bounded(usage.cacheWriteTokens),
@@ -81,26 +129,22 @@ function estimateUnanswered(requested: RequestedAnswer): CountedUsage {
   return {
     modelId: boundedModelId(requested.model),
     source: "estimated",
-    inputTokens: bounded(estimateInput(requested)),
-    outputTokens: bounded(requested.maximumOutputTokens ?? defaultMaximumOutputTokens),
+    inputTokens: bounded(requested.estimatedInputTokens),
+    outputTokens: bounded(requested.maximumOutputTokens),
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
   };
 }
 
-function estimateInput(requested: RequestedAnswer): number {
-  return Math.ceil(requested.requestBytes / charactersPerToken);
-}
-
 function estimateOutput(usage: MeteredUsage, requested: RequestedAnswer): number {
   const seenGenerated = Math.max(
     usage.outputTokens ?? 0,
-    Math.ceil(usage.generatedCharacters / charactersPerToken),
+    Math.ceil(usage.generatedCharacters / bytesPerToken),
   );
   if (requested.isStreamed) {
     return seenGenerated;
   }
-  return Math.max(seenGenerated, requested.maximumOutputTokens ?? defaultMaximumOutputTokens);
+  return Math.max(seenGenerated, requested.maximumOutputTokens);
 }
 
 function boundedModelId(modelId: string): string {

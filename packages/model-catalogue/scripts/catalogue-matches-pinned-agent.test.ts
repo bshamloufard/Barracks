@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { catalogueFileUrl, formatCatalogue } from "../src/catalogue-file.js";
-import { findCatalogueProvider, modelCatalogue } from "../src/index.js";
-import { readAgentCatalogue, readPinnedAgentVersion } from "./read-agent-catalogue.js";
+import { findCatalogueProvider, findModelLimits, modelCatalogue } from "../src/index.js";
+import { formatModelLimits, modelLimitsFileUrl } from "../src/model-limits-file.js";
+import {
+  readAgentCatalogue,
+  readAgentModelLimits,
+  readPinnedAgentVersion,
+} from "./read-agent-catalogue.js";
 
 /**
  * The catalogue is generated from Pi and committed, so the control plane
@@ -59,5 +64,26 @@ describe("the model catalogue", () => {
 
   it("leaves out providers that offer no key, such as a subscription sign-in", () => {
     expect(findCatalogueProvider("openai-codex")).toBeUndefined();
+  });
+});
+
+describe("the relayed providers' model limits", () => {
+  it("are exactly what that Pi lists today; run `pnpm --filter @barrack/model-catalogue generate` if not", {
+    timeout: 60_000,
+  }, async () => {
+    const committed = await readFile(modelLimitsFileUrl, "utf8");
+
+    expect(committed).toBe(formatModelLimits(await readAgentModelLimits()));
+  });
+
+  it("give each relayed model's most output, and the fallbacks the agent sends for it", () => {
+    const relayedModels = (providerId: string) =>
+      findCatalogueProvider(providerId)?.models.map((model) => model.modelId) ?? [];
+
+    for (const modelId of relayedModels("anthropic")) {
+      expect(findModelLimits("anthropic", modelId)?.maxOutputTokens).toBeGreaterThan(0);
+    }
+    expect(findModelLimits("anthropic", "not-a-model")).toBeUndefined();
+    expect(findModelLimits("google", relayedModels("google")[0] ?? "")).toBeUndefined();
   });
 });

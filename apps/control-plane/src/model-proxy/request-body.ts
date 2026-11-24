@@ -1,5 +1,6 @@
 import type { ProviderApiFormat } from "@barrack/model-catalogue";
 import { maximumModelIdLength } from "@barrack/protocol";
+import { estimateInputTokens } from "./answer-usage.js";
 import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
 import { type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
 import { readTopLevelMembers } from "./request-body-members.js";
@@ -38,6 +39,8 @@ export type RelayedRequestBody = {
   isStreamed: boolean;
   /** The most output the request allows, when it says. */
   maximumOutputTokens: number | undefined;
+  /** The input the relayed body suggests, in tokens, for an answer cut short before the provider says. */
+  estimatedInputTokens: number;
 };
 
 export type BodyInspection =
@@ -108,6 +111,7 @@ export function inspectRequestBody(
       fallbackModels,
       isStreamed,
       maximumOutputTokens: readMaximumOutputTokens(format, fields),
+      estimatedInputTokens: estimateInputTokens(bytes.length, scanned),
     },
   };
 }

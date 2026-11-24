@@ -8,6 +8,8 @@ import type {
   GeneratedModelCatalogue,
 } from "@barrack/protocol";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelLimitsFile } from "../src/model-limits-file.js";
+import { relayedProviders } from "../src/relayed-providers.js";
 
 /**
  * Reads, from the pinned Pi itself, every provider Pi can use with an API
@@ -59,18 +61,8 @@ type KeyLogin = NonNullable<NonNullable<RuntimeProvider["auth"]["apiKey"]>["logi
 type LoginInteraction = Parameters<KeyLogin>[0];
 type LoginPrompt = Parameters<LoginInteraction["prompt"]>[0];
 
-export async function readAgentCatalogue(): Promise<GeneratedModelCatalogue> {
-  const scratchDirectory = await mkdtemp(path.join(tmpdir(), "barrack-model-catalogue-"));
-  try {
-    // A runtime of its own, with empty credentials and no network, so the
-    // catalogue is the one bundled with this version of Pi and nothing of
-    // the machine it is generated on.
-    const runtime = await ModelRuntime.create({
-      authPath: path.join(scratchDirectory, "auth.json"),
-      modelsPath: null,
-      modelsStorePath: path.join(scratchDirectory, "models-store.json"),
-      refreshOnCreate: false,
-    });
+export function readAgentCatalogue(): Promise<GeneratedModelCatalogue> {
+  return withModelRuntime(async (runtime) => {
     const providers: GeneratedCatalogueProvider[] = [];
     for (const provider of runtime.getProviders()) {
       const catalogued = await describeProvider(runtime, provider);
@@ -82,6 +74,66 @@ export async function readAgentCatalogue(): Promise<GeneratedModelCatalogue> {
       agent: { name: "Pi", version: await readPinnedAgentVersion() },
       providers: providers.sort(compareProviders),
     };
+  });
+}
+
+/**
+ * Reads, for every model Pi lists for a relayed provider, the most output
+ * it can generate in one answer and the models of the same provider Pi
+ * lets the provider answer with instead, as Pi's own model data says.
+ */
+export function readAgentModelLimits(): Promise<ModelLimitsFile> {
+  return withModelRuntime(async (runtime) => {
+    const limits: ModelLimitsFile = {};
+    for (const { providerId } of relayedProviders) {
+      const models = [...runtime.getModels(providerId)].sort((first, second) =>
+        first.id.localeCompare(second.id, "en"),
+      );
+      limits[providerId] = Object.fromEntries(
+        models.map((model) => [
+          model.id,
+          {
+            maxOutputTokens: model.maxTokens,
+            fallbackModelIds: allowedFallbacksOf(model)
+              .filter((fallback) => fallback.provider === providerId)
+              .map((fallback) => fallback.model),
+          },
+        ]),
+      );
+    }
+    return limits;
+  });
+}
+
+type RuntimeModel = ReturnType<ModelRuntime["getModels"]>[number];
+
+/** Only some APIs' compatibility settings have fallbacks (Anthropic's, today). */
+function allowedFallbacksOf(model: RuntimeModel): Array<{ provider: string; model: string }> {
+  const compat: unknown = model.compat;
+  if (typeof compat !== "object" || compat === null || !("allowedFallbackModels" in compat)) {
+    return [];
+  }
+  const fallbacks = compat.allowedFallbackModels;
+  return Array.isArray(fallbacks) ? fallbacks : [];
+}
+
+/**
+ * A runtime of its own, with empty credentials and no network, so what is
+ * read is what is bundled with this version of Pi and nothing of the
+ * machine it is generated on.
+ */
+async function withModelRuntime<Result>(
+  read: (runtime: ModelRuntime) => Promise<Result>,
+): Promise<Result> {
+  const scratchDirectory = await mkdtemp(path.join(tmpdir(), "barrack-model-catalogue-"));
+  try {
+    const runtime = await ModelRuntime.create({
+      authPath: path.join(scratchDirectory, "auth.json"),
+      modelsPath: null,
+      modelsStorePath: path.join(scratchDirectory, "models-store.json"),
+      refreshOnCreate: false,
+    });
+    return await read(runtime);
   } finally {
     await rm(scratchDirectory, { recursive: true, force: true });
   }

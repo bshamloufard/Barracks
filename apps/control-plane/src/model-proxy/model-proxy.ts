@@ -2,7 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { parseModelProxyRequestTarget } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
-import { describeAnswerUsage, type RequestedAnswer } from "./answer-usage.js";
+import {
+  describeAnswerUsage,
+  type RequestedAnswer,
+  resolveMaximumOutputTokens,
+} from "./answer-usage.js";
 import type {
   ModelProxyAuthorization,
   OwnerAuthorization,
@@ -383,9 +387,13 @@ export class ModelProxy {
     const { request, response, target, route, logger } = exchange;
     const requested: RequestedAnswer = {
       model: body.model,
-      requestBytes: body.bytes.length,
-      maximumOutputTokens: body.maximumOutputTokens,
       isStreamed: body.isStreamed,
+      estimatedInputTokens: body.estimatedInputTokens,
+      maximumOutputTokens: resolveMaximumOutputTokens(
+        target.providerId,
+        body.model,
+        body.maximumOutputTokens,
+      ),
     };
     response.shouldKeepAlive = true;
     const startedAt = Date.now();
@@ -412,7 +420,7 @@ export class ModelProxy {
         ownerUserId: owner.ownerUserId,
         upstreamStatus: outcome.upstreamStatus ?? null,
         interruption: outcome.interruption ?? null,
-        requestBytes: requested.requestBytes,
+        requestBytes: body.bytes.length,
         responseBytes: outcome.responseBytes,
         durationInMilliseconds: Date.now() - startedAt,
       },
