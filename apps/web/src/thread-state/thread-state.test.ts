@@ -21,6 +21,7 @@ const exampleThread: ThreadSummary = {
   isAgentWorking: false,
   sandbox: { state: "running" },
   repository: null,
+  model: null,
 };
 
 function recorded(sequence: number, event: ThreadEvent): ThreadAction {
@@ -171,6 +172,7 @@ describe("stream fragments", () => {
         content: completedHello.type === "assistant_message" ? completedHello.content : [],
         endReason: "completed",
         errorMessage: undefined,
+        errorKind: undefined,
       },
     ]);
   });
@@ -373,7 +375,7 @@ describe("tool executions", () => {
 });
 
 describe("errored assistant messages", () => {
-  it("keep the provider's error message to show the user", () => {
+  it("keep the provider's error message, and the kind of failure, to show the user", () => {
     const state = stateAfter(
       recorded(1, {
         type: "assistant_message",
@@ -381,6 +383,7 @@ describe("errored assistant messages", () => {
         content: [],
         endReason: "errored",
         errorMessage: "Your plan's usage limit has been reached.",
+        errorKind: "quota_exhausted",
       }),
     );
 
@@ -388,6 +391,7 @@ describe("errored assistant messages", () => {
       kind: "assistant_message",
       endReason: "errored",
       errorMessage: "Your plan's usage limit has been reached.",
+      errorKind: "quota_exhausted",
     });
   });
 });

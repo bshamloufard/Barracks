@@ -1,4 +1,6 @@
-import type { AssistantMessageEndReason } from "@barrack/protocol";
+import type { AssistantMessageEndReason, ModelAccessErrorKind } from "@barrack/protocol";
+import { settingsAddress } from "../page-address";
+import { describeModelAccessError } from "../presentation/describe-model-access-error";
 import type {
   AssistantMessageEntry,
   StreamingAssistantMessageEntry,
@@ -35,7 +37,33 @@ export function AssistantMessage({ entry }: { entry: AssistantMessageEntry }) {
             <TextualBlock key={index} blockType={block.type} text={block.text} />
           ),
       )}
-      <EndReasonNote endReason={entry.endReason} errorMessage={entry.errorMessage} />
+      <EndReasonNote
+        endReason={entry.endReason}
+        errorMessage={entry.errorMessage}
+        errorKind={entry.errorKind}
+      />
+    </div>
+  );
+}
+
+/** A failure the user can act on: what happened, what to do, and the provider's own words. */
+function ModelAccessErrorNote({
+  errorKind,
+  errorMessage,
+}: {
+  errorKind: ModelAccessErrorKind;
+  errorMessage: string | undefined;
+}) {
+  const { what, nextStep, isFixedInSettings } = describeModelAccessError(errorKind);
+  return (
+    <div className="error-notice model-access-error" role="alert">
+      <p>
+        <strong>{what}</strong> {nextStep}{" "}
+        {isFixedInSettings && <a href={settingsAddress}>Open Settings</a>}
+      </p>
+      {errorMessage !== undefined && (
+        <p className="quiet-note">The provider said: {errorMessage}</p>
+      )}
     </div>
   );
 }
@@ -60,16 +88,20 @@ function Thinking({ text }: { text: string }) {
 function EndReasonNote({
   endReason,
   errorMessage,
+  errorKind,
 }: {
   endReason: AssistantMessageEndReason;
   errorMessage: string | undefined;
+  errorKind: ModelAccessErrorKind | undefined;
 }) {
   switch (endReason) {
     case "errored":
-      return (
+      return errorKind === undefined ? (
         <p className="error-notice" role="alert">
           The model returned an error: {errorMessage}
         </p>
+      ) : (
+        <ModelAccessErrorNote errorKind={errorKind} errorMessage={errorMessage} />
       );
     case "interrupted":
       return <p className="quiet-note">Stopped because you interrupted the agent.</p>;

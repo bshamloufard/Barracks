@@ -22,6 +22,7 @@ function stateWith(
         title: null,
         isAgentWorking: false,
         repository: null,
+        model: null,
         sandbox,
       },
     },

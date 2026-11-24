@@ -1,4 +1,5 @@
 import { createAuthorizedFetch } from "../api/authorized-fetch";
+import { ModelAccessApi } from "../api/model-access-api";
 import { RepositoriesApi } from "../api/repositories-api";
 import { ThreadsApi } from "../api/threads-api";
 import { reconnectDelayInMilliseconds } from "../connection/reconnect-delay";
@@ -27,6 +28,7 @@ export class SessionController {
   readonly accessTokens: AccessTokenSource;
   readonly threadsApi: ThreadsApi;
   readonly repositoriesApi: RepositoriesApi;
+  readonly modelAccessApi: ModelAccessApi;
   readonly #service: SignInService;
   readonly #stateListeners = new Set<() => void>();
   readonly #tokenListeners = new Set<(accessToken: string) => void>();
@@ -44,6 +46,7 @@ export class SessionController {
     });
     this.threadsApi = new ThreadsApi(authorizedFetch);
     this.repositoriesApi = new RepositoriesApi(authorizedFetch);
+    this.modelAccessApi = new ModelAccessApi(authorizedFetch);
   }
 
   readonly getState = (): SignInState => this.#state;

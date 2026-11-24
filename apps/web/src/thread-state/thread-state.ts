@@ -3,6 +3,7 @@ import type {
   AssistantMessageEndReason,
   AssistantTextFragment,
   ControlPlaneToClientMessage,
+  ModelAccessErrorKind,
   RecordedThreadEvent,
   ReplayAnnouncement,
   RepositoryEvent,
@@ -47,6 +48,8 @@ export type AssistantMessageEntry = {
   content: AssistantContentBlock[];
   endReason: AssistantMessageEndReason;
   errorMessage: string | undefined;
+  /** Why the model could not answer, when the agent recognised a reason the user can act on. */
+  errorKind: ModelAccessErrorKind | undefined;
 };
 
 export type ToolExecutionOutcome =
@@ -333,6 +336,7 @@ function applyThreadEvent(
         content: event.content,
         endReason: event.endReason,
         errorMessage: event.errorMessage,
+        errorKind: event.errorKind,
       });
     case "tool_execution_started":
       return replaceOrAppendEntry(state, {

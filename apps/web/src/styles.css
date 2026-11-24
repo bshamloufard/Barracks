@@ -542,3 +542,61 @@ code {
   font-size: 0.8rem;
   color: var(--text-quiet);
 }
+
+.model-picker,
+.model-credential-form,
+.thread-model-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.model-picker .sandbox-banner {
+  flex: none;
+}
+
+.model-credentials {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.model-credentials li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.model-credential-form {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
+.model-credential-form h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.thread-model {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.thread-model > p {
+  margin: 0 0 0.35rem;
+}
+
+.model-access-error p {
+  margin: 0 0 0.25rem;
+}

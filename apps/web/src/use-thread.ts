@@ -23,6 +23,8 @@ export type ThreadControls = {
   requestDeletion: () => void;
   confirmDeletion: () => void;
   cancelDeletion: () => void;
+  /** Switches the thread's model; resolves once it is switched, or rejects saying why not. */
+  switchModel: (model: string) => Promise<void>;
 };
 
 /**
@@ -129,6 +131,13 @@ export function useThread(threadId: string): ThreadControls {
   const cancelDeletion = useCallback(() => {
     store.dispatch({ type: "delete_confirmation_cancelled" });
   }, [store]);
+  const switchModel = useCallback(
+    async (model: string) => {
+      const thread = await threadsApi.changeModel(threadId, model);
+      store.dispatch({ type: "thread_record_loaded", thread });
+    },
+    [store, threadsApi, threadId],
+  );
 
   return {
     state,
@@ -142,6 +151,7 @@ export function useThread(threadId: string): ThreadControls {
     requestDeletion,
     confirmDeletion,
     cancelDeletion,
+    switchModel,
   };
 }
 

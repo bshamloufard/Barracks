@@ -3,6 +3,7 @@ import {
   buildResumeThreadApiPath,
   buildStopThreadApiPath,
   buildThreadApiPath,
+  buildThreadModelApiPath,
   type ThreadRepositoryRequest,
   type ThreadSummary,
   threadListResponseSchema,
@@ -45,17 +46,21 @@ export class ThreadsApi {
   }
 
   /**
-   * Starts a thread, from `repository` if given. Refused when the user
-   * already runs as many sandboxes as allowed, or may not use the
-   * repository; the error says why.
+   * Starts a thread on `model`, from `repository` if given. Refused when the
+   * user has no key for the model's provider, already runs as many
+   * sandboxes as allowed, or may not use the repository; the error says why.
    */
-  createThread(repository?: ThreadRepositoryRequest): Promise<ThreadSummary> {
-    return this.#change(
-      "POST",
-      threadsApiPath,
-      "create a thread",
-      repository === undefined ? {} : { repository },
-    );
+  createThread(choices: NewThreadChoices): Promise<ThreadSummary> {
+    const { model, repository } = choices;
+    return this.#change("POST", threadsApiPath, "create a thread", {
+      ...(model === undefined ? {} : { model }),
+      ...(repository === undefined ? {} : { repository }),
+    });
+  }
+
+  /** Switches the thread to another model, from its agent's next run. */
+  changeModel(threadId: string, model: string): Promise<ThreadSummary> {
+    return this.#change("PUT", buildThreadModelApiPath(threadId), "switch the model", { model });
   }
 
   /** Stops the thread's sandbox, keeping its files; answers with the thread now stopping. */
@@ -74,16 +79,16 @@ export class ThreadsApi {
   }
 
   async #change(
-    method: "POST" | "DELETE",
+    method: "POST" | "PUT" | "DELETE",
     path: string,
     attempt: string,
     body: object = {},
   ): Promise<ThreadSummary> {
     const response = await this.#request(
       path,
-      method === "POST"
-        ? { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-        : { method },
+      method === "DELETE"
+        ? { method }
+        : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     );
     if (!response.ok) {
       throw await describeFailure(response, attempt);
@@ -91,6 +96,9 @@ export class ThreadsApi {
     return parseAnswer(threadResponseSchema, await response.json(), attempt).thread;
   }
 }
+
+/** What a new thread runs on, and starts from. */
+export type NewThreadChoices = { model?: string; repository?: ThreadRepositoryRequest };
 
 type AnswerSchema<Answer> = {
   safeParse(value: unknown): { success: true; data: Answer } | { success: false };

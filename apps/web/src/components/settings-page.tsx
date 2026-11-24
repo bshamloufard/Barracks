@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../authentication/session-context";
 import { threadListAddress } from "../page-address";
 import { AccountBar } from "./account-bar";
+import { ModelAccessSettings } from "./model-access-settings";
 
 type ConnectionView =
   | { name: "loading" }
@@ -10,8 +11,9 @@ type ConnectionView =
   | { name: "failed"; reason: string };
 
 /**
- * The user's settings: for now, their link to GitHub, through which their
- * threads can work on their private repositories and publish their work.
+ * The user's settings: their own model keys, on which their threads run, and
+ * their link to GitHub, through which their threads can work on their
+ * private repositories and publish their work.
  */
 export function SettingsPage() {
   const { repositoriesApi } = useSession();
@@ -67,6 +69,10 @@ export function SettingsPage() {
         <AccountBar />
       </header>
       <main>
+        <section className="settings-section" aria-labelledby="model-access-heading">
+          <h2 id="model-access-heading">Model access</h2>
+          <ModelAccessSettings />
+        </section>
         <section className="settings-section" aria-labelledby="github-heading">
           <h2 id="github-heading">GitHub</h2>
           {actionFailure !== undefined && (

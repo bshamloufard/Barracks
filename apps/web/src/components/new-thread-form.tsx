@@ -1,22 +1,23 @@
-import type {
-  GithubConnection,
-  RepositoryAccess,
-  ThreadRepositoryRequest,
-} from "@barrack/protocol";
+import type { GithubConnection, RepositoryAccess } from "@barrack/protocol";
 import { type FormEvent, useEffect, useState } from "react";
+import type { NewThreadChoices } from "../api/threads-api";
 import { useSession } from "../authentication/session-context";
+import { listProviderChoices, suggestModel } from "../model-access/model-choices";
+import { useModelAccess } from "../model-access/use-model-access";
 import { settingsAddress } from "../page-address";
+import { ModelPicker } from "./model-picker";
 
 type NewThreadFormProperties = {
   isCreating: boolean;
-  onCreate: (repository: ThreadRepositoryRequest | undefined) => void;
+  onCreate: (choices: NewThreadChoices) => void;
   onCancel: () => void;
 };
 
 /**
- * Starts a thread, in an empty workspace or from one repository: a public
- * one cloned without credentials, or one of the user's repositories reached
- * through Barrack's GitHub App, which alone can be published from.
+ * Starts a thread on a model the user chooses, in an empty workspace or from
+ * one repository: a public one cloned without credentials, or one of the
+ * user's repositories reached through Barrack's GitHub App, which alone can
+ * be published from.
  */
 export function NewThreadForm({ isCreating, onCreate, onCancel }: NewThreadFormProperties) {
   const { repositoriesApi } = useSession();
@@ -24,6 +25,13 @@ export function NewThreadForm({ isCreating, onCreate, onCancel }: NewThreadFormP
   const [access, setAccess] = useState<RepositoryAccess>("none");
   const [url, setUrl] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
+  const { view: modelAccess } = useModelAccess();
+  const [model, setModel] = useState<string | undefined>(undefined);
+  const choices =
+    modelAccess.name === "loaded"
+      ? listProviderChoices(modelAccess.catalogue, modelAccess.credentials)
+      : [];
+  const chosenModel = model ?? suggestModel(choices) ?? `${choices[0]?.providerId ?? ""}/`;
 
   useEffect(() => {
     repositoriesApi.readGithubConnection().then(setConnection, (error: unknown) => {
@@ -38,19 +46,39 @@ export function NewThreadForm({ isCreating, onCreate, onCancel }: NewThreadFormP
     event.preventDefault();
     const trimmedUrl = url.trim();
     const trimmedBranch = baseBranch.trim();
-    onCreate(
-      trimmedUrl === ""
-        ? undefined
+    onCreate({
+      model: chosenModel,
+      ...(trimmedUrl === ""
+        ? {}
         : {
-            url: trimmedUrl,
-            access,
-            ...(trimmedBranch === "" ? {} : { baseBranch: trimmedBranch }),
-          },
-    );
+            repository: {
+              url: trimmedUrl,
+              access,
+              ...(trimmedBranch === "" ? {} : { baseBranch: trimmedBranch }),
+            },
+          }),
+    });
   };
 
   return (
     <form className="new-thread-form" onSubmit={submit} aria-label="New thread">
+      <fieldset>
+        <legend>Model</legend>
+        {modelAccess.name === "loading" && <p className="quiet-note">Loading the models…</p>}
+        {modelAccess.name === "failed" && (
+          <p className="error-notice" role="alert">
+            {modelAccess.reason}
+          </p>
+        )}
+        {modelAccess.name === "loaded" && (
+          <ModelPicker
+            catalogue={modelAccess.catalogue}
+            choices={choices}
+            model={chosenModel}
+            onChange={setModel}
+          />
+        )}
+      </fieldset>
       <fieldset>
         <legend>Start from a repository (optional)</legend>
         <label>
