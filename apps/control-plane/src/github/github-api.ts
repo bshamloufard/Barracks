@@ -130,8 +130,14 @@ export class GithubApi {
     );
     const parsed = parseAnswer(installationTokenSchema, answer, "an installation token");
     assertGrantedOnlyAsked(parsed.permissions ?? {}, permissions);
-    const repositories = parsed.repositories ?? [];
-    if (repositories.length !== 1 || repositories[0]?.id !== repositoryId) {
+    // GitHub lists the repositories a restricted token covers; one that
+    // lists any other is refused. (An answer without the list is taken at
+    // its word: GitHub grants no more than the request names.)
+    const { repositories } = parsed;
+    if (
+      repositories !== undefined &&
+      (repositories.length !== 1 || repositories[0]?.id !== repositoryId)
+    ) {
       throw new GithubApiError(
         "GitHub granted a token for other repositories than the one asked for.",
       );
