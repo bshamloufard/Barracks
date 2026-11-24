@@ -1,12 +1,13 @@
 import type { Logger } from "../logger.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import { ThreadRelay } from "./thread-relay.js";
 
 /**
  * Hands out the one relay for each thread, creating it the first time a
- * supervisor or client connects. The WebSocket endpoints admit connections
- * only to threads the thread store holds, so nothing here checks that again.
+ * supervisor or client connects. The WebSocket endpoints admit supervisors
+ * only with their thread's token, and clients only with a `ThreadAccess`.
  *
  * A relay is dropped as soon as it has no supervisor, no clients and no
  * queued work, so the map holds only threads someone is connected to. The
@@ -35,13 +36,17 @@ export class ThreadRelayRegistry {
     return relay;
   }
 
-  /** Returns the relay the client is now attached to. */
+  /**
+   * Returns the relay the client is now attached to. It takes proof that the
+   * client's user owns the thread, so no client is attached without that
+   * check.
+   */
   attachClient(
-    threadId: string,
+    access: ThreadAccess,
     connection: ClientConnection,
     lastSeenSequence: number,
   ): ThreadRelay {
-    const relay = this.#relayFor(threadId);
+    const relay = this.#relayFor(access.threadId);
     relay.attachClient(connection, lastSeenSequence);
     return relay;
   }

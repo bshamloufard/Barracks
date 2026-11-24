@@ -7,4 +7,6 @@ export const standardCloseCodes = {
   goingAway: 1001,
   /** The server hit a condition it could not handle. */
   internalError: 1011,
+  /** The server cannot serve the request just now, through no fault of the peer's. */
+  tryAgainLater: 1013,
 } as const;

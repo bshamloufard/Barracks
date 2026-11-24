@@ -12,6 +12,7 @@ describe("failing interrupted sandbox creations at startup", () => {
     const threadStore = new InMemoryThreadStore();
     await threadStore.create({
       threadId: "thread-a",
+      ownerUserId: "user-a",
       sandboxProvider: "docker",
       supervisorTokenDigest: randomBytes(32),
     });

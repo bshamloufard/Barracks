@@ -17,11 +17,15 @@ import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { PostgresThreadStore } from "../threads/postgres-thread-store.js";
 import type { ThreadStore } from "../threads/thread-store.js";
+import { InMemoryUserStore } from "../users/in-memory-user-store.js";
+import { PostgresUserStore } from "../users/postgres-user-store.js";
+import type { UserStore } from "../users/user-store.js";
 
-/** Where the control plane keeps threads and their history. */
+/** Where the control plane keeps users, threads and their history. */
 export type OpenStorage = {
   threadEventLog: ThreadEventLog;
   threadStore: ThreadStore;
+  userStore: UserStore;
   /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
@@ -53,6 +57,7 @@ export async function openStorage(
     return {
       threadEventLog: new InMemoryThreadEventLog(),
       threadStore: new InMemoryThreadStore(),
+      userStore: new InMemoryUserStore(),
       close: async () => undefined,
     };
   }
@@ -78,6 +83,7 @@ export async function openStorage(
   return {
     threadEventLog: new PostgresThreadEventLog(pool),
     threadStore: new PostgresThreadStore(pool),
+    userStore: new PostgresUserStore(pool),
     close: async () => {
       await keepAlive?.stop();
       await pool.end();

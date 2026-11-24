@@ -1,4 +1,5 @@
 import { createSandboxProvider } from "@barrack/sandbox-providers";
+import { createConfiguredAuthentication } from "./authentication/create-authenticator.js";
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
@@ -26,6 +27,11 @@ async function main(): Promise<void> {
   // The database is migrated before the server listens, so nothing is
   // accepted that could not be recorded.
   const storage = await openStorage(configuration.database, logger);
+  const authentication = await createConfiguredAuthentication(
+    configuration.authentication,
+    storage.userStore,
+    logger,
+  );
   await failInterruptedSandboxCreations(storage.threadStore, logger);
   const threadCreator = new ThreadCreator({
     threadStore: storage.threadStore,
@@ -39,6 +45,8 @@ async function main(): Promise<void> {
     threadEventLog: storage.threadEventLog,
     threadStore: storage.threadStore,
     threadCreator,
+    authenticator: authentication.authenticator,
+    clientAuthentication: authentication.clientAuthentication,
     logger,
   });
   shutDownOnSignal(server, threadCreator, storage, logger);

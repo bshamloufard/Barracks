@@ -6,7 +6,7 @@ import {
   type ThreadEventMessage,
 } from "@barrack/protocol";
 import { WebSocket } from "ws";
-import { testClientOrigin } from "./local-system.js";
+import { type RunningControlPlane, testClientOrigin } from "./local-system.js";
 
 const waitTimeoutInMilliseconds = 10_000;
 
@@ -32,13 +32,18 @@ export class TestClient {
     socket.on("message", (frame) => this.#receive(String(frame)));
   }
 
+  /**
+   * Connects as the control plane's signed-in test user: the first message
+   * authenticates, and nothing else is sent until the replay announcement
+   * has arrived, as the protocol requires.
+   */
   static async connect(
-    webSocketBaseUrl: string,
+    controlPlane: Pick<RunningControlPlane, "webSocketBaseUrl" | "accessToken">,
     threadId: string,
     lastSeenSequence: number,
   ): Promise<TestClient> {
     const path = buildClientEndpointPath({ threadId, lastSeenSequence });
-    const socket = new WebSocket(`${webSocketBaseUrl}${path}`, {
+    const socket = new WebSocket(`${controlPlane.webSocketBaseUrl}${path}`, {
       headers: { Origin: testClientOrigin },
     });
     const client = new TestClient(socket);
@@ -46,6 +51,8 @@ export class TestClient {
       socket.once("open", () => resolve());
       socket.once("error", reject);
     });
+    client.send({ type: "authenticate", accessToken: controlPlane.accessToken });
+    await client.waitUntil("the replay announcement", (messages) => messages.length > 0);
     return client;
   }
 

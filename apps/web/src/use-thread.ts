@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useSession } from "./authentication/session-context";
 import { ThreadConnection } from "./connection/thread-connection";
 import { ThreadRecordPoller } from "./connection/thread-record-poller";
 import type { ThreadState } from "./thread-state/thread-state";
@@ -20,17 +21,20 @@ export function useThread(threadId: string): ThreadControls {
   const [store] = useState(() => new ThreadStore());
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const connectionReference = useRef<ThreadConnection | undefined>(undefined);
+  const session = useSession();
 
   useEffect(() => {
-    const connection = new ThreadConnection(threadId, store);
+    const connection = new ThreadConnection(threadId, store, session);
     connectionReference.current = connection;
-    const recordPoller = new ThreadRecordPoller(threadId, store, () => connection.start());
+    const recordPoller = new ThreadRecordPoller(threadId, store, session.threadsApi, () =>
+      connection.start(),
+    );
     recordPoller.start();
     return () => {
       recordPoller.stop();
       connection.stop();
     };
-  }, [threadId, store]);
+  }, [threadId, store, session]);
 
   const sendUserMessage = useCallback((text: string) => {
     connectionReference.current?.sendUserMessage(text);

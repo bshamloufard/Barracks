@@ -1,7 +1,8 @@
 import { createServer, type Server } from "node:http";
-import { maximumFrameLength } from "@barrack/protocol";
+import { type ClientAuthenticationConfiguration, maximumFrameLength } from "@barrack/protocol";
 import { getRequestListener } from "@hono/node-server";
 import { WebSocketServer } from "ws";
+import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
 import { createHttpApp } from "./http/http-app.js";
 import type { Logger } from "./logger.js";
@@ -28,6 +29,12 @@ const maximumPayloadInBytes = 3 * maximumFrameLength;
  */
 const defaultHeartbeatIntervalInMilliseconds = 30_000;
 
+/**
+ * Plenty for a client to send one message after the upgrade, while keeping
+ * connections that never authenticate from lingering.
+ */
+const defaultClientAuthenticationTimeoutInMilliseconds = 5_000;
+
 export type ControlPlaneServerOptions = {
   configuration: Pick<
     ControlPlaneConfiguration,
@@ -36,8 +43,12 @@ export type ControlPlaneServerOptions = {
   threadEventLog: ThreadEventLog;
   threadStore: ThreadStore;
   threadCreator: ThreadCreator;
+  authenticator: Authenticator;
+  /** What clients are told about signing in. */
+  clientAuthentication: ClientAuthenticationConfiguration;
   logger: Logger;
   heartbeatIntervalInMilliseconds?: number;
+  clientAuthenticationTimeoutInMilliseconds?: number;
 };
 
 export type RunningControlPlaneServer = {
@@ -58,12 +69,10 @@ export async function startControlPlaneServer(
     maxPayload: maximumPayloadInBytes,
   });
   const httpApp = createHttpApp({
-    threads: {
-      threadStore,
-      threadCreator: options.threadCreator,
-      allowedClientOrigins,
-      logger,
-    },
+    authenticator: options.authenticator,
+    clientAuthentication: options.clientAuthentication,
+    allowedClientOrigins,
+    threads: { threadStore, threadCreator: options.threadCreator, logger },
     webClientDirectory: configuration.webClientDirectory,
   });
   // Hono's adapter would otherwise replace the global Request and Response
@@ -78,6 +87,10 @@ export async function startControlPlaneServer(
       relays: new ThreadRelayRegistry(options.threadEventLog, logger),
       threadStore,
       authorizeSupervisor: authorizeWithThreadTokens(threadStore),
+      authenticator: options.authenticator,
+      clientAuthenticationTimeoutInMilliseconds:
+        options.clientAuthenticationTimeoutInMilliseconds ??
+        defaultClientAuthenticationTimeoutInMilliseconds,
       allowedClientOrigins,
       heartbeatIntervalInMilliseconds:
         options.heartbeatIntervalInMilliseconds ?? defaultHeartbeatIntervalInMilliseconds,

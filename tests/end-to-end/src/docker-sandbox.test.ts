@@ -76,10 +76,10 @@ if (unavailableReason !== undefined) {
       if (controlPlane === undefined) {
         throw new Error("The control plane did not start.");
       }
-      const { threadId } = await createThread(controlPlane.httpBaseUrl);
-      await waitUntilSandboxIsReady(controlPlane.httpBaseUrl, threadId);
+      const { threadId } = await createThread(controlPlane);
+      await waitUntilSandboxIsReady(controlPlane, threadId);
       sandboxId = findSandboxIdOf(threadId);
-      client = await TestClient.connect(controlPlane.webSocketBaseUrl, threadId, 0);
+      client = await TestClient.connect(controlPlane, threadId, 0);
 
       await client.waitUntil("the sandbox's supervisor has connected", supervisorIs(true));
       client.send({ type: "send_user_message", text: "Hello from the host" });

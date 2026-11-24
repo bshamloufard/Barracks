@@ -5,13 +5,13 @@ Barrack is an open-source, self-hostable, always-on coding-agent platform in the
 Barrack has four parts: clients (web first), an always-on control plane, a Postgres data store, and one sandbox per thread. Inside each sandbox, a small supervisor process connects outward to the control plane. See [docs/architecture.md](docs/architecture.md) for how they fit together.
 
 > [!WARNING]
-> **This build has no user sign-in.** Anyone who can reach the control plane can create threads, read every thread and send messages to its agent, which can run any command in its sandbox (and under `pnpm dev`, on your machine). Keep it on localhost: `pnpm dev` listens only on `127.0.0.1` and `localhost`. Do not expose it to a network.
+> **`pnpm dev` has no sign-in.** It runs the control plane in development mode, where every client is one fixed user, so the control plane refuses to listen anywhere but `127.0.0.1` and `localhost`; each agent can run any command on your machine. With Supabase sign-in the control plane may listen anywhere, and each user sees and controls only their own threads, but nothing has been deployed yet and model keys still reach every sandbox: admit only people you trust.
 
 ## Status
 
 **Milestone 1 is complete:** on one machine, a prompt typed in the web page reaches the agent through the control plane and a sandbox supervisor, and the agent's reply streams back.
 
-**Milestone 2's parts are built and tested locally, with Docker and Postgres:** threads are created from a thread list, each with a sandbox of its own and a supervisor token minted for it alone; sandboxes come from a provider chosen by configuration (Docker, Daytona, or local processes for development); the agent runs as its own operating-system user inside the sandbox image; and thread history is stored in Postgres and replayed in pages after a restart. **Nothing is deployed**, and Daytona, Railway and Supabase have not been exercised, for lack of credentials. There is no sign-in yet, so it must stay on localhost. The loop has been run with the real Pi against a local mock model, not yet with a real model provider.
+**Milestone 2's parts are built and tested locally, with Docker and Postgres:** threads are created from a thread list, each with a sandbox of its own and a supervisor token minted for it alone; sandboxes come from a provider chosen by configuration (Docker, Daytona, or local processes for development); the agent runs as its own operating-system user inside the sandbox image; and thread history is stored in Postgres and replayed in pages after a restart. **Nothing is deployed**, and Daytona, Railway and Supabase have not been exercised, for lack of credentials. **Milestone 3 has begun:** users sign in with Supabase Auth by an emailed code, the control plane verifies every token itself and admits only listed addresses, and each thread belongs to one user, over HTTP and WebSocket alike. The loop has been run with the real Pi against a local mock model, not yet with a real model provider.
 
 ## Prerequisites
 
@@ -77,6 +77,7 @@ packages/sandbox-providers/  The boundary to the computers threads run on: Docke
 sandbox-image/               The image a thread's sandbox runs: Ubuntu, Node, the supervisor and Pi, two users
 tests/end-to-end/            Tests that run the real control plane and supervisors together, locally and in Docker
 tests/mock-model-server/     A stand-in OpenAI-compatible model, so tests run the real Pi with no network or key
+tests/test-identity-issuer/  A stand-in for Supabase Auth's token issuer, so tests verify real tokens with no project
 scripts/dev/                 The pnpm dev command
 docs/                        Architecture overview and decision log
 .github/workflows/           CI: pnpm check and pnpm build with Postgres, and the Docker tests

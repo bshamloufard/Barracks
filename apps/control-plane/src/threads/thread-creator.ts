@@ -56,18 +56,22 @@ export class ThreadCreator {
       options.retryDelaysInMilliseconds ?? defaultRetryDelaysInMilliseconds;
   }
 
-  /** Records a new thread and starts creating its sandbox, without waiting for it. */
-  async createThread(): Promise<ThreadRecord> {
+  /** Records a new thread for its owner and starts creating its sandbox, without waiting for it. */
+  async createThread(ownerUserId: string): Promise<ThreadRecord> {
     const { threadStore, sandboxProviderName } = this.#options;
     const threadId = randomUUID();
     const supervisorToken = mintSupervisorToken();
     const thread = await threadStore.create({
       threadId,
+      ownerUserId,
       sandboxProvider: sandboxProviderName,
       supervisorTokenDigest: supervisorToken.digest,
     });
     const logger = this.#options.logger.child({ threadId });
-    logger.info({ sandboxProvider: sandboxProviderName }, "Created a thread; creating its sandbox");
+    logger.info(
+      { sandboxProvider: sandboxProviderName, ownerUserId },
+      "Created a thread; creating its sandbox",
+    );
     const creation = this.#createSandbox(threadId, supervisorToken.token, logger);
     this.#sandboxCreationsInProgress.add(creation);
     void creation.finally(() => this.#sandboxCreationsInProgress.delete(creation));

@@ -5,21 +5,28 @@ import {
   threadResponseSchema,
   threadsApiPath,
 } from "@barrack/protocol";
-import { testClientOrigin } from "./local-system.js";
+import { type RunningControlPlane, testClientOrigin } from "./local-system.js";
 
 /**
- * The control plane's threads API, used as the web page uses it. Every
- * response is checked with the protocol's own schemas.
+ * The control plane's threads API, used as the web page uses it, as the
+ * control plane's signed-in test user. Every response is checked with the
+ * protocol's own schemas.
  */
+
+type ApiAccess = Pick<RunningControlPlane, "httpBaseUrl" | "accessToken">;
 
 const sandboxWaitTimeoutInMilliseconds = 60_000;
 const pollIntervalInMilliseconds = 100;
 
 /** Creates a thread as a browser on an allowed origin would. */
-export async function createThread(httpBaseUrl: string): Promise<ThreadSummary> {
-  const response = await fetch(`${httpBaseUrl}${threadsApiPath}`, {
+export async function createThread(controlPlane: ApiAccess): Promise<ThreadSummary> {
+  const response = await fetch(`${controlPlane.httpBaseUrl}${threadsApiPath}`, {
     method: "POST",
-    headers: { Origin: testClientOrigin, "Content-Type": "application/json" },
+    headers: {
+      Origin: testClientOrigin,
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${controlPlane.accessToken}`,
+    },
     body: "{}",
   });
   if (response.status !== 201) {
@@ -28,8 +35,13 @@ export async function createThread(httpBaseUrl: string): Promise<ThreadSummary> 
   return threadResponseSchema.parse(await response.json()).thread;
 }
 
-export async function fetchThread(httpBaseUrl: string, threadId: string): Promise<ThreadSummary> {
-  const response = await fetch(`${httpBaseUrl}${buildThreadApiPath(threadId)}`);
+export async function fetchThread(
+  controlPlane: ApiAccess,
+  threadId: string,
+): Promise<ThreadSummary> {
+  const response = await fetch(`${controlPlane.httpBaseUrl}${buildThreadApiPath(threadId)}`, {
+    headers: { Authorization: `Bearer ${controlPlane.accessToken}` },
+  });
   if (response.status !== 200) {
     throw new Error(`Fetching thread ${threadId} answered ${response.status}.`);
   }
@@ -38,12 +50,12 @@ export async function fetchThread(httpBaseUrl: string, threadId: string): Promis
 
 /** Resolves once the thread's sandbox exists, failing with the reason if it could not be created. */
 export async function waitUntilSandboxIsReady(
-  httpBaseUrl: string,
+  controlPlane: ApiAccess,
   threadId: string,
 ): Promise<void> {
   const deadline = Date.now() + sandboxWaitTimeoutInMilliseconds;
   while (Date.now() < deadline) {
-    const { sandbox } = await fetchThread(httpBaseUrl, threadId);
+    const { sandbox } = await fetchThread(controlPlane, threadId);
     if (sandbox.state === "ready") {
       return;
     }

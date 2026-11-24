@@ -10,6 +10,7 @@ import {
 
 type ThreadRow = {
   thread_id: string;
+  owner_user_id: string | null;
   created_at: Date;
   sandbox_provider: string;
   supervisor_token_digest: Buffer;
@@ -19,7 +20,7 @@ type ThreadRow = {
 };
 
 const threadColumns =
-  "thread_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state, sandbox_id, sandbox_failure_reason";
+  "thread_id, owner_user_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state, sandbox_id, sandbox_failure_reason";
 
 /**
  * Keeps thread records in Postgres, in the table created by
@@ -43,10 +44,10 @@ export class PostgresThreadStore implements ThreadStore {
   async create(thread: NewThread): Promise<ThreadRecord> {
     const result = await this.#pool.query<ThreadRow>(
       `insert into ${this.#table}
-        (thread_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state)
-        values ($1, clock_timestamp(), $2, $3, 'creating')
+        (thread_id, owner_user_id, created_at, sandbox_provider, supervisor_token_digest, sandbox_state)
+        values ($1, $2, clock_timestamp(), $3, $4, 'creating')
         returning ${threadColumns}`,
-      [thread.threadId, thread.sandboxProvider, thread.supervisorTokenDigest],
+      [thread.threadId, thread.ownerUserId, thread.sandboxProvider, thread.supervisorTokenDigest],
     );
     return toThreadRecord(requireRow(result.rows[0], "Recording a new thread"));
   }
@@ -89,12 +90,22 @@ export class PostgresThreadStore implements ThreadStore {
     return row === undefined ? undefined : toThreadRecord(row);
   }
 
-  async listNewestFirst(limit: number): Promise<ThreadRecord[]> {
+  async findOwnedBy(ownerUserId: string, threadId: string): Promise<ThreadRecord | undefined> {
+    const result = await this.#pool.query<ThreadRow>(
+      `select ${threadColumns} from ${this.#table} where thread_id = $1 and owner_user_id = $2`,
+      [threadId, ownerUserId],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : toThreadRecord(row);
+  }
+
+  async listNewestFirstOwnedBy(ownerUserId: string, limit: number): Promise<ThreadRecord[]> {
     const result = await this.#pool.query<ThreadRow>(
       `select ${threadColumns} from ${this.#table}
+        where owner_user_id = $1
         order by created_at desc, thread_id desc
-        limit $1`,
-      [limit],
+        limit $2`,
+      [ownerUserId, limit],
     );
     return result.rows.map(toThreadRecord);
   }
@@ -126,6 +137,7 @@ function requireRow(row: ThreadRow | undefined, attemptedOperation: string): Thr
 function toThreadRecord(row: ThreadRow): ThreadRecord {
   return {
     threadId: row.thread_id,
+    ownerUserId: row.owner_user_id ?? undefined,
     createdAt: row.created_at,
     sandboxProvider: row.sandbox_provider,
     supervisorTokenDigest: row.supervisor_token_digest,

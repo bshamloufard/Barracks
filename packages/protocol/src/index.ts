@@ -1,5 +1,6 @@
 export * from "./agent-events.js";
 export * from "./assistant-content.js";
+export * from "./client-configuration.js";
 export * from "./client-messages.js";
 export * from "./close-codes.js";
 export * from "./endpoints.js";

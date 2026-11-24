@@ -182,6 +182,7 @@ describeWithTestDatabase("the control plane's migrations", () => {
       { name: "thread_events", has_row_security: true },
       { name: "thread_sequence_counters", has_row_security: true },
       { name: "threads", has_row_security: true },
+      { name: "users", has_row_security: true },
     ]);
     expect(policies.rows).toEqual([]);
   });

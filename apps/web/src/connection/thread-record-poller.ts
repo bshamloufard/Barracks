@@ -1,4 +1,4 @@
-import { fetchThread } from "../api/threads-api";
+import type { ThreadsApi } from "../api/threads-api";
 import type { ThreadStore } from "../thread-state/thread-store";
 import { reconnectDelayInMilliseconds } from "./reconnect-delay";
 
@@ -20,6 +20,7 @@ const creatingPollIntervalInMilliseconds = 1_000;
 export class ThreadRecordPoller {
   readonly #threadId: string;
   readonly #store: ThreadStore;
+  readonly #threadsApi: ThreadsApi;
   readonly #whenFound: () => void;
   #hasBeenFound = false;
   #failedAttemptCount = 0;
@@ -27,9 +28,10 @@ export class ThreadRecordPoller {
   #isStopped = false;
 
   /** `whenFound` is called once, the first time the record arrives. */
-  constructor(threadId: string, store: ThreadStore, whenFound: () => void) {
+  constructor(threadId: string, store: ThreadStore, threadsApi: ThreadsApi, whenFound: () => void) {
     this.#threadId = threadId;
     this.#store = store;
+    this.#threadsApi = threadsApi;
     this.#whenFound = whenFound;
   }
 
@@ -44,7 +46,7 @@ export class ThreadRecordPoller {
 
   async #poll(): Promise<void> {
     try {
-      const thread = await fetchThread(this.#threadId);
+      const thread = await this.#threadsApi.fetchThread(this.#threadId);
       if (this.#isStopped) {
         return;
       }

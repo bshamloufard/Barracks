@@ -1,4 +1,5 @@
 import { parsePageAddress } from "../page-address";
+import { SessionGate } from "./session-gate";
 import { ThreadListPage } from "./thread-list-page";
 import { ThreadView } from "./thread-view";
 
@@ -11,8 +12,13 @@ export function App() {
       </main>
     );
   }
-  if (address.value.page === "thread-list") {
-    return <ThreadListPage />;
-  }
-  return <ThreadView threadId={address.value.threadId} />;
+  return (
+    <SessionGate>
+      {address.value.page === "thread-list" ? (
+        <ThreadListPage />
+      ) : (
+        <ThreadView threadId={address.value.threadId} />
+      )}
+    </SessionGate>
+  );
 }

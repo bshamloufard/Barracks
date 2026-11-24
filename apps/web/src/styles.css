@@ -100,6 +100,39 @@ h1 {
   justify-content: space-between;
 }
 
+.thread-list-header > h1 {
+  flex: 1;
+}
+
+.account-bar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.sign-in-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+  max-width: 22rem;
+  margin-bottom: 0.75rem;
+}
+
+.sign-in-form input {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+  color: inherit;
+  font: inherit;
+  align-self: stretch;
+}
+
 .thread-list {
   list-style: none;
   margin: 0;

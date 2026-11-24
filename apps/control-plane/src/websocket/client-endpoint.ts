@@ -1,35 +1,29 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import {
-  type ClientEndpointParameters,
-  parseClientEndpointPath,
-  parseClientToControlPlaneMessage,
-} from "@barrack/protocol";
-import type { WebSocket } from "ws";
-import type { Logger } from "../logger.js";
-import { keepConnectionAlive } from "./heartbeat.js";
-import { receiveMessages } from "./receive-messages.js";
+import { parseClientEndpointPath } from "@barrack/protocol";
+import { ClientSession } from "./client-session.js";
 import { rejectUpgrade } from "./reject-upgrade.js";
 import type { UpgradeDependencies } from "./upgrade-dependencies.js";
-import { WebSocketClientConnection } from "./web-socket-connections.js";
 
 /**
- * Accepts a client's connection for `/threads/{threadId}/client`, for a
- * thread that exists.
+ * Accepts a client's connection for `/threads/{threadId}/client`. Nothing
+ * about the thread is checked here, not even that it exists, because the
+ * client has not yet said who it is: browsers cannot put an access token on
+ * a WebSocket upgrade, so it is the first message, and `ClientSession`
+ * checks it and the thread's owner before sending anything.
  *
- * Clients are not authenticated until Milestone 3. Checking `Origin` stops a
- * web page on another site from opening this connection from the user's
- * browser (browsers always send it on WebSocket upgrades and pages cannot
- * forge it). It does not stop other programs on the same machine, which is
- * why the control plane listens only on the loopback interface by default.
+ * An `Origin` header, which browsers always send on upgrades and pages
+ * cannot forge, must be one the installation serves its client from, so a
+ * page on another site cannot even open the connection. Native apps send
+ * none, and are let through to authenticate like everyone else.
  */
-export async function acceptClientUpgrade(
+export function acceptClientUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
   dependencies: UpgradeDependencies,
-): Promise<void> {
+): void {
   const endpoint = parseClientEndpointPath(request.url ?? "");
   if (!endpoint.ok) {
     dependencies.logger.warn(
@@ -45,56 +39,12 @@ export async function acceptClientUpgrade(
     connectionId: randomUUID(),
   });
   const origin = request.headers.origin;
-  if (origin === undefined || !dependencies.allowedClientOrigins.has(origin)) {
+  if (origin !== undefined && !dependencies.allowedClientOrigins.has(origin)) {
     logger.warn({ origin }, "Refused a client connection from an origin that is not allowed");
-    rejectUpgrade(socket, 403, `Origin "${origin ?? ""}" is not allowed to connect.`);
-    return;
-  }
-  let threadExists: boolean;
-  try {
-    threadExists = (await dependencies.threadStore.find(endpoint.value.threadId)) !== undefined;
-  } catch (error) {
-    logger.error({ err: error }, "Could not look up the thread a client asked for");
-    rejectUpgrade(socket, 503, "The control plane cannot look up threads now; try again later.");
-    return;
-  }
-  if (socket.destroyed) {
-    logger.info("A client went away while its thread was being looked up");
-    return;
-  }
-  if (!threadExists) {
-    logger.warn("Refused a client connection to a thread that does not exist");
-    rejectUpgrade(socket, 404, `There is no thread "${endpoint.value.threadId}".`);
+    rejectUpgrade(socket, 403, `Origin "${origin}" is not allowed to connect.`);
     return;
   }
   dependencies.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-    attachClient(webSocket, endpoint.value, dependencies, logger);
+    new ClientSession(webSocket, endpoint.value, dependencies, logger).start();
   });
-}
-
-function attachClient(
-  webSocket: WebSocket,
-  endpoint: ClientEndpointParameters,
-  dependencies: UpgradeDependencies,
-  logger: Logger,
-): void {
-  const connection = new WebSocketClientConnection(webSocket, logger);
-  logger.info({ lastSeenSequence: endpoint.lastSeenSequence }, "Client connected");
-  keepConnectionAlive(webSocket, dependencies.heartbeatIntervalInMilliseconds, logger);
-  webSocket.on("error", (error) => logger.warn({ err: error }, "Client connection failed"));
-  const relay = dependencies.relays.attachClient(
-    endpoint.threadId,
-    connection,
-    endpoint.lastSeenSequence,
-  );
-  webSocket.on("close", (closeCode, reason) => {
-    logger.info({ closeCode, reason: reason.toString() }, "Client disconnected");
-    relay.detachClient(connection);
-  });
-  receiveMessages(
-    webSocket,
-    parseClientToControlPlaneMessage,
-    (message) => relay.receiveFromClient(connection, message),
-    logger,
-  );
 }

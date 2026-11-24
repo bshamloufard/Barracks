@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer } from "react";
-import { createThread, listThreads } from "../api/threads-api";
+import { useSession } from "../authentication/session-context";
 import { threadPageAddress } from "../page-address";
 import {
   initialThreadListState,
@@ -17,24 +17,25 @@ export type ThreadListControls = {
 /** Loads the thread list once the calling component mounts. */
 export function useThreadList(): ThreadListControls {
   const [state, dispatch] = useReducer(reduceThreadListState, initialThreadListState);
+  const { threadsApi } = useSession();
 
   const reloadThreads = useCallback(() => {
     dispatch({ type: "list_requested" });
-    listThreads().then(
+    threadsApi.listThreads().then(
       (threads) => dispatch({ type: "list_loaded", threads }),
       (error: unknown) => dispatch({ type: "list_failed", reason: describeError(error) }),
     );
-  }, []);
+  }, [threadsApi]);
 
   useEffect(reloadThreads, [reloadThreads]);
 
   const createThreadAndOpenIt = useCallback(() => {
     dispatch({ type: "creation_started" });
-    createThread().then(
+    threadsApi.createThread().then(
       (thread) => window.location.assign(threadPageAddress(thread.threadId)),
       (error: unknown) => dispatch({ type: "creation_failed", reason: describeError(error) }),
     );
-  }, []);
+  }, [threadsApi]);
 
   return { state, reloadThreads, createThreadAndOpenIt };
 }

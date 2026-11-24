@@ -89,6 +89,10 @@ export class TestClient {
     this.#socket.sendMessage({ type: "interrupt_agent" });
   }
 
+  authenticate(accessToken: string): void {
+    this.#socket.sendMessage({ type: "authenticate", accessToken });
+  }
+
   sendRawFrame(frameText: string): void {
     this.#socket.sendRawFrame(frameText);
   }
@@ -111,16 +115,31 @@ export async function connectFakeSupervisor(
   return new FakeSupervisor(socket);
 }
 
+/**
+ * Opens a client's connection and, given a token, authenticates at once, as
+ * every client must, and waits for the first answer (the replay announcement)
+ * or for the connection to close; a client may send nothing else before.
+ * Without a token, the test decides what is sent first.
+ */
 export async function connectTestClient(
   baseUrl: string,
   threadId: string,
   lastSeenSequence: number,
   origin: string,
+  accessToken: string | undefined,
 ): Promise<TestClient> {
   const socket = await openTestSocket(
     `${baseUrl}${buildClientEndpointPath({ threadId, lastSeenSequence })}`,
     { Origin: origin },
     parseControlPlaneToClientMessage,
   );
-  return new TestClient(socket);
+  const client = new TestClient(socket);
+  if (accessToken !== undefined) {
+    client.authenticate(accessToken);
+    await Promise.race([
+      client.inbox.waitUntil("the replay announcement", (messages) => messages.length > 0),
+      client.closed,
+    ]);
+  }
+  return client;
 }

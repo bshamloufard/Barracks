@@ -12,6 +12,7 @@
     "@barrack/mock-model-server": "workspace:*",
     "@barrack/protocol": "workspace:*",
     "@barrack/sandbox-providers": "workspace:*",
+    "@barrack/test-identity-issuer": "workspace:*",
     "@types/ws": "8.18.2",
     "tsx": "4.23.15",
     "ws": "8.23.0"

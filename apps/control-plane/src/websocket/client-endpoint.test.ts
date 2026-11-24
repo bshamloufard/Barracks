@@ -6,8 +6,12 @@ import { attemptUpgrade } from "../test-support/test-socket.js";
 let controlPlane: TestControlPlane;
 let threadId: string;
 
+const authenticationTimeoutInMilliseconds = 300;
+
 beforeEach(async () => {
-  controlPlane = await TestControlPlane.start();
+  controlPlane = await TestControlPlane.start({
+    clientAuthenticationTimeoutInMilliseconds: authenticationTimeoutInMilliseconds,
+  });
   ({ threadId } = await controlPlane.createThread());
 });
 
@@ -21,10 +25,11 @@ function clientUrl(threadToView = threadId): string {
 }
 
 describe("the client endpoint", () => {
-  it("accepts a client from an allowed origin", async () => {
-    const outcome = await attemptUpgrade(clientUrl(), { Origin: allowedTestOrigin });
-
-    expect(outcome).toEqual({ opened: true });
+  it("accepts the upgrade from an allowed origin, and from a native client that sends none", async () => {
+    expect(await attemptUpgrade(clientUrl(), { Origin: allowedTestOrigin })).toEqual({
+      opened: true,
+    });
+    expect(await attemptUpgrade(clientUrl(), {})).toEqual({ opened: true });
   });
 
   it("refuses a client from another origin with HTTP 403", async () => {
@@ -33,26 +38,56 @@ describe("the client endpoint", () => {
     expect(outcome).toMatchObject({ opened: false, statusCode: 403 });
   });
 
-  it("refuses a client that sends no origin with HTTP 403", async () => {
-    const outcome = await attemptUpgrade(clientUrl(), {});
-
-    expect(outcome).toMatchObject({ opened: false, statusCode: 403 });
-  });
-
-  it("refuses a client for a thread that does not exist with HTTP 404", async () => {
-    const outcome = await attemptUpgrade(clientUrl("thread-that-was-never-created"), {
-      Origin: allowedTestOrigin,
-    });
-
-    expect(outcome).toMatchObject({ opened: false, statusCode: 404 });
-  });
-
   it("refuses a client whose last seen sequence is not a whole number with HTTP 400", async () => {
     const url = clientUrl().replace("lastSeenSequence=0", "lastSeenSequence=-1");
 
     const outcome = await attemptUpgrade(url, { Origin: allowedTestOrigin });
 
     expect(outcome).toMatchObject({ opened: false, statusCode: 400 });
+  });
+
+  it("starts the replay once the client has authenticated", async () => {
+    const client = await controlPlane.connectClient(threadId);
+
+    expect(client.inbox.messages[0]).toEqual({
+      type: "replay_announcement",
+      firstSequence: 1,
+      lastSequence: 0,
+    });
+  });
+
+  it("closes a client that sends anything before authenticating, and sends it nothing", async () => {
+    const client = await controlPlane.openUnauthenticatedClient(threadId);
+
+    client.sendUserMessage("Let me in");
+
+    expect((await client.closed).closeCode).toBe(closeCodes.notAuthenticated);
+    expect(client.inbox.messages).toEqual([]);
+  });
+
+  it("closes a client that does not authenticate in time, and sends it nothing", async () => {
+    const client = await controlPlane.openUnauthenticatedClient(threadId);
+
+    const closed = await client.closed;
+
+    expect(closed.closeCode).toBe(closeCodes.notAuthenticated);
+    expect(client.inbox.messages).toEqual([]);
+  });
+
+  it("closes a client whose token is not valid, and sends it nothing", async () => {
+    const client = await controlPlane.openUnauthenticatedClient(threadId);
+
+    client.authenticate("not-the-development-token");
+
+    expect((await client.closed).closeCode).toBe(closeCodes.notAuthenticated);
+    expect(client.inbox.messages).toEqual([]);
+  });
+
+  it("closes a client for a thread that does not exist with threadNotFound", async () => {
+    const client = await controlPlane.connectClient("thread-that-was-never-created");
+
+    expect((await client.closed).closeCode).toBe(closeCodes.threadNotFound);
+    expect(client.inbox.messages).toEqual([]);
   });
 
   it("closes a client that sends an invalid message", async () => {
