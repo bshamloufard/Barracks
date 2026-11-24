@@ -74,11 +74,15 @@ export class ThreadRelay {
       if (this.#supervisor !== connection) {
         return;
       }
-      this.#supervisor = undefined;
-      this.#broadcastSupervisorConnectionStatus();
+      this.#forgetSupervisor();
     });
   }
 
+  /**
+   * Messages from a supervisor that is no longer this thread's supervisor
+   * are ignored. That covers one superseded by a newer supervisor, and one
+   * dropped because an event it sent could not be recorded.
+   */
   receiveFromSupervisor(
     connection: SupervisorConnection,
     message: SupervisorToControlPlaneMessage,
@@ -87,7 +91,7 @@ export class ThreadRelay {
       if (this.#supervisor !== connection) {
         this.#logger.warn(
           { messageType: message.type },
-          "Ignored a message from a superseded supervisor",
+          "Ignored a message from a supervisor that is no longer attached to this thread",
         );
         return;
       }
@@ -157,13 +161,22 @@ export class ThreadRelay {
       await this.#recordAndBroadcast(event);
     } catch (error) {
       // The supervisor cannot be told which event was lost, so it is
-      // disconnected rather than left believing the event was recorded.
+      // disconnected rather than left believing the event was recorded. It is
+      // forgotten at once, not when its socket finishes closing: events it
+      // sent after the lost one may already be waiting in the queue, and
+      // recording them would leave a silent hole in the thread's history.
       this.#logger.error({ err: error, eventType: event.type }, "Could not record an agent event");
+      this.#forgetSupervisor();
       supervisor.close(
         standardCloseCodes.internalError,
         "The control plane could not record an event",
       );
     }
+  }
+
+  #forgetSupervisor(): void {
+    this.#supervisor = undefined;
+    this.#broadcastSupervisorConnectionStatus();
   }
 
   async #acceptUserMessage(client: ClientConnection, text: string): Promise<void> {

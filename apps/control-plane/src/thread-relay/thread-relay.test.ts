@@ -1,13 +1,30 @@
-import type { ControlPlaneToClientMessage, ThreadEvent } from "@barrack/protocol";
+import type { AgentEvent, ControlPlaneToClientMessage, ThreadEvent } from "@barrack/protocol";
+import { closeCodes } from "@barrack/protocol";
+import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { standardCloseCodes } from "../standard-close-codes.js";
+import { ControllableThreadEventLog } from "../test-support/controllable-thread-event-log.js";
 import {
   agentRunSettled,
   agentRunStarted,
   completedAssistantMessage,
   toolExecutionStarted,
 } from "../test-support/example-agent-events.js";
+import {
+  allPendingWorkSettled,
+  FakeClientConnection,
+  FakeSupervisorConnection,
+} from "../test-support/fake-connections.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor, TestClient } from "../test-support/test-peers.js";
+import { ThreadRelay } from "./thread-relay.js";
+
+/*
+ * Most of these tests drive a real control plane over WebSockets. Those that
+ * need several messages to be waiting in the relay's queue at once drive a
+ * relay directly through fake connections instead, because a real socket
+ * cannot promise when its frames reach the relay.
+ */
 
 const threadId = "thread-1";
 
@@ -40,6 +57,28 @@ function sequencesOf(client: TestClient): number[] {
 
 function messageTypesOf(client: TestClient): string[] {
   return client.inbox.messages.map((message) => message.type);
+}
+
+function createRelayWithControllableLog(): {
+  relay: ThreadRelay;
+  threadEventLog: ControllableThreadEventLog;
+} {
+  const threadEventLog = new ControllableThreadEventLog();
+  const relay = new ThreadRelay(threadId, threadEventLog, pino({ level: "silent" }));
+  return { relay, threadEventLog };
+}
+
+function sendAgentEvent(
+  relay: ThreadRelay,
+  supervisor: FakeSupervisorConnection,
+  event: AgentEvent,
+): void {
+  relay.receiveFromSupervisor(supervisor, { type: "agent_event", event });
+}
+
+async function recordedEventTypes(threadEventLog: ControllableThreadEventLog): Promise<string[]> {
+  const recordedEvents = await threadEventLog.readAfter(threadId, 0);
+  return recordedEvents.map((recordedEvent) => recordedEvent.event.type);
 }
 
 function isSupervisorStatus(isSupervisorConnected: boolean) {
@@ -200,6 +239,57 @@ describe("agent events from the supervisor", () => {
     await client.waitForSequence(1);
 
     expect(typesWhileRecording).not.toContain("thread_event");
+  });
+
+  it("stop being recorded from a supervisor once one of its events could not be", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    relay.attachSupervisor(supervisor);
+    sendAgentEvent(relay, supervisor, agentRunStarted);
+    await allPendingWorkSettled();
+
+    threadEventLog.failNextAppend(new Error("The log is unavailable"));
+    sendAgentEvent(relay, supervisor, completedAssistantMessage("assistant-1", "Hello"));
+    sendAgentEvent(relay, supervisor, agentRunSettled);
+    await allPendingWorkSettled();
+
+    expect(await recordedEventTypes(threadEventLog)).toEqual(["agent_run_started"]);
+    expect(supervisor.closingRequest?.closeCode).toBe(standardCloseCodes.internalError);
+  });
+
+  it("leave clients told the supervisor is gone once one of its events could not be recorded", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    const client = new FakeClientConnection();
+    relay.attachSupervisor(supervisor);
+    await relay.attachClient(client, 0);
+
+    threadEventLog.failNextAppend(new Error("The log is unavailable"));
+    sendAgentEvent(relay, supervisor, agentRunStarted);
+    await allPendingWorkSettled();
+
+    expect(client.inbox.messages.at(-1)).toEqual({
+      type: "supervisor_connection_status",
+      isSupervisorConnected: false,
+    });
+  });
+
+  it("are ignored from a supervisor that a newer one has superseded", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supersededSupervisor = new FakeSupervisorConnection();
+    const newerSupervisor = new FakeSupervisorConnection();
+    relay.attachSupervisor(supersededSupervisor);
+
+    relay.attachSupervisor(newerSupervisor);
+    sendAgentEvent(relay, supersededSupervisor, toolExecutionStarted("call-from-superseded"));
+    sendAgentEvent(relay, newerSupervisor, agentRunStarted);
+    await allPendingWorkSettled();
+
+    expect(await recordedEventTypes(threadEventLog)).toEqual(["agent_run_started"]);
+    expect(supersededSupervisor.closingRequest?.closeCode).toBe(
+      closeCodes.supersededByNewerSupervisor,
+    );
+    expect(newerSupervisor.closingRequest).toBeUndefined();
   });
 });
 
