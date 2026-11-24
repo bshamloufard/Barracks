@@ -83,7 +83,7 @@ function attachSupervisor(
   receiveMessages(
     webSocket,
     parseSupervisorToControlPlaneMessage,
-    (message) => relay.receiveFromSupervisor(connection, message),
+    (message, frameLength) => relay.receiveFromSupervisor(connection, message, frameLength),
     logger,
   );
 }

@@ -14,14 +14,14 @@ export type ReceiveOptions = {
 
 /**
  * Checks every frame a peer sends against the protocol and hands on only
- * valid messages. A peer that sends anything else is disconnected with
+ * valid messages, each with the length of its frame's text. A peer that sends anything else is disconnected with
  * `invalidMessage`, since a peer that has broken the protocol once cannot be
  * trusted to be in a state worth continuing with.
  */
 export function receiveMessages<Message>(
   socket: WebSocket,
   parseMessage: (frameText: string) => ParseResult<Message>,
-  handleMessage: (message: Message) => void,
+  handleMessage: (message: Message, frameLength: number) => void,
   logger: Logger,
   options: ReceiveOptions = {},
 ): void {
@@ -38,12 +38,13 @@ export function receiveMessages<Message>(
       closeForInvalidMessage(socket, "A frame larger than any message allowed now", logger);
       return;
     }
-    const parsed = parseMessage(decodeTextFrame(frame));
+    const frameText = decodeTextFrame(frame);
+    const parsed = parseMessage(frameText);
     if (!parsed.ok) {
       closeForInvalidMessage(socket, parsed.errorMessage, logger);
       return;
     }
-    handleMessage(parsed.value);
+    handleMessage(parsed.value, frameText.length);
   });
 }
 

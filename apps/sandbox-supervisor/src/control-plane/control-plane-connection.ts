@@ -7,6 +7,7 @@ import {
   closeCodes,
   type DeliverUserMessage,
   type InterruptAgentMessage,
+  maximumUnconfirmedAgentEventsLength,
   parseControlPlaneToSupervisorMessage,
   type StreamFragment,
   type SupervisorToControlPlaneMessage,
@@ -32,10 +33,8 @@ export const defaultConnectionTiming: ConnectionTiming = {
   maximumDelayInMilliseconds: 15_000,
   heartbeatIntervalInMilliseconds: 15_000,
   heartbeatTimeoutInMilliseconds: 35_000,
-  // Tool output, the largest event, is capped at 64 Ki characters, so this
-  // holds at least 512 of them: far more than an agent produces while a
-  // control plane restarts, and about 64 MB of memory at most.
-  unconfirmedEventsMaximumLength: 32 * 1024 * 1024,
+  // About 64 MB of memory at most. The control plane counts on no more.
+  unconfirmedEventsMaximumLength: maximumUnconfirmedAgentEventsLength,
   closingConfirmationTimeoutInMilliseconds: 5_000,
 };
 

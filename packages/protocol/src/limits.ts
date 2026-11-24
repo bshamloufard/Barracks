@@ -32,6 +32,18 @@ export const threadEventEnvelopeAllowance = 1024;
 export const maximumAgentEventFrameLength = maximumFrameLength - threadEventEnvelopeAllowance;
 
 /**
+ * The most a supervisor keeps of the agent events the control plane has not
+ * yet confirmed recording, in characters of their frames. Every agent event
+ * frame a supervisor has sent and not seen confirmed is among them, so an
+ * honest supervisor never has more than this on its way to the control
+ * plane, and the control plane disconnects one that does (see the control
+ * plane's `thread-relay/supervisor-backlog.ts`). Tool output, the largest
+ * event, is capped at 64 Ki characters, so this holds at least 512 of them:
+ * far more than an agent produces while a control plane restarts.
+ */
+export const maximumUnconfirmedAgentEventsLength = 32 * 1024 * 1024;
+
+/**
  * Identifiers are stored, indexed and compared. Barrack mints UUIDs (36
  * characters), but tool call identifiers come from model providers, and some
  * join two provider identifiers into one, so the bound is generous.

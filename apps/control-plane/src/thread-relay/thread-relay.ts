@@ -6,6 +6,7 @@ import type {
   ClientMessageRejected,
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
+  StreamFragmentMessage,
   SupervisorConnectionStatus,
   SupervisorHello,
   SupervisorToControlPlaneMessage,
@@ -25,6 +26,7 @@ import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import { InProgressAssistantText } from "./in-progress-assistant-text.js";
 import { findMissedRange, type MissedRange, readMissedEvents } from "./read-missed-events.js";
 import { SerialTaskQueue } from "./serial-task-queue.js";
+import { SupervisorBacklog, supervisorMessagesBacklogLimit } from "./supervisor-backlog.js";
 import type { ThreadActivity } from "./thread-activity.js";
 
 /** The messages that must still reach a client once its replay is over. */
@@ -50,6 +52,12 @@ type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
 type ClientPhase =
   | { name: "replaying"; heldBackMessages: HeldBackMessage[] }
   | { name: "live"; lastSentSequence: number };
+
+/**
+ * A thread has one supervisor, which may briefly have a second connection
+ * open while it reconnects; more than this is a sandbox misbehaving.
+ */
+const maximumOpenSupervisorConnections = 4;
 
 /** The thread's supervisor, once it has said hello and been welcomed. */
 type AttachedSupervisor = {
@@ -111,7 +119,10 @@ export class ThreadRelay {
   readonly #queue = new SerialTaskQueue();
   #queuedTaskCount = 0;
   readonly #inProgressText = new InProgressAssistantText();
+  readonly #backlog = new SupervisorBacklog();
   readonly #clientPhases = new Map<ClientConnection, ClientPhase>();
+  /** Every supervisor connection attached and not yet closed, whatever its state. */
+  readonly #openSupervisorConnections = new Set<SupervisorConnection>();
   /** Supervisor connections that have not yet said hello. */
   readonly #connectingSupervisors = new Set<SupervisorConnection>();
   #supervisor: AttachedSupervisor | undefined;
@@ -126,12 +137,30 @@ export class ThreadRelay {
     this.#whenUnused = options.whenUnused;
   }
 
-  /** Registers a supervisor connection, which becomes the thread's supervisor once it says hello. */
+  /**
+   * Registers a supervisor connection, which becomes the thread's supervisor
+   * once it says hello. Each open connection can hold a frame being
+   * received, up to `maximumFrameLength`, before anything reaches the
+   * relay, so a sandbox is allowed only a few at once.
+   */
   attachSupervisor(connection: SupervisorConnection): void {
+    if (this.#openSupervisorConnections.size >= maximumOpenSupervisorConnections) {
+      this.#logger.warn(
+        { openConnectionCount: this.#openSupervisorConnections.size },
+        "Refused a supervisor connection: too many are open for this thread",
+      );
+      connection.close(
+        standardCloseCodes.tryAgainLater,
+        "Too many supervisor connections are open for this thread",
+      );
+      return;
+    }
+    this.#openSupervisorConnections.add(connection);
     this.#connectingSupervisors.add(connection);
   }
 
   detachSupervisor(connection: SupervisorConnection): void {
+    this.#openSupervisorConnections.delete(connection);
     this.#enqueue("detach a supervisor", async () => {
       this.#connectingSupervisors.delete(connection);
       if (this.#supervisor?.connection === connection) {
@@ -144,33 +173,98 @@ export class ThreadRelay {
    * Messages from a supervisor that is no longer this thread's supervisor
    * are ignored. That covers one superseded by a newer supervisor, and one
    * dropped because an event it sent could not be recorded.
+   *
+   * What waits in the queue is bounded (see `SupervisorBacklog`):
+   * `frameLength` is the length of the frame the message came in, which the
+   * WebSocket endpoint passes on; anything else measures it.
    */
   receiveFromSupervisor(
     connection: SupervisorConnection,
     message: SupervisorToControlPlaneMessage,
+    frameLength: number = JSON.stringify(message).length,
   ): void {
+    if (message.type === "stream_fragment") {
+      this.#queueStreamFragment(connection, message.fragment, frameLength);
+      return;
+    }
+    if (!this.#backlog.admitMessage(frameLength)) {
+      this.#disconnectOverflowingSupervisor(connection);
+      return;
+    }
     this.#enqueue(`handle ${message.type} from the supervisor`, async () => {
-      if (message.type === "supervisor_hello") {
-        await this.#greetSupervisor(connection, message);
-        return;
-      }
-      const supervisor = this.#supervisor;
-      if (supervisor?.connection !== connection) {
-        this.#ignoreUnattachedSupervisorMessage(connection, message.type);
-        return;
-      }
-      switch (message.type) {
-        case "stream_fragment":
-          this.#relayAssistantTextFragment(message.fragment);
-          return;
-        case "agent_event":
-          await this.#recordSupervisorEvent(supervisor, message);
-          return;
-        case "user_messages_delivered":
-          await this.#noteUserMessagesDelivered(supervisor, message.throughSequence);
-          return;
+      try {
+        await this.#handleSupervisorMessage(connection, message);
+      } finally {
+        this.#backlog.releaseMessage(frameLength);
       }
     });
+  }
+
+  async #handleSupervisorMessage(
+    connection: SupervisorConnection,
+    message: Exclude<SupervisorToControlPlaneMessage, StreamFragmentMessage>,
+  ): Promise<void> {
+    if (message.type === "supervisor_hello") {
+      await this.#greetSupervisor(connection, message);
+      return;
+    }
+    const supervisor = this.#supervisor;
+    if (supervisor?.connection !== connection) {
+      this.#ignoreUnattachedSupervisorMessage(connection, message.type);
+      return;
+    }
+    switch (message.type) {
+      case "agent_event":
+        await this.#recordSupervisorEvent(supervisor, message);
+        return;
+      case "user_messages_delivered":
+        await this.#noteUserMessagesDelivered(supervisor, message.throughSequence);
+        return;
+    }
+  }
+
+  /**
+   * Fragments keep their place among the supervisor's other messages, so
+   * they share the queue, but a fragment that does not fit its own budget
+   * is dropped rather than held; see `SupervisorBacklog`.
+   */
+  #queueStreamFragment(
+    connection: SupervisorConnection,
+    fragment: AssistantTextFragment,
+    frameLength: number,
+  ): void {
+    if (!this.#backlog.admitFragment(fragment.messageId, frameLength)) {
+      this.#logger.debug(
+        { messageId: fragment.messageId },
+        "Dropped a stream fragment while the relay is behind",
+      );
+      return;
+    }
+    this.#enqueue("relay a stream fragment from the supervisor", async () => {
+      this.#backlog.releaseFragment(frameLength);
+      if (this.#supervisor?.connection !== connection) {
+        this.#ignoreUnattachedSupervisorMessage(connection, "stream_fragment");
+        return;
+      }
+      this.#relayAssistantTextFragment(fragment);
+    });
+  }
+
+  /**
+   * The supervisor sent more than may wait for the thread while earlier
+   * messages are still being recorded. Those are still recorded; this one
+   * and everything after it are not, and the supervisor sends them again
+   * once it reconnects, by which time the queue has drained.
+   */
+  #disconnectOverflowingSupervisor(connection: SupervisorConnection): void {
+    this.#logger.warn(
+      { ...this.#backlog.queuedLengths, limit: supervisorMessagesBacklogLimit },
+      "A supervisor sent more than may wait to be recorded for its thread; disconnecting it",
+    );
+    connection.close(
+      standardCloseCodes.tryAgainLater,
+      "The control plane is behind recording this thread's events; send them again later",
+    );
   }
 
   receiveFromClient(connection: ClientConnection, message: ClientCommand): void {
@@ -270,11 +364,12 @@ export class ThreadRelay {
       this.detachClient(client);
       client.close(closeCodes.threadNotFound, "This thread has been deleted");
     }
-    const supervisors = [...this.#connectingSupervisors, this.#supervisor?.connection];
+    const supervisors = [...this.#openSupervisorConnections];
+    this.#openSupervisorConnections.clear();
     this.#connectingSupervisors.clear();
     this.#supervisor = undefined;
     for (const supervisor of supervisors) {
-      supervisor?.close(standardCloseCodes.goingAway, "This thread has been deleted");
+      supervisor.close(standardCloseCodes.goingAway, "This thread has been deleted");
     }
     this.#reportIfUnused();
   }
