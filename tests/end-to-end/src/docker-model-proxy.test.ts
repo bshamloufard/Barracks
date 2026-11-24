@@ -158,6 +158,7 @@ if (unavailableReason !== undefined) {
         agent: { harness: "pi" },
         environment: {
           BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: `development-only:${modelServer.origin}`,
+          BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM: "development-only",
         },
       });
     }, dockerTestTimeoutInMilliseconds);
