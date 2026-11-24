@@ -4,12 +4,12 @@
 
 ## The four parts
 
-| Part             | What it does                                                                               | Built today                                                                                  |
-| ---------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| Clients          | Thread list, conversation view, live desktop view                                          | One web page ([`apps/web`](../apps/web)) with the list and the conversation                  |
+| Part             | What it does                                                                               | Built today                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| Clients          | Thread list, conversation view, live desktop view                                          | One web page ([`apps/web`](../apps/web)) with the list and the conversation                   |
 | Control plane    | Authenticates users, creates and stops sandboxes, relays messages both ways, keeps history | [`apps/control-plane`](../apps/control-plane): creates threads and sandboxes, relays, records |
-| Data store       | Users, threads, and the ordered record of everything each agent did                        | Postgres (threads and their events), or memory for development                               |
-| Thread sandboxes | One isolated Linux computer per thread: the agent, its workspace, a graphical desktop     | A container from [`sandbox-image`](../sandbox-image), through a provider; no desktop yet     |
+| Data store       | Users, threads, and the ordered record of everything each agent did                        | Postgres (threads and their events), or memory for development                                |
+| Thread sandboxes | One isolated Linux computer per thread: the agent, its workspace, a graphical desktop      | A container from [`sandbox-image`](../sandbox-image), through a provider; no desktop yet      |
 
 Clients are thin: all state lives on the server. The control plane never sleeps; sandboxes are meant to stop when idle, though nothing stops them yet.
 
