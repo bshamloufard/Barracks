@@ -133,6 +133,26 @@ Migrations are plain SQL files in [`migrations/`](migrations), named `NNNN_descr
 - Applied migrations are recorded, with a checksum, in `barrack.schema_migrations`. **Never edit a migration that has been applied anywhere**: the control plane refuses to start if an applied file has changed, or if the database has a migration this build lacks (as after rolling back to an older version). Put every change in a new file.
 - Two instances starting at once take turns under a Postgres advisory lock, so each migration runs once.
 
+#### Migrations written in parallel
+
+`0010` (acknowledged delivery) and `0020` (users and thread owners) were written on separate branches and merged together; each works on a fresh database in numeric order. A database migrated by the sign-in branch before that merge has `0020` applied without `0010`, and the control plane refuses to start on it, naming both. Only development and test databases can be in that state. Either drop its schema, losing its threads, and let the control plane migrate it afresh:
+
+```sh
+psql "$BARRACK_DATABASE_URL" --command 'drop schema barrack cascade'
+```
+
+or keep its threads by applying `0010` by hand and recording it as the control plane would, from the repository root:
+
+```sh
+migration=apps/control-plane/migrations/0010_acknowledge_supervisor_delivery.sql
+psql "$BARRACK_DATABASE_URL" --single-transaction --set ON_ERROR_STOP=1 \
+  --command 'set local search_path to barrack' \
+  --file "$migration" \
+  --command "insert into barrack.schema_migrations (name, checksum) values ('$(basename "$migration")', '$(sha256sum "$migration" | cut -d ' ' -f 1)')"
+```
+
+The two migrations touch different tables, so applying `0010` after `0020` leaves the same schema as applying them in order. A database migrated by the acknowledged-delivery branch needs nothing: it gains `0020` at the next start.
+
 ### When the database is unavailable
 
 - At startup the control plane waits for the database, retrying with growing delays up to 30 seconds and logging each failure, and does not listen until it has migrated. A deployment that cannot reach its database therefore fails its health check instead of restarting in a loop. Errors that waiting cannot fix, such as a wrong password, an unverifiable certificate or a failing migration, stop it with a message.
