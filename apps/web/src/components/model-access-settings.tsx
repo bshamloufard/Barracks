@@ -1,7 +1,13 @@
-import type { ModelCatalogue, ModelCredentialSummary } from "@barrack/protocol";
+import type {
+  CatalogueProvider,
+  KeyPlacement,
+  ModelCatalogue,
+  ModelCredentialSummary,
+} from "@barrack/protocol";
 import { type FormEvent, useState } from "react";
 import { useSession } from "../authentication/session-context";
 import { useModelAccess } from "../model-access/use-model-access";
+import { describeKeyPlacement, keyPlacementOf } from "../presentation/describe-model-usage";
 
 const otherProviderValue = "";
 
@@ -66,9 +72,10 @@ export function ModelAccessSettings() {
     <>
       <p>
         Every thread runs on your own key for its model's provider; Barrack pays for no model use.
-        Keys are stored encrypted and never shown again. The agent in a thread's sandbox can read
-        the key it is given, and so can anything a repository makes it run: prefer a key with a
-        spending limit.
+        Keys are stored encrypted and never shown again. For the providers marked below, your key
+        stays on the server: the agent's requests pass through Barrack, which adds it. For every
+        other provider, your key is placed in the thread's sandbox, where the agent and anything a
+        repository makes it run can read it: prefer a key with a spending limit there.
       </p>
       {actionFailure !== undefined && (
         <p className="error-notice" role="alert">
@@ -118,7 +125,8 @@ function KeyList({
             <code>…{credential.secretEnding}</code>{" "}
             <span className="quiet-note">
               added {dateFormat.format(new Date(credential.addedAt))}
-            </span>
+            </span>{" "}
+            <KeyPlacementNote placement={keyPlacementOf(catalogue, credential.providerId)} />
           </span>
           <span className="sandbox-actions">
             <button
@@ -192,7 +200,7 @@ function KeyForm({
               .filter((p) => p.isCommon)
               .map((p) => (
                 <option key={p.providerId} value={p.providerId}>
-                  {p.name}
+                  {describeProviderOption(p)}
                 </option>
               ))}
           </optgroup>
@@ -201,7 +209,7 @@ function KeyForm({
               .filter((p) => !p.isCommon)
               .map((p) => (
                 <option key={p.providerId} value={p.providerId}>
-                  {p.name}
+                  {describeProviderOption(p)}
                 </option>
               ))}
             <option value={otherProviderValue}>Another provider…</option>
@@ -218,6 +226,9 @@ function KeyForm({
           />
         </label>
       )}
+      <p>
+        <KeyPlacementNote placement={provider?.keyPlacement ?? "placed_in_sandbox"} isExplained />
+      </p>
       <label className="form-field">
         {provider?.secretLabel ?? "API key"}
         <input
@@ -248,6 +259,31 @@ function KeyForm({
       </div>
     </form>
   );
+}
+
+/** Where a provider's key lives, said plainly, and what that means, beside it or on hover. */
+export function KeyPlacementNote({
+  placement,
+  isExplained = false,
+}: {
+  placement: KeyPlacement;
+  isExplained?: boolean;
+}) {
+  const { label, explanation } = describeKeyPlacement(placement);
+  return (
+    <>
+      <span className={`key-placement key-placement-${placement}`} title={explanation}>
+        {label}
+      </span>
+      {isExplained && <span className="quiet-note"> {explanation}</span>}
+    </>
+  );
+}
+
+function describeProviderOption(provider: CatalogueProvider): string {
+  return provider.keyPlacement === "kept_on_server"
+    ? `${provider.name} (key stays on the server)`
+    : provider.name;
 }
 
 function nameOf(catalogue: ModelCatalogue, providerId: string): string {

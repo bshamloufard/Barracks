@@ -4,6 +4,7 @@ import { useSession } from "../authentication/session-context";
 import { threadListAddress } from "../page-address";
 import { AccountBar } from "./account-bar";
 import { ModelAccessSettings } from "./model-access-settings";
+import { ModelUsageSettings } from "./model-usage-settings";
 
 type ConnectionView =
   | { name: "loading" }
@@ -11,8 +12,8 @@ type ConnectionView =
   | { name: "failed"; reason: string };
 
 /**
- * The user's settings: their own model keys, on which their threads run, and
- * their link to GitHub, through which their threads can work on their
+ * The user's settings: their own model keys, on which their threads run,
+ * what those threads have used and the cap on it, and their link to GitHub, through which their threads can work on their
  * private repositories and publish their work.
  */
 export function SettingsPage() {
@@ -72,6 +73,10 @@ export function SettingsPage() {
         <section className="settings-section" aria-labelledby="model-access-heading">
           <h2 id="model-access-heading">Model access</h2>
           <ModelAccessSettings />
+        </section>
+        <section className="settings-section" aria-labelledby="model-usage-heading">
+          <h2 id="model-usage-heading">Model usage</h2>
+          <ModelUsageSettings />
         </section>
         <section className="settings-section" aria-labelledby="github-heading">
           <h2 id="github-heading">GitHub</h2>

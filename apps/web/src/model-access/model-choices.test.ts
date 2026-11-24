@@ -17,6 +17,7 @@ const catalogue: ModelCatalogue = {
       settings: [],
       isCommon: true,
       models: [{ modelId: "model-a", name: "Model A", contextWindow: 200_000, reasoning: true }],
+      keyPlacement: "kept_on_server",
     },
     {
       providerId: "openai",
@@ -25,6 +26,7 @@ const catalogue: ModelCatalogue = {
       settings: [],
       isCommon: true,
       models: [{ modelId: "model-o", name: "Model O", contextWindow: 400_000, reasoning: true }],
+      keyPlacement: "kept_on_server",
     },
   ],
 };
