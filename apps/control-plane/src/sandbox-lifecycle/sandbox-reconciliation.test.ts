@@ -18,7 +18,7 @@ import {
   sandboxLostReason,
   stoppedFromOutsideProblem,
 } from "./lifecycle-messages.js";
-import { sandboxIdOf } from "./sandbox-operations.js";
+import { sandboxIdOf } from "./operation-outcomes.js";
 import { decideRepair } from "./sandbox-reconciler.js";
 
 /**

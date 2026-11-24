@@ -16,7 +16,8 @@ import {
   stoppedFromOutsideProblem,
 } from "./lifecycle-messages.js";
 import type { Clock, LifecycleTiming } from "./lifecycle-settings.js";
-import { type SandboxOperations, sandboxIdOf } from "./sandbox-operations.js";
+import { sandboxIdOf } from "./operation-outcomes.js";
+import type { SandboxOperations } from "./sandbox-operations.js";
 import type { ThreadRuns } from "./thread-runs.js";
 
 export type SandboxReconcilerOptions = {

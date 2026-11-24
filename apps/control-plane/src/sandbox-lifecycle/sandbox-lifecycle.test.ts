@@ -24,7 +24,7 @@ import {
   type TestControlPlaneOptions,
 } from "../test-support/test-control-plane.js";
 import { runEndedByStopMessage, sandboxLostReason } from "./lifecycle-messages.js";
-import { sandboxIdOf as sandboxIdIn } from "./sandbox-operations.js";
+import { sandboxIdOf as sandboxIdIn } from "./operation-outcomes.js";
 
 /**
  * Stopping, resuming, waking and deleting threads through the real control
