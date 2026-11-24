@@ -3,7 +3,11 @@ import {
   mockModelTriggers,
   startMockModelServer,
 } from "@barrack/mock-model-server";
-import { buildStopThreadApiPath, ownUsageCapApiPath } from "@barrack/protocol";
+import {
+  buildResumeThreadApiPath,
+  buildStopThreadApiPath,
+  ownUsageCapApiPath,
+} from "@barrack/protocol";
 import { FakeSandboxProvider } from "@barrack/sandbox-providers";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -316,6 +320,37 @@ describe("the model proxy", () => {
     expect(afterStop.status).toBe(403);
     await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
     expect(modelServer.receivedRequests).toHaveLength(1);
+  });
+
+  it("gives a resumed sandbox's supervisor a new token, and never accepts the old one again", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, supervisor, access } = await startThread(adaToken, "anthropic/a-model");
+    await controlPlane.sendApi("POST", buildStopThreadApiPath(thread.threadId), adaToken);
+    await controlPlane.whenOperationsSettle();
+    await supervisor.close();
+
+    await controlPlane.sendApi("POST", buildResumeThreadApiPath(thread.threadId), adaToken);
+    await controlPlane.whenOperationsSettle();
+    const resumed = await controlPlane.connectSupervisor(thread);
+    const newAccess = await waitForProxyAccess(resumed, "anthropic");
+    const withNew = await callModelProxy(
+      controlPlane,
+      newAccess,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+    const withOld = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+
+    expect(newAccess.token).not.toBe(access.token);
+    expect(withNew.status).toBe(200);
+    expect(withOld.status).toBe(403);
+    await withNew.body?.cancel();
   });
 
   it("uses a replaced key from the next request, and refuses once it is removed, saying so", async () => {

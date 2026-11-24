@@ -32,6 +32,11 @@ import { publicationBundleUploadRoute } from "./publication-routes.js";
  * Guards against a route added later answering without a token: every
  * route registered on the app, whatever it is, is requested here without
  * one, and only the listed public paths may answer.
+ *
+ * The model proxy (`/threads/{id}/model-proxy/…`) is not one of the app's
+ * routes: the server hands it its requests before the app sees them
+ * (`route-http-request.ts`), and it authenticates each by the thread's
+ * proxy token, which its own tests refuse without (`model-proxy/`).
  */
 
 const logger = pino({ level: "silent" });

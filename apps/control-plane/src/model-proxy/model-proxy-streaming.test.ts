@@ -1,4 +1,10 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { developmentAccessToken } from "../authentication/development-single-user.js";
 import {
@@ -163,6 +169,34 @@ describe("the model proxy as a streaming path", () => {
     expect(body).toContain("authentication_error");
     expect(response.headers.get("x-request-id")).toBeNull();
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("answers, in development mode, only requests addressed to loopback, as the rest of the server does", async () => {
+    const upstreamOrigin = await startUpstream((_request, response) => response.end());
+    const access = await startThreadRelayingTo(upstreamOrigin);
+    const port = new URL(requireControlPlane().httpBaseUrl).port;
+
+    const statusFor = (host: string) =>
+      new Promise<number | undefined>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: "127.0.0.1",
+            port,
+            method: "POST",
+            path: `${access.basePath}/v1/messages`,
+            headers: { host, "x-api-key": access.token, "content-type": "application/json" },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode);
+          },
+        );
+        request.on("error", reject);
+        request.end("{}");
+      });
+
+    expect(await statusFor("rebound.example:8787")).toBe(403);
+    expect(await statusFor(`127.0.0.1:${port}`)).not.toBe(403);
   });
 
   it("follows no redirect, passing none on to the agent", async () => {
