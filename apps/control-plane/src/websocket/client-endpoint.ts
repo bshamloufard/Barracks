@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { parseClientEndpointPath } from "@barrack/protocol";
 import { ClientSession } from "./client-session.js";
 import { rejectUpgrade } from "./reject-upgrade.js";
+import { limitBytesUntilAuthenticated } from "./unauthenticated-byte-limit.js";
 import type { UpgradeDependencies } from "./upgrade-dependencies.js";
 
 /**
@@ -45,6 +46,11 @@ export function acceptClientUpgrade(
     return;
   }
   dependencies.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-    new ClientSession(webSocket, endpoint.value, dependencies, logger).start();
+    const byteLimit = limitBytesUntilAuthenticated(socket, () =>
+      logger.warn(
+        "Dropped a client that sent more before authenticating than authenticating needs",
+      ),
+    );
+    new ClientSession(webSocket, endpoint.value, dependencies, logger, byteLimit).start();
   });
 }

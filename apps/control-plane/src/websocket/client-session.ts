@@ -13,6 +13,10 @@ import type { ThreadRelay } from "../thread-relay/thread-relay.js";
 import { ThreadAccess } from "../threads/thread-access.js";
 import { keepConnectionAlive } from "./heartbeat.js";
 import { receiveMessages } from "./receive-messages.js";
+import {
+  largestUnauthenticatedClientInputInBytes,
+  type UnauthenticatedByteLimit,
+} from "./unauthenticated-byte-limit.js";
 import type { UpgradeDependencies } from "./upgrade-dependencies.js";
 import { WebSocketClientConnection } from "./web-socket-connections.js";
 
@@ -53,6 +57,7 @@ export class ClientSession {
   readonly #endpoint: ClientEndpointParameters;
   readonly #dependencies: UpgradeDependencies;
   readonly #logger: Logger;
+  readonly #byteLimit: UnauthenticatedByteLimit;
   /** Later tokens are checked one at a time, so the newest one sent is the one that counts. */
   readonly #reauthentications = new SerialTaskQueue();
   #phase: Phase = { name: "awaiting_authentication" };
@@ -64,11 +69,13 @@ export class ClientSession {
     endpoint: ClientEndpointParameters,
     dependencies: UpgradeDependencies,
     logger: Logger,
+    byteLimit: UnauthenticatedByteLimit,
   ) {
     this.#webSocket = webSocket;
     this.#endpoint = endpoint;
     this.#dependencies = dependencies;
     this.#logger = logger;
+    this.#byteLimit = byteLimit;
   }
 
   start(): void {
@@ -89,7 +96,15 @@ export class ClientSession {
       parseClientToControlPlaneMessage,
       (message) => this.#receive(message),
       this.#logger,
+      { largestFrameInBytes: () => this.#largestFrameInBytes() },
     );
+  }
+
+  /** Until the client owns the thread, nothing larger than an `authenticate` message is parsed. */
+  #largestFrameInBytes(): number {
+    return this.#phase.name === "attached"
+      ? Number.POSITIVE_INFINITY
+      : largestUnauthenticatedClientInputInBytes;
   }
 
   #receive(message: ClientToControlPlaneMessage): void {
@@ -154,6 +169,7 @@ export class ClientSession {
       this.#endpoint.lastSeenSequence,
     );
     this.#phase = { name: "attached", userId: user.userId, relay, connection };
+    this.#byteLimit.lift();
     this.#logger.info({ userId: user.userId }, "Client authenticated and attached");
     this.#closeWhenExpired(user.validUntil);
   }

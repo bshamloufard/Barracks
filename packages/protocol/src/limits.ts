@@ -64,7 +64,11 @@ export const maximumErrorMessageLength = 16 * 1024;
 
 /**
  * A Supabase access token is a JWT of about a kilobyte, which metadata the
- * user sets can enlarge. 16 Ki characters is ample, and bounds what an
- * unauthenticated connection can make the control plane parse.
+ * user sets can enlarge. 16 Ki characters is ample. It also bounds what a
+ * client connection that has not authenticated can make the control plane
+ * buffer or parse: the control plane drops one that sends more than the
+ * largest `authenticate` message could take, rather than wait for frames up
+ * to `maximumFrameLength` (see the control plane's
+ * `websocket/unauthenticated-byte-limit.ts`).
  */
 export const maximumAccessTokenLength = 16 * 1024;

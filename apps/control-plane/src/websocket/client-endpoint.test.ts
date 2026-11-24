@@ -1,4 +1,9 @@
-import { buildClientEndpointPath, closeCodes } from "@barrack/protocol";
+import {
+  buildClientEndpointPath,
+  closeCodes,
+  maximumAccessTokenLength,
+  maximumUserMessageLength,
+} from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { allowedTestOrigin, TestControlPlane } from "../test-support/test-control-plane.js";
 import { attemptUpgrade } from "../test-support/test-socket.js";
@@ -7,6 +12,9 @@ let controlPlane: TestControlPlane;
 let threadId: string;
 
 const authenticationTimeoutInMilliseconds = 300;
+
+/** What a WebSocket reports when its connection ended without a close frame. https://www.rfc-editor.org/rfc/rfc6455#section-7.4.1 */
+const abnormalClosure = 1006;
 
 beforeEach(async () => {
   controlPlane = await TestControlPlane.start({
@@ -63,6 +71,42 @@ describe("the client endpoint", () => {
 
     expect((await client.closed).closeCode).toBe(closeCodes.notAuthenticated);
     expect(client.inbox.messages).toEqual([]);
+  });
+
+  it("drops a client that sends more before authenticating than authenticating needs, without reading the rest", async () => {
+    const client = await controlPlane.openUnauthenticatedClient(threadId);
+    const frameLargerThanAnyAuthentication = "x".repeat(8 * 1024 * 1024);
+
+    client.sendRawFrame(frameLargerThanAnyAuthentication);
+
+    expect((await client.closed).closeCode).toBe(abnormalClosure);
+    expect(client.inbox.messages).toEqual([]);
+    expect(controlPlane.logLines.join("\n")).toContain(
+      "Dropped a client that sent more before authenticating than authenticating needs",
+    );
+  });
+
+  it("reads an authenticate message with the longest token allowed, however it is encoded", async () => {
+    const client = await controlPlane.openUnauthenticatedClient(threadId);
+    // Control characters are the most JSON can make of a character: six bytes each.
+    const longestTokenAtItsLargest = "\u0001".repeat(maximumAccessTokenLength);
+
+    client.authenticate(longestTokenAtItsLargest);
+
+    expect((await client.closed).closeCode).toBe(closeCodes.notAuthenticated);
+  });
+
+  it("reads a user message of the longest length allowed once the client is attached", async () => {
+    const client = await controlPlane.connectClient(threadId);
+    const longestMessageAtItsLargest = "€".repeat(maximumUserMessageLength);
+
+    client.sendUserMessage(longestMessageAtItsLargest);
+
+    const recorded = await client.inbox.waitFor(
+      "the user's message, recorded",
+      (message) => message.type === "thread_event" && message.event.type === "user_message",
+    );
+    expect(recorded).toMatchObject({ event: { text: longestMessageAtItsLargest } });
   });
 
   it("closes a client that does not authenticate in time, and sends it nothing", async () => {

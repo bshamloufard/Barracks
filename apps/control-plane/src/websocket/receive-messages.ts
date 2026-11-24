@@ -2,6 +2,16 @@ import { closeCodes, type ParseResult } from "@barrack/protocol";
 import type { RawData, WebSocket } from "ws";
 import type { Logger } from "../logger.js";
 
+export type ReceiveOptions = {
+  /**
+   * The largest frame, in bytes, worth parsing now; a larger one is refused
+   * unread. The server's `maxPayload` already bounds every frame, so this
+   * is for peers allowed less for a while, such as a client that has not
+   * yet authenticated. Unlimited when absent.
+   */
+  largestFrameInBytes?: () => number;
+};
+
 /**
  * Checks every frame a peer sends against the protocol and hands on only
  * valid messages. A peer that sends anything else is disconnected with
@@ -13,6 +23,7 @@ export function receiveMessages<Message>(
   parseMessage: (frameText: string) => ParseResult<Message>,
   handleMessage: (message: Message) => void,
   logger: Logger,
+  options: ReceiveOptions = {},
 ): void {
   socket.on("message", (frame: RawData, isBinary: boolean) => {
     if (socket.readyState !== socket.OPEN) {
@@ -20,6 +31,11 @@ export function receiveMessages<Message>(
     }
     if (isBinary) {
       closeForInvalidMessage(socket, "Binary frames are not part of the protocol", logger);
+      return;
+    }
+    const largestFrameInBytes = options.largestFrameInBytes?.() ?? Number.POSITIVE_INFINITY;
+    if (byteLengthOf(frame) > largestFrameInBytes) {
+      closeForInvalidMessage(socket, "A frame larger than any message allowed now", logger);
       return;
     }
     const parsed = parseMessage(decodeTextFrame(frame));
@@ -34,6 +50,13 @@ export function receiveMessages<Message>(
 function closeForInvalidMessage(socket: WebSocket, reason: string, logger: Logger): void {
   logger.warn({ reason }, "Closing a connection that sent an invalid message");
   socket.close(closeCodes.invalidMessage, "Invalid message");
+}
+
+function byteLengthOf(frame: RawData): number {
+  if (Array.isArray(frame)) {
+    return frame.reduce((total, fragment) => total + fragment.length, 0);
+  }
+  return frame.byteLength;
 }
 
 function decodeTextFrame(frame: RawData): string {
