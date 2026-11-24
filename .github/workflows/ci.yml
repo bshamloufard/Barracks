@@ -66,3 +66,45 @@ jobs:
       - name: Check that no test left a sandbox container behind
         if: always()
         run: test -z "$(docker ps --all --quiet --filter label=barrack.sandbox)"
+
+  # Builds the control plane's production image, both the default and the
+  # variant with the Docker CLI, so that the Dockerfile cannot rot, and starts
+  # it to check that it serves its health check and the web client and stops
+  # cleanly on SIGTERM. Nothing is published and no secret is used.
+  control-plane-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the control plane image
+        run: docker build --tag barrack-control-plane:ci .
+
+      - name: Build the variant with the Docker CLI
+        run: docker build --target control-plane-with-docker-cli --tag barrack-control-plane:ci-docker-cli .
+
+      - name: Start the image and check what it serves
+        run: |
+          docker run --detach --name control-plane --publish 127.0.0.1:8787:8787 \
+            --env BARRACK_SANDBOX_PROVIDER=fake --env BARRACK_AGENT_HARNESS=fake \
+            --env BARRACK_SANDBOX_CONTROL_PLANE_URL=ws://127.0.0.1:8787 \
+            barrack-control-plane:ci
+          for attempt in $(seq 30); do
+            curl --fail --silent http://127.0.0.1:8787/health && break
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8787/health
+          curl --fail --silent http://127.0.0.1:8787/ | grep --quiet "<title>Barrack</title>"
+
+      - name: Check that it shuts down cleanly on SIGTERM
+        run: |
+          docker stop -t 30 control-plane
+          docker logs control-plane | grep --quiet "Shut down cleanly"
+          test "$(docker inspect control-plane --format '{{.State.ExitCode}}')" = 0
+
+      - name: Check that the variant can run the Docker CLI
+        run: docker run --rm --entrypoint docker barrack-control-plane:ci-docker-cli --version
+
+      - name: Check compose.yaml
+        run: docker compose config --quiet
+        env:
+          BARRACK_DATABASE_PASSWORD: checked-in-ci
