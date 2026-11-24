@@ -15,7 +15,7 @@ Threads and their history are stored in Postgres when `BARRACK_DATABASE_URL` is 
 
 A client learns that the sandbox failed, and why, from the thread's `sandbox` field, fetching `GET /api/threads/{threadId}` until it leaves `creating`; whether the agent is reachable right now it learns from the thread's WebSocket, as before.
 
-**Not handled yet:** a thread whose sandbox was being created when the control plane stopped stays `creating`, and its sandbox (if the provider made one) is not reconciled. Stopping, resuming and reconciling sandboxes come with the thread lifecycle in Milestone 3.
+**After a restart**, a thread whose sandbox was still being created when the control plane stopped is marked `failed` at startup, with a reason saying so. A sandbox the provider may have made for it was never recorded, so it is not destroyed: the log names each such thread, and for Docker its container is labelled `barrack.thread-id=<thread>`. This assumes one control plane per database. Stopping, resuming and reconciling sandboxes properly come with the thread lifecycle in Milestone 3.
 
 ### Model provider keys (temporary)
 

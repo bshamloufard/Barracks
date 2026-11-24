@@ -100,6 +100,33 @@ export function describeThreadStoreContract(
       });
     });
 
+    it("fails every sandbox still being created, and only those, and says which", async () => {
+      const store = await createEmptyStore();
+      for (const threadId of ["thread-a", "thread-b", "thread-c", "thread-d"]) {
+        await store.create(newThread(threadId));
+      }
+      await store.recordSandboxReady("thread-b", "sandbox-1");
+      await store.recordSandboxFailed("thread-c", "The provider has no quota left");
+
+      const failedThreadIds = await store.failSandboxesStillBeingCreated("Interrupted");
+
+      expect(failedThreadIds.toSorted()).toEqual(["thread-a", "thread-d"]);
+      const sandboxes = (await store.listNewestFirst(10)).map(({ threadId, sandbox }) => ({
+        threadId,
+        sandbox,
+      }));
+      expect(sandboxes).toEqual([
+        { threadId: "thread-d", sandbox: { state: "failed", reason: "Interrupted" } },
+        {
+          threadId: "thread-c",
+          sandbox: { state: "failed", reason: "The provider has no quota left" },
+        },
+        { threadId: "thread-b", sandbox: { state: "ready", sandboxId: "sandbox-1" } },
+        { threadId: "thread-a", sandbox: { state: "failed", reason: "Interrupted" } },
+      ]);
+      expect(await store.failSandboxesStillBeingCreated("Interrupted")).toEqual([]);
+    });
+
     it("lists threads newest first, no more than asked for", async () => {
       const store = await createEmptyStore();
       for (const threadId of ["thread-a", "thread-b", "thread-c"]) {

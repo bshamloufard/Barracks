@@ -39,6 +39,14 @@ export class InMemoryThreadStore implements ThreadStore {
     });
   }
 
+  async failSandboxesStillBeingCreated(reason: string): Promise<string[]> {
+    const creatingThreads = this.#threads.filter((record) => record.sandbox.state === "creating");
+    for (const record of creatingThreads) {
+      record.sandbox = { state: "failed", reason };
+    }
+    return creatingThreads.map((record) => record.threadId);
+  }
+
   async find(threadId: string): Promise<ThreadRecord | undefined> {
     const record = this.#find(threadId);
     return record === undefined ? undefined : copyOf(record);

@@ -17,6 +17,13 @@ export interface ThreadStore {
   /** Records why a thread's sandbox could not be created. Throws unless it is being created. */
   recordSandboxFailed(threadId: string, reason: string): Promise<void>;
 
+  /**
+   * Records every sandbox still being created as failed, with `reason`, and
+   * returns those threads' identifiers. For use at startup only: a sandbox
+   * being created then was being created by a control plane that has gone.
+   */
+  failSandboxesStillBeingCreated(reason: string): Promise<string[]>;
+
   /** The thread, or undefined if there is none with that identifier. */
   find(threadId: string): Promise<ThreadRecord | undefined>;
 

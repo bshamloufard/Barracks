@@ -3,6 +3,7 @@ import { type ControlPlaneConfiguration, readConfiguration } from "./configurati
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
 import { type OpenStorage, openStorage } from "./storage/open-storage.js";
+import { failInterruptedSandboxCreations } from "./threads/interrupted-sandbox-creations.js";
 import { ThreadCreator } from "./threads/thread-creator.js";
 
 async function main(): Promise<void> {
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   // The database is migrated before the server listens, so nothing is
   // accepted that could not be recorded.
   const storage = await openStorage(configuration.database, logger);
+  await failInterruptedSandboxCreations(storage.threadStore, logger);
   const threadCreator = new ThreadCreator({
     threadStore: storage.threadStore,
     sandboxProvider: createSandboxProvider(configuration.sandboxProvider),

@@ -69,6 +69,17 @@ export class PostgresThreadStore implements ThreadStore {
     );
   }
 
+  async failSandboxesStillBeingCreated(reason: string): Promise<string[]> {
+    const result = await this.#pool.query<Pick<ThreadRow, "thread_id">>(
+      `update ${this.#table}
+        set sandbox_state = 'failed', sandbox_failure_reason = $1
+        where sandbox_state = 'creating'
+        returning thread_id`,
+      [reason],
+    );
+    return result.rows.map((row) => row.thread_id);
+  }
+
   async find(threadId: string): Promise<ThreadRecord | undefined> {
     const result = await this.#pool.query<ThreadRow>(
       `select ${threadColumns} from ${this.#table} where thread_id = $1`,
