@@ -26,7 +26,7 @@ const piVariablesSchema = sharedVariablesSchema.extend({
   BARRACK_AGENT_HARNESS: z.literal("pi").default("pi"),
   BARRACK_MODEL: z
     .string()
-    .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/gpt-6"'),
+    .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/example-model"'),
   BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_STATE_DIRECTORY: absoluteDirectorySchema,
 });

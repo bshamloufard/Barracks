@@ -27,7 +27,7 @@ describe("readConfiguration", () => {
   it("uses the Pi harness by default and resolves its directories to absolute paths", () => {
     const result = readConfiguration({
       ...sharedVariables,
-      BARRACK_MODEL: "openai/gpt-6",
+      BARRACK_MODEL: "openai/example-model",
       BARRACK_WORKSPACE_DIRECTORY: "workspace",
       BARRACK_STATE_DIRECTORY: "/var/barrack",
     });
@@ -37,7 +37,7 @@ describe("readConfiguration", () => {
       configuration: {
         agentHarness: {
           kind: "pi",
-          model: "openai/gpt-6",
+          model: "openai/example-model",
           workspaceDirectory: path.resolve("workspace"),
           stateDirectory: "/var/barrack",
         },
