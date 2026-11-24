@@ -12,20 +12,20 @@ A small long-running Node process that lives inside a thread's sandbox: a contai
 
 Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed. The control plane sets them when it creates the thread's sandbox (see [its README](../control-plane/README.md#threads-and-their-sandboxes)), and the sandbox image sets the directories and the agent's user.
 
-| Variable                               | Required | Meaning                                                                                                 |
-| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
-| `BARRACK_CONTROL_PLANE_URL`            | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                     |
-| `BARRACK_THREAD_ID`                    | yes      | The thread this sandbox belongs to                                                                      |
-| `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it |
-| `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here           |
-| `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                |
-| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                 |
-| `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory, where the thread's repository is cloned; optional for `fake`           |
+| Variable                               | Required | Meaning                                                                                                                                                                              |
+| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BARRACK_CONTROL_PLANE_URL`            | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                                                                                                  |
+| `BARRACK_THREAD_ID`                    | yes      | The thread this sandbox belongs to                                                                                                                                                   |
+| `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it                                                                              |
+| `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here                                                                                        |
+| `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                                                                                             |
+| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                                                                                              |
+| `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory, where the thread's repository is cloned; optional for `fake`                                                                                          |
 | `BARRACK_GIT_HELPER_SOCKET`            | no       | The Unix socket Git's credential helper asks the supervisor on; must be reachable by the agent and nobody outside the sandbox. Default: `git-credential.sock` in the state directory |
-| `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)           |
-| `BARRACK_AGENT_USER`                   | for `pi` | The operating-system user Pi runs as, other than the supervisor's; see below                            |
-| `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                          |
-| `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                            |
+| `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)                                                                                        |
+| `BARRACK_AGENT_USER`                   | for `pi` | The operating-system user Pi runs as, other than the supervisor's; see below                                                                                                         |
+| `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                                                                                                       |
+| `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                                                                                                         |
 
 Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings, every `PI_*` variable, and model provider keys such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed.
 

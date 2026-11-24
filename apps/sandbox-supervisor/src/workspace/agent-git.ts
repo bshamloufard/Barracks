@@ -69,9 +69,17 @@ export class AgentGit {
     options: GitRunOptions,
   ): Promise<GitOutcome> {
     return new Promise((resolve, reject) => {
+      // The program runs as the agent, whom the supervisor may not signal,
+      // so its time limit is kept by a watchdog that runs as the agent too.
       const child = this.#launcher.launchCommand({
-        executable,
-        arguments: programArguments,
+        executable: process.execPath,
+        arguments: [
+          "-e",
+          watchdogScript,
+          String(options.timeoutInMilliseconds),
+          executable,
+          ...programArguments,
+        ],
         workingDirectory: this.#workspaceDirectory,
         environment: this.#environment,
       });
@@ -88,18 +96,33 @@ export class AgentGit {
       child.stderr.on("data", (chunk: Buffer) => {
         standardError = appendCapped(standardError, chunk);
       });
-      const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutInMilliseconds);
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
+      child.on("error", reject);
       child.on("close", (exitCode) => {
-        clearTimeout(timer);
-        resolve({ exitCode, standardOutput, standardError });
+        resolve({
+          exitCode: exitCode === timedOutExitCode ? null : exitCode,
+          standardOutput,
+          standardError,
+        });
       });
     });
   }
 }
+
+/** What the watchdog exits with when it had to stop the program; `timeout(1)` uses the same. */
+const timedOutExitCode = 124;
+
+/**
+ * Runs the program given after its time limit, passing its output through
+ * and exiting as it did, or kills it once the limit has passed.
+ */
+const watchdogScript = `
+const { spawn } = require("node:child_process");
+const [limit, command, ...commandArguments] = process.argv.slice(1);
+const program = spawn(command, commandArguments, { stdio: "inherit" });
+const timer = setTimeout(() => { program.kill("SIGKILL"); process.exit(${timedOutExitCode}); }, Number(limit));
+program.on("error", (error) => { process.stderr.write(error.message + "\\n"); process.exit(127); });
+program.on("exit", (code) => { clearTimeout(timer); process.exit(code ?? 1); });
+`;
 
 export function buildGitEnvironment(sourceEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
