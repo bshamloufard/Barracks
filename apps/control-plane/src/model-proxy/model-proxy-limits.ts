@@ -36,6 +36,13 @@ export type ModelProxyLimits = {
    * is relayed; set by `BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES`.
    */
   maximumRequestBytesHeldInTotal: number;
+  /**
+   * How long a request's whole body may take to arrive. The agent sends a
+   * body from memory at once; three minutes is the largest body at about
+   * 1.5 Mbit/s, and bounds how long any request can hold its share of the
+   * bytes held while sending nothing worth relaying.
+   */
+  requestBodyDeadlineInMilliseconds: number;
   /** The largest answer relayed, decompressed. */
   maximumResponseBytes: number;
   /** How long the provider may take to start answering. */
@@ -58,6 +65,7 @@ export const defaultModelProxyLimits: ModelProxyLimits = {
   requestsPerSecondPerThread: 2,
   maximumRequestBytes: 32 * 1024 * 1024,
   maximumRequestBytesHeldInTotal: 128 * 1024 * 1024,
+  requestBodyDeadlineInMilliseconds: 3 * 60_000,
   maximumResponseBytes: 64 * 1024 * 1024,
   firstByteTimeoutInMilliseconds: 5 * 60_000,
   idleTimeoutInMilliseconds: 5 * 60_000,

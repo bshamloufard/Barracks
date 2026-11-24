@@ -113,7 +113,7 @@ describe("the model proxy as a streaming path", () => {
     expect(answer.length).toBe(chunk.length * chunkCount);
   });
 
-  it("reads the agent's upload whole, then sends the provider exactly the JSON it checked", async () => {
+  it("reads the agent's upload whole, then sends the provider exactly what it checked", async () => {
     let receivedBody = "";
     let firstBytesArrivedAt: number | undefined;
     const upstreamOrigin = await startUpstream((request, response) => {
@@ -131,10 +131,10 @@ describe("the model proxy as a streaming path", () => {
     const encoder = new TextEncoder();
     const slowUpload = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode('{"model":"another-model","model":"a-model",'));
+        controller.enqueue(encoder.encode('{"model":"a-mod\\u0065l", "fallbacks": [ ],'));
         await pause(500);
         lastBytesSentAt = Date.now();
-        controller.enqueue(encoder.encode('"max_tokens":5,  "messages":[]}'));
+        controller.enqueue(encoder.encode('"max_tokens":5,  "messages":[ ]}'));
         controller.close();
       },
     });
@@ -150,13 +150,18 @@ describe("the model proxy as a streaming path", () => {
 
     expect(response.status).toBe(200);
     expect(firstBytesArrivedAt ?? 0).toBeGreaterThanOrEqual(lastBytesSentAt);
-    expect(receivedBody).toBe('{"model":"a-model","max_tokens":5,"messages":[]}');
+    // What the proxy read is written out as it parsed it; the rest is as sent.
+    expect(receivedBody).toBe(
+      '{"model":"a-model", "fallbacks": [],"max_tokens":5,  "messages":[ ]}',
+    );
   });
 
   it.each([
     ["is not JSON", "not json"],
     ["is not an object", "[1]"],
     ["names no model", '{"max_tokens":5,"messages":[]}'],
+    ["names its model twice", '{"model":"another-model","model":"a-model","max_tokens":5}'],
+    ["is not UTF-8", Buffer.from([...Buffer.from('{"model":"a-model","x":"'), 0xff, 0x22, 0x7d])],
   ])("refuses a body that %s, sending the provider nothing", async (_description, body) => {
     let upstreamRequests = 0;
     const upstreamOrigin = await startUpstream((_request, response) => {

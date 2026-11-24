@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { describe, expect, it } from "vitest";
 import { digestConfirmedEmailAddress, OwnerAdmission } from "../authentication/owner-admission.js";
+import { inspectWholeBody } from "../test-support/request-bodies.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
 import {
   AuthenticationAllowance,
@@ -14,7 +15,6 @@ import {
   readPresentedToken,
 } from "./proxy-headers.js";
 import { findRelayedRoute } from "./relayed-routes.js";
-import { inspectRequestBody } from "./request-body.js";
 import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
 /** The proxy's parts that decide what crosses it, each on its own. */
@@ -68,8 +68,8 @@ describe("where a relayed request may go", () => {
 });
 
 describe("what the proxy changes in a request's body", () => {
-  function relayedJson(format: Parameters<typeof inspectRequestBody>[0], body: object): unknown {
-    const inspection = inspectRequestBody(format, Buffer.from(JSON.stringify(body)));
+  function relayedJson(format: Parameters<typeof inspectWholeBody>[0], body: object): unknown {
+    const inspection = inspectWholeBody(format, body);
     return inspection.kind === "relayable"
       ? JSON.parse(inspection.body.bytes.toString("utf8"))
       : inspection.kind;

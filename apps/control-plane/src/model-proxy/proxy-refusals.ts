@@ -65,6 +65,18 @@ export const proxyRefusals = {
     errorType: "request_too_large",
     message: "The request is larger than Barrack's model proxy relays.",
   },
+  requestBodyTooSlow: {
+    status: 408,
+    errorType: "request_timeout",
+    message: "The request's body took longer to arrive than Barrack's model proxy waits.",
+  },
+  tooManyBytesAtOnce: {
+    status: 429,
+    errorType: "rate_limit_error",
+    message:
+      "This thread's requests, or its owner's, hold as many bytes at once as Barrack's model proxy allows them.",
+    retryAfterSeconds: 2,
+  },
   tooManyAtOnce: {
     status: 429,
     errorType: "rate_limit_error",

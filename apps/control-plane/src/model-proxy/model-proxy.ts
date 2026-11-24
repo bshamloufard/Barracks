@@ -5,7 +5,7 @@ import type { ModelUsage } from "../model-usage/model-usage.js";
 import { describeAnswerUsage, type RequestedAnswer } from "./answer-usage.js";
 import type {
   ModelProxyAuthorization,
-  ProxyAuthorization,
+  OwnerAuthorization,
   RequestedModels,
 } from "./model-proxy-authorization.js";
 import {
@@ -20,16 +20,24 @@ import { type ProxyRefusal, proxyRefusals, sendRefusal } from "./proxy-refusals.
 import { relayRequest } from "./relay-request.js";
 import { findRelayedRoute } from "./relayed-routes.js";
 import {
-  type BodyReading,
   inspectRequestBody,
   type RelayedRequestBody,
-  RequestBodyBudget,
+  requestBodyShapeLimits,
 } from "./request-body.js";
+import { type BodyReading, RequestBodyBudget } from "./request-body-budget.js";
 
-/** Why a body was not read: too large is the agent's to fix; the rest are worth retrying. */
-const bodyReadingRefusals: Record<Exclude<BodyReading["kind"], "read" | "ended">, ProxyRefusal> = {
+/**
+ * Why a body was not read: too large is the agent's to fix; the rest are
+ * worth retrying.
+ */
+const bodyReadingRefusals: Record<
+  Exclude<BodyReading["kind"], "read" | "ended" | "invalid">,
+  ProxyRefusal
+> = {
   too_large: proxyRefusals.requestTooLarge,
-  proxy_busy: proxyRefusals.proxyBusy,
+  instance_busy: proxyRefusals.proxyBusy,
+  share_used: proxyRefusals.tooManyBytesAtOnce,
+  too_slow: proxyRefusals.requestBodyTooSlow,
   agent_went_away: proxyRefusals.upstreamUnreachable,
 };
 
@@ -52,7 +60,7 @@ export type ModelProxyActivity = {
   requestsAdmitted: number;
   tokenLookupsUnderWay: number;
   requestBodyBytesHeld: number;
-  /** Requests in flight whose records are checked again on a timer. */
+  /** Requests whose records are checked again on a timer while they last. */
   recordsChecksScheduled: number;
 };
 
@@ -73,6 +81,9 @@ export type ModelProxyOptions = {
   logger: Logger;
 };
 
+/** Where a request's re-checks find the models it names, once its body is read. */
+type Recheck = { requested: RequestedModels | undefined };
+
 /**
  * The control plane's model proxy: where a thread's agent sends requests
  * for a provider whose key stays on the server, at
@@ -83,12 +94,13 @@ export type ModelProxyOptions = {
  * provider's API is relayed at (`relayed-routes.ts`); the caller must
  * present the thread's token for the provider, looked up within the
  * instance's bound on callers not yet authenticated; the thread must be
- * under its own limits (`model-proxy-limits.ts`); the body, read whole,
- * must pass its checks (`request-body.ts`); and the records must allow it
- * (`ModelProxyAuthorization`). Then the request is rebuilt for the
- * provider's own address with its owner's key (`relay-request.ts`), the
- * answer streamed back, its usage counted, and the records checked again
- * while it lasts.
+ * under its own limits (`model-proxy-limits.ts`); the records must allow
+ * its owner's key to be spent (`ModelProxyAuthorization`); the body, read
+ * whole within its shares of the bytes held (`request-body-budget.ts`),
+ * must pass its checks (`request-body.ts`); and the models it names must
+ * be the thread's. Then the request is rebuilt for the provider's own
+ * address with its owner's key (`relay-request.ts`), the answer streamed
+ * back, its usage counted, and the records checked again while it lasts.
  *
  * Each request is a `ProxyExchange`, which holds whatever the request
  * takes and gives all of it back when the request ends, however it ends:
@@ -173,33 +185,44 @@ export class ModelProxy {
     }
   }
 
+  /**
+   * The request's way through the proxy, in the order that spends least on
+   * a request that will be refused: its token; its thread's limits; the
+   * records about its thread and owner, which need no body; its body, read
+   * within its thread's and owner's shares and checked as it arrives; the
+   * models it names; and only then the provider. From the records on, they
+   * are checked again on a timer for as long as the request lasts.
+   */
   async #serve(exchange: ProxyExchange): Promise<void> {
     const presentedToken = await this.#authenticate(exchange);
-    if (presentedToken === undefined || this.#refuseIfEnded(exchange)) {
+    if (presentedToken === undefined || this.#refuseIfEnded(exchange) || !this.#admit(exchange)) {
       return;
     }
-    if (!this.#admit(exchange)) {
+    const owner = await this.#authorizeOwner(exchange);
+    if (owner === undefined || this.#refuseIfEnded(exchange)) {
       return;
     }
-    const body = await this.#readAndInspectBody(exchange);
+    const recheck = this.#keepAuthorized(exchange, presentedToken);
+    const body = await this.#readAndInspectBody(exchange, owner);
     if (body === undefined) {
       return;
     }
-    const authorization = await this.#decide(exchange, body);
-    if (authorization === undefined || this.#refuseIfEnded(exchange)) {
+    recheck.requested = body;
+    const isModelAllowed = await this.#checkRequestedModels(exchange, owner, body);
+    if (!isModelAllowed || this.#refuseIfEnded(exchange)) {
       return;
     }
-    await this.#relay(exchange, presentedToken, body, authorization);
+    await this.#relay(exchange, body, owner);
   }
 
   /**
    * The token the request presents, if it is its thread's for this
-   * provider; otherwise the request is refused, and undefined returned. Nothing else is spent on a request before this: a
-   * token that could not be one is refused without a lookup, and lookups for
-   * callers not yet authenticated are bounded for the whole instance, so
-   * nobody who lacks the token can use up a thread's allowance or make the
-   * database work without limit. The refusal is the same whether the thread
-   * exists or not.
+   * provider; otherwise the request is refused, and undefined returned.
+   * Nothing else is spent on a request before this: a token that could not
+   * be one is refused without a lookup, and lookups for callers not yet
+   * authenticated are bounded for the whole instance, so nobody who lacks
+   * the token can use up a thread's allowance or make the database work
+   * without limit. The refusal is the same whether the thread exists or not.
    */
   async #authenticate(exchange: ProxyExchange): Promise<string | undefined> {
     const { request, response, route, target, logger } = exchange;
@@ -250,64 +273,112 @@ export class ModelProxy {
     return true;
   }
 
-  /**
-   * Reads the whole body, so it can be checked before anything reaches the
-   * provider, and checks it; an agent that goes silent while sending it is
-   * cut off after the idle limit. Undefined once the request is refused.
-   */
-  async #readAndInspectBody(exchange: ProxyExchange): Promise<RelayedRequestBody | undefined> {
-    const { request, response, route, logger } = exchange;
-    const cutOff = () => request.destroy();
-    response.setTimeout(this.#options.limits.idleTimeoutInMilliseconds);
-    response.once("timeout", cutOff);
-    const reading = await this.#requestBodies
-      .read(request, this.#options.limits.maximumRequestBytes, exchange.signal)
-      .finally(() => response.removeListener("timeout", cutOff));
-    if (reading.kind === "ended") {
-      this.#refuseIfEnded(exchange);
-      return undefined;
-    }
-    if (reading.kind !== "read") {
-      sendRefusal(response, route.format, bodyReadingRefusals[reading.kind]);
-      return undefined;
-    }
-    exchange.hold(reading.release);
-    const inspection = inspectRequestBody(route.format, reading.bytes);
-    if (inspection.kind === "refused") {
-      logger.warn({ reason: inspection.reason }, "Refused a model request's body");
-      sendRefusal(response, route.format, inspection.refusal);
-      return undefined;
-    }
-    return inspection.body;
-  }
-
-  /** Whether the records allow the request: its owner's key if so, undefined once it is refused. */
-  async #decide(
-    exchange: ProxyExchange,
-    body: RelayedRequestBody,
-  ): Promise<Extract<ProxyAuthorization, { kind: "allowed" }> | undefined> {
+  /** Whether the records allow the request before its body is read: its owner's key if so. */
+  async #authorizeOwner(exchange: ProxyExchange): Promise<OwnerAuthorization | undefined> {
     const { response, target, route, logger } = exchange;
-    let authorization: ProxyAuthorization;
     try {
-      authorization = await this.#options.authorization.decide(target, body);
+      const authorization = await this.#options.authorization.authorizeOwner(target);
+      if (authorization.kind === "allowed") {
+        return authorization;
+      }
+      logger.warn({ reason: authorization.reason }, "Refused a model request");
+      sendRefusal(response, route.format, authorization.refusal);
+      return undefined;
     } catch (error) {
       logger.error({ err: error }, "Could not decide whether to relay a model request");
       sendRefusal(response, route.format, proxyRefusals.cannotDecide);
       return undefined;
     }
-    if (authorization.kind === "refused") {
-      logger.warn({ reason: authorization.reason }, "Refused a model request");
-      sendRefusal(response, route.format, authorization.refusal);
+  }
+
+  /**
+   * Reads the whole body, so it can be checked before anything reaches the
+   * provider, and checks it; an agent that goes silent while sending it is
+   * cut off after the idle limit, and one that sends it too slowly at the
+   * body's deadline. Undefined once the request is refused.
+   */
+  async #readAndInspectBody(
+    exchange: ProxyExchange,
+    owner: OwnerAuthorization,
+  ): Promise<RelayedRequestBody | undefined> {
+    const { request, response, route, target, logger } = exchange;
+    const { limits } = this.#options;
+    const cutOff = () => request.destroy();
+    response.setTimeout(limits.idleTimeoutInMilliseconds);
+    response.once("timeout", cutOff);
+    const reading = await this.#requestBodies
+      .read(
+        request,
+        {
+          maximumBytes: limits.maximumRequestBytes,
+          deadlineInMilliseconds: limits.requestBodyDeadlineInMilliseconds,
+          threadId: target.threadId,
+          ownerUserId: owner.ownerUserId,
+          scannerLimits: requestBodyShapeLimits,
+        },
+        exchange.signal,
+      )
+      .finally(() => response.removeListener("timeout", cutOff));
+    if (reading.kind === "ended") {
+      this.#refuseIfEnded(exchange);
       return undefined;
     }
-    return authorization;
+    if (reading.kind === "invalid") {
+      logger.warn({ reason: reading.reason }, "Refused a model request's body");
+      sendRefusal(response, route.format, proxyRefusals.invalidRequestBody);
+      return undefined;
+    }
+    if (reading.kind !== "read") {
+      logger.warn({ reason: reading.kind }, "Did not read a model request's body");
+      sendRefusal(response, route.format, bodyReadingRefusals[reading.kind]);
+      return undefined;
+    }
+    exchange.hold(reading.held.release);
+    const inspection = inspectRequestBody(
+      route.format,
+      reading.bytes,
+      reading.scanned,
+      limits.maximumRequestBytes,
+    );
+    if (inspection.kind === "refused") {
+      logger.warn({ reason: inspection.reason }, "Refused a model request's body");
+      sendRefusal(response, route.format, inspection.refusal);
+      return undefined;
+    }
+    reading.held.resize(inspection.body.bytes.length);
+    return inspection.body;
+  }
+
+  /** Whether the models the body names are ones the thread may use; refuses the request if not. */
+  async #checkRequestedModels(
+    exchange: ProxyExchange,
+    owner: OwnerAuthorization,
+    body: RelayedRequestBody,
+  ): Promise<boolean> {
+    const { response, target, route, logger } = exchange;
+    try {
+      const refusal = await this.#options.authorization.checkRequestedModels(
+        target,
+        owner.threadModel,
+        body,
+      );
+      if (refusal === undefined) {
+        return true;
+      }
+      logger.warn({ reason: refusal.reason }, "Refused a model request");
+      sendRefusal(response, route.format, refusal.refusal);
+      return false;
+    } catch (error) {
+      logger.error({ err: error }, "Could not decide whether to relay a model request");
+      sendRefusal(response, route.format, proxyRefusals.cannotDecide);
+      return false;
+    }
   }
 
   async #relay(
     exchange: ProxyExchange,
-    presentedToken: string,
     body: RelayedRequestBody,
-    authorization: Extract<ProxyAuthorization, { kind: "allowed" }>,
+    owner: OwnerAuthorization,
   ): Promise<void> {
     const { request, response, target, route, logger } = exchange;
     const requested: RequestedAnswer = {
@@ -318,20 +389,19 @@ export class ModelProxy {
     };
     response.shouldKeepAlive = true;
     const startedAt = Date.now();
-    this.#keepAuthorized(exchange, presentedToken, body);
     const outcome = await relayRequest({
       request,
       response,
       route,
       body: body.bytes,
-      ownerKey: authorization.ownerKey,
+      ownerKey: owner.ownerKey,
       limits: this.#options.limits,
       cancellation: exchange.signal,
     });
     const answerUsage = describeAnswerUsage(outcome, requested);
     if (answerUsage !== undefined) {
       await this.#options.usage.record({
-        ownerUserId: authorization.ownerUserId,
+        ownerUserId: owner.ownerUserId,
         threadId: target.threadId,
         providerId: target.providerId,
         ...answerUsage,
@@ -339,7 +409,7 @@ export class ModelProxy {
     }
     logger.info(
       {
-        ownerUserId: authorization.ownerUserId,
+        ownerUserId: owner.ownerUserId,
         upstreamStatus: outcome.upstreamStatus ?? null,
         interruption: outcome.interruption ?? null,
         requestBytes: requested.requestBytes,
@@ -354,25 +424,23 @@ export class ModelProxy {
    * Checks a request in flight against the records again every
    * `reauthorizationIntervalInMilliseconds`, ending it once its token is
    * revoked, its thread no longer runs, its owner is no longer admitted,
-   * their key is gone or their cap is reached. A stop handled by this
+   * their key is gone, their cap is reached, or (once its body is read)
+   * the models it names are no longer allowed. A stop handled by this
    * instance ends the thread's requests at once (`cancelThread`); this is
    * what ends them when the other instance handled it, during a redeploy's
    * overlap. A check that cannot be made lets the request carry on, as a
-   * database that cannot be asked is no reason to cut an answer short.
-   * The checks stop when the exchange closes.
+   * database that cannot be asked is no reason to cut an answer short. The
+   * checks stop when the exchange closes.
    */
-  #keepAuthorized(
-    exchange: ProxyExchange,
-    presentedToken: string,
-    requested: RequestedModels,
-  ): void {
+  #keepAuthorized(exchange: ProxyExchange, presentedToken: string): Recheck {
+    const recheck: Recheck = { requested: undefined };
     let isChecking = false;
     const check = () => {
       if (isChecking) {
         return;
       }
       isChecking = true;
-      this.#isStillAuthorized(exchange, presentedToken, requested)
+      this.#isStillAuthorized(exchange, presentedToken, recheck.requested)
         .then(
           (isAuthorized) => {
             if (!isAuthorized) {
@@ -395,12 +463,13 @@ export class ModelProxy {
       clearInterval(timer);
       this.#recordsChecksScheduled -= 1;
     });
+    return recheck;
   }
 
   async #isStillAuthorized(
     exchange: ProxyExchange,
     presentedToken: string,
-    requested: RequestedModels,
+    requested: RequestedModels | undefined,
   ): Promise<boolean> {
     const { authorization } = this.#options;
     const { target, logger } = exchange;
