@@ -23,6 +23,8 @@ type ExpectedUpload = {
   maximumSizeInBytes: number;
   received: PromiseWithResolvers<void>;
   isReceiving: boolean;
+  /** Stops an upload under way once the publication no longer waits for it. */
+  abortReceiving: AbortController;
   timer: NodeJS.Timeout;
 };
 
@@ -64,6 +66,7 @@ export class PublicationBundleUploads {
       ...expectation,
       received,
       isReceiving: false,
+      abortReceiving: new AbortController(),
       timer,
     });
     return received.promise;
@@ -82,7 +85,13 @@ export class PublicationBundleUploads {
     this.#settle(publicationId, new PublicationError(reason));
   }
 
-  /** Stores an upload's body if it is one being waited for, from that thread's supervisor. */
+  /**
+   * Stores an upload's body if it is one being waited for, from that
+   * thread's supervisor. It is counted as it streams to disk, never held in
+   * memory, and stopped as soon as it passes its size or the publication
+   * stops waiting for it (the sandbox reported a failure, or ran out of
+   * time), so a sandbox cannot keep writing to a file nobody will read.
+   */
   async receive(
     threadId: string,
     publicationId: string,
@@ -104,6 +113,7 @@ export class PublicationBundleUploads {
         Readable.fromWeb(body as import("node:stream/web").ReadableStream<Uint8Array>),
         limit,
         createWriteStream(expected.destinationPath, { mode: 0o600 }),
+        { signal: expected.abortReceiving.signal },
       );
       this.#settle(publicationId, undefined);
       return { kind: "received" };
@@ -133,6 +143,7 @@ export class PublicationBundleUploads {
     if (failure === undefined) {
       expected.received.resolve();
     } else {
+      expected.abortReceiving.abort();
       expected.received.reject(failure);
     }
   }
