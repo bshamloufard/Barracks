@@ -160,7 +160,8 @@ const keyKinds = {
  * item (its `content`, or a Responses tool call's `output`) or of a part
  * (an Anthropic tool result's `content`); one part; an image part's source
  * (Anthropic's `source`, Chat Completions' `image_url` object); the tools,
- * and one tool. Anything else is `elsewhere`, where nothing is an image.
+ * at the top level or in a conversation item, and one tool. Anything else
+ * is `elsewhere`, where nothing is an image.
  */
 const positions = {
   elsewhere: 0,
@@ -662,6 +663,10 @@ export class JsonBodyScanner {
     }
     if (parent === positions.conversationItem && (isUnderContent || key === keyKinds.output)) {
       return positions.parts;
+    }
+    // Tools declared mid-conversation (the Responses API's `additional_tools` items).
+    if (parent === positions.conversationItem && key === keyKinds.tools) {
+      return positions.toolList;
     }
     return parent === positions.part && isUnderContent ? positions.parts : positions.elsewhere;
   }

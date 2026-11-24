@@ -308,6 +308,13 @@ describe("finding the images a body sends", () => {
       imagesIn("openai_responses", { model: "m", input: "Hi", tools: [{ type: "file_search" }] })
         .referencedInputType,
     ).toBe("file_search");
+    // Tools can also be declared mid-conversation, as the pinned agent does with function tools.
+    expect(
+      imagesIn("openai_responses", {
+        model: "m",
+        input: [{ type: "additional_tools", role: "developer", tools: [{ type: "mcp" }] }],
+      }).referencedInputType,
+    ).toBe("mcp");
   });
 
   it("notes nothing for the same words elsewhere, such as an argument the agent passed a tool", () => {
