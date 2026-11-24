@@ -1,5 +1,6 @@
 import type { ThreadSummary } from "@barrack/protocol";
-import { threadPageAddress } from "../page-address";
+import { useState } from "react";
+import { settingsAddress, threadPageAddress } from "../page-address";
 import {
   describeSandboxState,
   describeTimeSince,
@@ -7,6 +8,7 @@ import {
 } from "../presentation/describe-sandbox";
 import { useThreadList } from "../thread-list/use-thread-list";
 import { AccountBar } from "./account-bar";
+import { NewThreadForm } from "./new-thread-form";
 
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -16,21 +18,30 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 export function ThreadListPage() {
   const { state, reloadThreads, createThreadAndOpenIt } = useThreadList();
   const { list } = state;
+  const [isFormOpen, setIsFormOpen] = useState(false);
   return (
     <div className="page">
       <header className="page-header thread-list-header">
         <h1>Barrack</h1>
         <AccountBar />
+        <a href={settingsAddress}>Settings</a>
         <button
           type="button"
           className="primary-button"
-          disabled={state.isCreatingThread}
-          onClick={createThreadAndOpenIt}
+          disabled={isFormOpen}
+          onClick={() => setIsFormOpen(true)}
         >
-          {state.isCreatingThread ? "Creating…" : "New thread"}
+          New thread
         </button>
       </header>
       <main>
+        {isFormOpen && (
+          <NewThreadForm
+            isCreating={state.isCreatingThread}
+            onCreate={createThreadAndOpenIt}
+            onCancel={() => setIsFormOpen(false)}
+          />
+        )}
         {state.creationFailureReason !== undefined && (
           <p className="error-notice" role="alert">
             {state.creationFailureReason}
@@ -51,6 +62,15 @@ export function ThreadListPage() {
   );
 }
 
+/** The last two parts of a repository's address, such as `owner/name`. */
+function describeRepository(url: string): string {
+  return url
+    .replace(/\.git$/, "")
+    .split("/")
+    .slice(-2)
+    .join("/");
+}
+
 function ThreadList({ threads }: { threads: ThreadSummary[] }) {
   if (threads.length === 0) {
     return <p className="quiet-note">No threads yet. Create one to give an agent a task.</p>;
@@ -67,6 +87,11 @@ function ThreadList({ threads }: { threads: ThreadSummary[] }) {
                 {describeSandboxState(thread.sandbox)}
               </span>
               {thread.isAgentWorking && <span className="agent-working">Agent working</span>}
+              {thread.repository !== null && (
+                <code className="thread-list-repository">
+                  {describeRepository(thread.repository.url)}
+                </code>
+              )}
               <time
                 dateTime={thread.lastActiveAt}
                 title={`Last active ${dateTimeFormat.format(new Date(thread.lastActiveAt))}`}

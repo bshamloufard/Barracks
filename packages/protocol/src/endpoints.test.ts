@@ -32,12 +32,12 @@ describe("supervisor endpoint", () => {
     });
   });
 
-  it("rejects a supervisor still speaking version 1, saying which version is expected", () => {
-    const result = parseSupervisorEndpointPath("/threads/thread-1/supervisor?protocolVersion=1");
+  it("rejects a supervisor still speaking version 2, saying which version is expected", () => {
+    const result = parseSupervisorEndpointPath("/threads/thread-1/supervisor?protocolVersion=2");
 
     expect(result).toEqual({
       ok: false,
-      errorMessage: 'Protocol version "1" is not supported; expected 2.',
+      errorMessage: 'Protocol version "2" is not supported; expected 3.',
     });
   });
 

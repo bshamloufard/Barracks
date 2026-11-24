@@ -1,7 +1,7 @@
 import type {
-  AgentEvent,
   AgentFailedEvent,
   RecordedThreadEvent,
+  SupervisorEvent,
   ThreadEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
@@ -10,6 +10,8 @@ import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
   OpenRun,
+  PublicationOutcomeAppendOutcome,
+  PublicationOutcomeEvent,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -26,6 +28,9 @@ const oneRowPerSupervisorEventIndex = "thread_events_one_per_supervisor_event";
 
 /** The index that stops a user message being recorded twice; see migration 0060. */
 const oneRowPerUserMessageIndex = "thread_events_one_per_user_message";
+
+/** The index that stops a publication's outcome being recorded twice; see migration 0070. */
+const oneRowPerPublicationIndex = "thread_events_one_per_publication";
 
 /** https://www.postgresql.org/docs/current/errcodes-appendix.html */
 const uniqueViolationCode = "23505";
@@ -50,8 +55,8 @@ type ResumePointRow = {
  * migrations `0001_create_thread_event_log.sql` and extended since. Safe to
  * share one database between several control plane instances: appends from
  * all of them to one thread still get gapless sequences that commit in
- * order, and each supervisor event and user message is recorded once
- * however many of them append it.
+ * order, and each supervisor event, user message and publication outcome
+ * is recorded once however many of them append it.
  */
 export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #pool: Pool;
@@ -118,7 +123,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
    */
   async appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     try {
@@ -126,6 +131,23 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       return { isAlreadyRecorded: false, recordedEvent };
     } catch (error) {
       if (isDuplicate(error, oneRowPerSupervisorEventIndex)) {
+        return { isAlreadyRecorded: true };
+      }
+      throw error;
+    }
+  }
+
+  /** Lets the unique index decide, as `appendSupervisorEvent` does. */
+  async appendPublicationOutcome(
+    threadId: string,
+    event: PublicationOutcomeEvent,
+    publicationId: string,
+  ): Promise<PublicationOutcomeAppendOutcome> {
+    try {
+      const recordedEvent = await this.#insert(threadId, event, { publicationId });
+      return { isAlreadyRecorded: false, recordedEvent };
+    } catch (error) {
+      if (isDuplicate(error, oneRowPerPublicationIndex)) {
         return { isAlreadyRecorded: true };
       }
       throw error;
@@ -253,7 +275,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   async #insert(
     threadId: string,
     event: ThreadEvent,
-    key: { origin?: SupervisorEventOrigin; userMessageId?: string },
+    key: { origin?: SupervisorEventOrigin; userMessageId?: string; publicationId?: string },
   ): Promise<RecordedThreadEvent> {
     const { origin } = key;
     const boundary: RunBoundary = runBoundaryOf(event);
@@ -265,6 +287,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       boundary,
       event.type === "user_message",
       key.userMessageId ?? null,
+      key.publicationId ?? null,
     ]);
     const row = result.rows[0];
     if (row === undefined) {
@@ -306,7 +329,8 @@ function toRecordedEvent(row: StoredEventRow): RecordedThreadEvent {
  * it, and a run end clears it. It also remembers the newest user message
  * ($6 says whether this is one), so whether one waits to be delivered is
  * known without reading events. $7 is the identifier of a user message,
- * which its unique index checks.
+ * and $8 that of a publication whose outcome this is, which their unique
+ * indexes check.
  */
 function appendStatementFor(qualifiedSchema: string): string {
   return `with assigned as (
@@ -333,8 +357,9 @@ function appendStatementFor(qualifiedSchema: string): string {
     )
     insert into ${qualifiedSchema}.thread_events
       (thread_id, sequence, recorded_at, event, supervisor_instance_id, supervisor_event_number,
-        user_message_id)
-    select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint, $7::text
+        user_message_id, publication_id)
+    select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint, $7::text,
+      $8::text
     from assigned
     returning sequence, recorded_at`;
 }

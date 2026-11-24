@@ -1,7 +1,7 @@
 import type {
-  AgentEvent,
   AgentFailedEvent,
   RecordedThreadEvent,
+  SupervisorEvent,
   ThreadEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
@@ -9,6 +9,8 @@ import { runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
   OpenRun,
+  PublicationOutcomeAppendOutcome,
+  PublicationOutcomeEvent,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -21,6 +23,8 @@ type ThreadHistory = {
   events: RecordedThreadEvent[];
   /** Each user message recorded, by its identifier. */
   userMessagesById: Map<string, RecordedThreadEvent>;
+  /** The publications whose outcome is recorded. */
+  recordedPublicationIds: Set<string>;
   /** The event numbers recorded from each supervisor instance. */
   recordedEventNumbersByInstance: Map<string, Set<number>>;
   openRunSupervisorInstanceId: string | undefined;
@@ -35,7 +39,7 @@ type ThreadHistory = {
  *
  * Every method changes its thread in one synchronous step, so concurrent
  * calls can never be given the same sequence, or record one supervisor
- * event, one user message or one run's end twice.
+ * event, one user message, one publication's outcome or one run's end twice.
  */
 export class InMemoryThreadEventLog implements ThreadEventLog {
   readonly #historiesByThreadId = new Map<string, ThreadHistory>();
@@ -56,7 +60,7 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
 
   async appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     const history = this.#historyOf(threadId);
@@ -69,6 +73,19 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     numbers.add(origin.eventNumber);
     history.recordedEventNumbersByInstance.set(origin.supervisorInstanceId, numbers);
     return { isAlreadyRecorded: false, recordedEvent };
+  }
+
+  async appendPublicationOutcome(
+    threadId: string,
+    event: PublicationOutcomeEvent,
+    publicationId: string,
+  ): Promise<PublicationOutcomeAppendOutcome> {
+    const history = this.#historyOf(threadId);
+    if (history.recordedPublicationIds.has(publicationId)) {
+      return { isAlreadyRecorded: true };
+    }
+    history.recordedPublicationIds.add(publicationId);
+    return { isAlreadyRecorded: false, recordedEvent: this.#store(history, event, undefined) };
   }
 
   async closeOpenRun(
@@ -159,6 +176,7 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     const history: ThreadHistory = {
       events: [],
       userMessagesById: new Map(),
+      recordedPublicationIds: new Set(),
       recordedEventNumbersByInstance: new Map(),
       openRunSupervisorInstanceId: undefined,
       userMessagesDeliveredThrough: 0,

@@ -4,9 +4,14 @@ import { identifierSchema } from "./identifier.js";
 import { interruptAgentMessageSchema } from "./interrupt-agent-message.js";
 import { parseFrame } from "./parse-frame.js";
 import type { ParseResult } from "./parse-result.js";
+import { workspaceEventSchema } from "./repository-events.js";
 import { sequenceSchema } from "./sequence.js";
 import { streamFragmentMessageSchema } from "./stream-fragments.js";
 import { userMessageTextSchema } from "./thread-events.js";
+import {
+  controlPlaneWorkspaceMessageSchema,
+  supervisorWorkspaceMessageSchema,
+} from "./workspace-messages.js";
 
 /**
  * Messages on the WebSocket between a thread's sandbox supervisor and the
@@ -55,7 +60,19 @@ import { userMessageTextSchema } from "./thread-events.js";
  *
  * Interrupts are not acknowledged or resent: one that arrived late would
  * stop whatever the agent was doing by then, which the user never asked for.
+ *
+ * The workspace's messages (cloning, credentials, publishing) are described
+ * in `workspace-messages.ts`; `prepare_workspace` follows the welcome.
  */
+
+/**
+ * What a supervisor reports as numbered events: the agent's, and its own
+ * about preparing the workspace.
+ */
+export const supervisorEventSchema = z.discriminatedUnion("type", [
+  ...agentEventSchema.options,
+  ...workspaceEventSchema.options,
+]);
 
 /**
  * Opens every connection. `userMessagesDeliveredThroughSequence` is the
@@ -78,7 +95,7 @@ export const supervisorHelloSchema = z.strictObject({
 export const agentEventMessageSchema = z.strictObject({
   type: z.literal("agent_event"),
   eventNumber: z.int().positive(),
-  event: agentEventSchema,
+  event: supervisorEventSchema,
 });
 
 /** Every user message up to and including this thread sequence has been handed to the agent. */
@@ -92,6 +109,7 @@ export const supervisorToControlPlaneMessageSchema = z.discriminatedUnion("type"
   agentEventMessageSchema,
   streamFragmentMessageSchema,
   userMessagesDeliveredSchema,
+  ...supervisorWorkspaceMessageSchema.options,
 ]);
 
 /**
@@ -130,8 +148,10 @@ export const controlPlaneToSupervisorMessageSchema = z.discriminatedUnion("type"
   agentEventsRecordedSchema,
   deliverUserMessageSchema,
   interruptAgentMessageSchema,
+  ...controlPlaneWorkspaceMessageSchema.options,
 ]);
 
+export type SupervisorEvent = z.infer<typeof supervisorEventSchema>;
 export type SupervisorHello = z.infer<typeof supervisorHelloSchema>;
 export type AgentEventMessage = z.infer<typeof agentEventMessageSchema>;
 export type UserMessagesDelivered = z.infer<typeof userMessagesDeliveredSchema>;

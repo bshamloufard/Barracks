@@ -21,6 +21,7 @@ function stateWith(
         lastActiveAt: "2026-11-24T09:00:00.000Z",
         title: null,
         isAgentWorking: false,
+        repository: null,
         sandbox,
       },
     },

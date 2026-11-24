@@ -180,8 +180,11 @@ describeWithTestDatabase("the control plane's migrations", () => {
     const policies = await pool.query("select 1 from pg_policies where schemaname = $1", [schema]);
 
     expect(tables.rows).toEqual([
+      { name: "github_connection_attempts", has_row_security: true },
+      { name: "github_connections", has_row_security: true },
       { name: "schema_migrations", has_row_security: true },
       { name: "thread_events", has_row_security: true },
+      { name: "thread_repositories", has_row_security: true },
       { name: "thread_sequence_counters", has_row_security: true },
       { name: "threads", has_row_security: true },
       { name: "users", has_row_security: true },

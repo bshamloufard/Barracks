@@ -455,3 +455,90 @@ button:disabled {
 code {
   font-family: var(--font-code);
 }
+
+.settings-section > h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.settings-section > p {
+  margin: 0 0 0.75rem;
+}
+
+.linked-repositories {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.new-thread-form {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
+.new-thread-form fieldset {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.new-thread-form legend {
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.9rem;
+}
+
+.form-field input,
+.form-field select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+  color: inherit;
+  font: inherit;
+}
+
+.repository-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.repository-summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.repository-note {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border-left: 3px solid var(--border);
+  font-size: 0.9rem;
+  color: var(--text-quiet);
+}
+
+.repository-note-done {
+  border-left-color: var(--good);
+}
+
+.repository-note-warning {
+  border-left-color: var(--error-text);
+  color: var(--text);
+}
+
+.thread-list-repository {
+  font-size: 0.8rem;
+  color: var(--text-quiet);
+}

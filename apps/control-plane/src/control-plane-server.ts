@@ -6,6 +6,8 @@ import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
 import { createHttpApp } from "./http/http-app.js";
 import type { Logger } from "./logger.js";
+import type { ThreadPublisher } from "./publication/thread-publisher.js";
+import type { RepositoryServices } from "./repositories/assemble-repository-services.js";
 import type { SandboxLifecycle } from "./sandbox-lifecycle/sandbox-lifecycle.js";
 import { standardCloseCodes } from "./standard-close-codes.js";
 import type { ThreadEventLog } from "./thread-event-log/thread-event-log.js";
@@ -44,6 +46,8 @@ export type ControlPlaneServerOptions = {
   threadStore: ThreadStore;
   relays: ThreadRelayRegistry;
   sandboxLifecycle: SandboxLifecycle;
+  repositoryServices: RepositoryServices;
+  publisher: ThreadPublisher;
   authenticator: Authenticator;
   /** What clients are told about signing in. */
   clientAuthentication: ClientAuthenticationConfiguration;
@@ -72,6 +76,8 @@ export async function startControlPlaneServer(
     noServer: true,
     maxPayload: maximumPayloadInBytes,
   });
+  const authorizeSupervisor = authorizeWithThreadTokens(threadStore);
+  const { repositoryServices } = options;
   const httpApp = createHttpApp({
     authenticator: options.authenticator,
     clientAuthentication: options.clientAuthentication,
@@ -80,6 +86,18 @@ export async function startControlPlaneServer(
       threadStore,
       threadEventLog: options.threadEventLog,
       sandboxLifecycle: options.sandboxLifecycle,
+      repositories: {
+        requests: repositoryServices.requests,
+        store: repositoryServices.repositories,
+        isGithubAvailable: repositoryServices.githubConnections.isAvailable,
+      },
+      logger,
+    },
+    github: { githubConnections: repositoryServices.githubConnections, logger },
+    publication: {
+      publisher: options.publisher,
+      uploads: repositoryServices.uploads,
+      authorizeSupervisor,
       logger,
     },
     webClientDirectory: configuration.webClientDirectory,
@@ -96,7 +114,7 @@ export async function startControlPlaneServer(
       webSocketServer,
       relays: options.relays,
       threadStore,
-      authorizeSupervisor: authorizeWithThreadTokens(threadStore),
+      authorizeSupervisor,
       authenticator: options.authenticator,
       clientAuthenticationTimeoutInMilliseconds:
         options.clientAuthenticationTimeoutInMilliseconds ??

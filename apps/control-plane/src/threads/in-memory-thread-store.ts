@@ -1,3 +1,4 @@
+import { InMemoryThreadRepositoryStore } from "../repositories/in-memory-thread-repository-store.js";
 import {
   type AdmissionOutcome,
   applyTransition,
@@ -22,10 +23,18 @@ import {
  * Every method reads and changes the records in one synchronous step, so
  * the compare-and-set of each change, and the count behind each admission,
  * cannot be interleaved with another call's.
+ *
+ * Threads' repositories are kept in `repositories`, recorded and forgotten
+ * with their threads.
  */
 export class InMemoryThreadStore implements ThreadStore {
   /** In order of creation. */
   readonly #threads: ThreadRecord[] = [];
+  readonly repositories: InMemoryThreadRepositoryStore;
+
+  constructor(repositories = new InMemoryThreadRepositoryStore()) {
+    this.repositories = repositories;
+  }
 
   async create(thread: NewThread, options: ThreadCreationOptions): Promise<AdmissionOutcome> {
     if (this.#find(thread.threadId) !== undefined) {
@@ -35,9 +44,9 @@ export class InMemoryThreadStore implements ThreadStore {
     if (limitReached !== undefined) {
       return limitReached;
     }
-    const { supervisorTokenDigest, ...threadWithoutDigest } = thread;
+    const { supervisorTokenDigest, repository, ...threadFields } = thread;
     const record: ThreadRecord = {
-      ...threadWithoutDigest,
+      ...threadFields,
       supervisorTokenDigests: [Buffer.from(supervisorTokenDigest)],
       createdAt: options.at,
       sandbox: { state: "creating", leaseExpiresAt: options.leaseExpiresAt },
@@ -47,6 +56,9 @@ export class InMemoryThreadStore implements ThreadStore {
       isWakeRequested: false,
     };
     this.#threads.push(record);
+    if (repository !== undefined) {
+      this.repositories.recordNewThread(thread.threadId, repository);
+    }
     return { kind: "changed", thread: copyOf(record) };
   }
 
@@ -124,6 +136,7 @@ export class InMemoryThreadStore implements ThreadStore {
       return false;
     }
     this.#threads.splice(index, 1);
+    this.repositories.forgetThread(threadId);
     return true;
   }
 

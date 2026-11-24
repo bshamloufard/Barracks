@@ -1,13 +1,15 @@
 import type {
-  AgentEvent,
   AgentFailedEvent,
   RecordedThreadEvent,
+  SupervisorEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import type {
   AgentWork,
   OpenRun,
+  PublicationOutcomeAppendOutcome,
+  PublicationOutcomeEvent,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -101,10 +103,20 @@ export class ControllableThreadEventLog implements ThreadEventLog {
 
   appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     return this.#controlAppend(() => this.#log.appendSupervisorEvent(threadId, event, origin));
+  }
+
+  appendPublicationOutcome(
+    threadId: string,
+    event: PublicationOutcomeEvent,
+    publicationId: string,
+  ): Promise<PublicationOutcomeAppendOutcome> {
+    return this.#controlAppend(() =>
+      this.#log.appendPublicationOutcome(threadId, event, publicationId),
+    );
   }
 
   closeOpenRun(

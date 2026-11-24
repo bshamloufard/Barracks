@@ -62,6 +62,13 @@ FROM ${RUNTIME_BASE_IMAGE} AS control-plane
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 
+# Git, to publish threads' work branches: the control plane checks each
+# sandbox's bundle and pushes it (see src/publication). ca-certificates for
+# Git over HTTPS. git-man and the other recommended packages are not needed.
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
 # A user of its own with no login shell: nothing in the control plane needs
 # root, and the Docker variant below reaches Docker through a socket proxy
 # over TCP, so it needs no membership of the host's docker group either.
@@ -87,8 +94,8 @@ EXPOSE 8787
 # Node runs as the first process and receives SIGTERM itself: main.ts handles
 # it by closing every connection, waiting for sandbox creations under way and
 # closing the database pool. No init process is needed, because the only
-# processes the control plane starts are docker CLI commands, which it waits
-# for and so reaps. `docker run <image> dist/migrate.js` applies migrations
+# processes the control plane starts are Git and docker CLI commands, which
+# it waits for and so reaps. `docker run <image> dist/migrate.js` applies migrations
 # without starting the server.
 ENTRYPOINT ["node"]
 CMD ["dist/main.js"]

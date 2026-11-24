@@ -1,7 +1,9 @@
 import type {
-  AgentEvent,
   AgentFailedEvent,
   RecordedThreadEvent,
+  RepositoryPublicationFailedEvent,
+  RepositoryPublishedEvent,
+  SupervisorEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
 
@@ -48,9 +50,22 @@ export interface ThreadEventLog {
    */
   appendSupervisorEvent(
     threadId: string,
-    event: AgentEvent,
+    event: SupervisorEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome>;
+
+  /**
+   * Stores how a publication the control plane carried out ended, exactly
+   * once: a second append for the same `publicationId` in the same thread,
+   * from a retry or from another control plane, stores nothing and reports
+   * that it was already recorded. So a publication never shows as both
+   * published and failed, or as published twice.
+   */
+  appendPublicationOutcome(
+    threadId: string,
+    event: PublicationOutcomeEvent,
+    publicationId: string,
+  ): Promise<PublicationOutcomeAppendOutcome>;
 
   /**
    * Stores `event` as the end of `run`, if that run is still the thread's
@@ -137,6 +152,11 @@ export type SupervisorEventOrigin = { supervisorInstanceId: string; eventNumber:
 export type SupervisorEventAppendOutcome =
   | { isAlreadyRecorded: false; recordedEvent: RecordedThreadEvent }
   | { isAlreadyRecorded: true };
+
+/** The thread events only the control plane records: what publishing the work branch did. */
+export type PublicationOutcomeEvent = RepositoryPublishedEvent | RepositoryPublicationFailedEvent;
+
+export type PublicationOutcomeAppendOutcome = SupervisorEventAppendOutcome;
 
 /**
  * A run open in a thread's history, named by the supervisor instance that

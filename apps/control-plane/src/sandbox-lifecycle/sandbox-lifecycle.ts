@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { workBranchFor } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
+import type { ThreadRepositoryChoice } from "../repositories/repository-requests.js";
 import { mintSupervisorToken } from "../threads/supervisor-token.js";
 import type {
   ThreadRecord,
@@ -73,15 +75,23 @@ export class SandboxLifecycle {
     this.#options = options;
   }
 
-  async createThread(ownerUserId: string): Promise<LifecycleRequestOutcome> {
+  /** `repository`, if given, is recorded with the thread; its work branch is named after it. */
+  async createThread(
+    ownerUserId: string,
+    repository?: ThreadRepositoryChoice,
+  ): Promise<LifecycleRequestOutcome> {
     const { threadStore, operations, sandboxProviderName, settings } = this.#options;
     const supervisorToken = mintSupervisorToken();
+    const threadId = randomUUID();
     const outcome = await threadStore.create(
       {
-        threadId: randomUUID(),
+        threadId,
         ownerUserId,
         sandboxProvider: sandboxProviderName,
         supervisorTokenDigest: supervisorToken.digest,
+        ...(repository === undefined
+          ? {}
+          : { repository: { ...repository, workBranch: workBranchFor(threadId) } }),
       },
       {
         at: this.#options.clock(),

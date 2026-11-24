@@ -1,3 +1,5 @@
+import type { NewThreadRepository } from "../repositories/thread-repository-store.js";
+
 /**
  * The control plane's record of every thread: who owns it, which provider
  * hosts its sandbox and which sandbox that is, what state that sandbox
@@ -185,6 +187,11 @@ export type NewThread = {
   sandboxProvider: string;
   /** SHA-256 of the supervisor's token. The token itself is never stored. */
   supervisorTokenDigest: Buffer;
+  /**
+   * The repository the thread starts from, recorded in the same step as
+   * the thread; read back through `ThreadRepositoryStore`.
+   */
+  repository?: NewThreadRepository;
 };
 
 export type ThreadCreationOptions = {
@@ -204,7 +211,10 @@ export type SandboxAdmission = {
   maximumInInstallation: number | undefined;
 };
 
-export type ThreadRecord = Omit<NewThread, "ownerUserId" | "supervisorTokenDigest"> & {
+export type ThreadRecord = Omit<
+  NewThread,
+  "ownerUserId" | "supervisorTokenDigest" | "repository"
+> & {
   /** Undefined only for a thread created before sign-in existed, which nobody may see. */
   ownerUserId: string | undefined;
   /**

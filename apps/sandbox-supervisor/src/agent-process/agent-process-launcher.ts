@@ -12,7 +12,22 @@ export interface AgentProcessLauncher {
   readonly description: string;
 
   launch(request: AgentLaunchRequest): LaunchedAgentProcess;
+
+  /**
+   * Runs a program as the agent, for work done in the agent's name, such as
+   * Git in its workspace: whatever the program runs (hooks, filters) runs
+   * with the agent's privileges, never the supervisor's.
+   */
+  launchCommand(request: AgentCommandRequest): AgentProcessStdio;
 }
+
+export type AgentCommandRequest = {
+  executable: string;
+  arguments: readonly string[];
+  workingDirectory: string;
+  /** The command's whole environment; the launcher sets the variables that name the user. */
+  environment: NodeJS.ProcessEnv;
+};
 
 export type AgentLaunchRequest = {
   /** A Node.js script, run with the supervisor's own Node. */

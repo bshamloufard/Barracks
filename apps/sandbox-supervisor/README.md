@@ -5,25 +5,27 @@ A small long-running Node process that lives inside a thread's sandbox: a contai
 1. starts the coding agent ([Pi](https://github.com/earendil-works/pi), or a scripted fake);
 2. dials **out** to the control plane over a WebSocket, so the sandbox needs no inbound networking;
 3. translates what the agent does into Barrack's protocol (`@barrack/protocol`) and sends it;
-4. carries out what the control plane asks: deliver a user message (each exactly once), interrupt the agent.
+4. carries out what the control plane asks: deliver a user message (each exactly once), interrupt the agent;
+5. prepares the agent's workspace: clones the thread's repository, as the agent, before the agent is given anything, answers Git's requests for read-only credentials by asking the control plane, and bundles the work branch's commits when the control plane publishes them (see [Working with a repository](#working-with-a-repository)).
 
 ## Configuration
 
 Everything comes from environment variables, checked at startup. Every problem is listed at once, and values are never echoed. The control plane sets them when it creates the thread's sandbox (see [its README](../control-plane/README.md#threads-and-their-sandboxes)), and the sandbox image sets the directories and the agent's user.
 
-| Variable                               | Required | Meaning                                                                                                 |
-| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
-| `BARRACK_CONTROL_PLANE_URL`            | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                     |
-| `BARRACK_THREAD_ID`                    | yes      | The thread this sandbox belongs to                                                                      |
-| `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it |
-| `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here           |
-| `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                |
-| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                 |
-| `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory                                                                           |
-| `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)           |
-| `BARRACK_AGENT_USER`                   | for `pi` | The operating-system user Pi runs as, other than the supervisor's; see below                            |
-| `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                          |
-| `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                            |
+| Variable                               | Required | Meaning                                                                                                                                                                              |
+| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BARRACK_CONTROL_PLANE_URL`            | yes      | WebSocket base URL of the control plane, e.g. `ws://127.0.0.1:8787`                                                                                                                  |
+| `BARRACK_THREAD_ID`                    | yes      | The thread this sandbox belongs to                                                                                                                                                   |
+| `BARRACK_SUPERVISOR_TOKEN`             | yes      | This thread's own token, sent as `Authorization: Bearer …`. Never logged; see below for who can read it                                                                              |
+| `BARRACK_SUPERVISOR_STATE_DIRECTORY`   | yes      | What the supervisor keeps across its own restarts; only its user should be able to write here                                                                                        |
+| `BARRACK_AGENT_HARNESS`                | no       | `pi` (default) or `fake`                                                                                                                                                             |
+| `BARRACK_MODEL`                        | for `pi` | Pi's `provider/model` form, e.g. `anthropic/<model-id>`                                                                                                                              |
+| `BARRACK_WORKSPACE_DIRECTORY`          | for `pi` | The agent's working directory, where the thread's repository is cloned; optional for `fake`                                                                                          |
+| `BARRACK_GIT_HELPER_SOCKET`            | no       | The Unix socket Git's credential helper asks the supervisor on; must be reachable by the agent and nobody outside the sandbox. Default: `git-credential.sock` in the state directory |
+| `BARRACK_STATE_DIRECTORY`              | for `pi` | Pi's sessions (`pi/sessions`) and agent directory (`pi/agent`: credentials, settings, models)                                                                                        |
+| `BARRACK_AGENT_USER`                   | for `pi` | The operating-system user Pi runs as, other than the supervisor's; see below                                                                                                         |
+| `BARRACK_AGENT_SHARES_SUPERVISOR_USER` | no       | Exactly `development-only` lets Pi run as the supervisor's own user; see below                                                                                                       |
+| `BARRACK_LOG_LEVEL`                    | no       | `debug`, `info` (default), `warn` or `error`                                                                                                                                         |
 
 Pi gets an environment built from an allowlist (see [`src/pi/pi-environment.ts`](src/pi/pi-environment.ts)): basics such as `PATH` and `HOME`, proxy settings, every `PI_*` variable, and model provider keys such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Ambient cloud credentials (`AWS_*`, `GOOGLE_*`) are deliberately not passed.
 
@@ -39,6 +41,16 @@ How Pi is started is decided in one place, [`src/agent-process`](src/agent-proce
 At startup, before connecting, the supervisor checks a separate user thoroughly and exits with a message naming the problem: an unknown user, a missing or unusable helper, a helper that cannot change user (a sandbox without the `SETUID` and `SETGID` capabilities, or with `no-new-privileges`), and any of the workspace, `pi/agent` and `pi/sessions` that the agent cannot write to. The last check runs a real process as the agent through the helper, so it proves the whole route. The supervisor never creates the agent's directories in this mode; it needs only to pass through them (see the sandbox image's README).
 
 What the agent can and cannot reach as that user is listed in the sandbox image's README.
+
+## Working with a repository
+
+The code is in [`src/workspace`](src/workspace); the whole design is in the [architecture](../../docs/architecture.md#working-with-a-git-repository).
+
+- **Cloning.** After every welcome the control plane sends `prepare_workspace`, which the supervisor carries out before any user message, in the same queue. It clones the repository with `--filter=blob:none` into the workspace, as the agent (through the launcher, like Pi), onto `barrack/<thread id>`, with the user as the commits' author, and records the clone in its state directory, so a resumed sandbox never clones twice. Until the clone succeeds the agent is given no message; each message retries it first.
+- **Credentials.** For a repository reached through the GitHub App, the clone's configuration names a credential helper (`git-credential-helper-main.ts`, run by Git as the agent with this Node) and nothing else. The helper asks the supervisor on `BARRACK_GIT_HELPER_SOCKET`; the supervisor answers only questions about the thread's repository, by asking the control plane, and gets a token that can only read that repository for an hour. Nothing is stored or logged; the agent can ask the helper too, which is why the token can only read.
+- **Bundles.** When the control plane publishes, the supervisor runs `git bundle create` as the agent, for the work branch's commits since the commit it cloned, into its own state directory within the size and time limits given, and uploads it with its token. Pushing is the control plane's alone.
+
+Git never runs with the supervisor's privileges in the agent's repository, whose configuration and hooks the agent controls, and always with an environment built from an allowlist, never the supervisor's.
 
 ## Running it
 

@@ -17,12 +17,13 @@
  *   clients authenticating with an `authenticate` first message. Both came
  *   in together, before any version 1 peer was deployed, so one increment
  *   covers them.
- *
- * `send_user_message` later gained the client's `messageId`, and
- * `client_message_rejected` the identifier of the message it refuses,
- * without an increment: they pass only between the control plane and the
- * web client it serves, which a reload brings up to date, and an increment
- * would also have turned away every running supervisor, which neither
- * change touches.
+ * - 3: working with a Git repository: `prepare_workspace` after the
+ *   welcome, repository credential requests and answers, publication
+ *   bundles, and the repository's thread events (the clone's travel as
+ *   numbered supervisor events). The same increment covers
+ *   `send_user_message` gaining the client's `messageId`, and
+ *   `client_message_rejected` the identifier of the message it refuses,
+ *   which came in alongside it (and alone would have needed no increment:
+ *   a reload brings the web client up to date with its control plane).
  */
-export const protocolVersion = 2;
+export const protocolVersion = 3;

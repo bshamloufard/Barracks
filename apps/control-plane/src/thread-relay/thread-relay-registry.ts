@@ -1,14 +1,21 @@
+import type { ControlPlaneWorkspaceMessage } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import type { ThreadRuns } from "../sandbox-lifecycle/thread-runs.js";
-import type { OpenRun, ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type {
+  OpenRun,
+  PublicationOutcomeEvent,
+  ThreadEventLog,
+} from "../thread-event-log/thread-event-log.js";
 import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import type { ThreadActivity } from "./thread-activity.js";
 import { ThreadRelay } from "./thread-relay.js";
+import type { ThreadWorkspaces } from "./thread-workspaces.js";
 
 export type ThreadRelayRegistryOptions = {
   threadEventLog: ThreadEventLog;
   threadActivity: ThreadActivity;
+  workspaces?: ThreadWorkspaces;
   logger: Logger;
 };
 
@@ -82,6 +89,20 @@ export class ThreadRelayRegistry implements ThreadRuns {
     return relay.forgetDeletedThread();
   }
 
+  /** Sends to the thread's attached supervisor; false if none is attached here. */
+  sendWorkspaceMessage(threadId: string, message: ControlPlaneWorkspaceMessage): boolean {
+    return this.#relaysByThreadId.get(threadId)?.sendWorkspaceMessage(message) ?? false;
+  }
+
+  /** A relay is made for this if nobody is connected, and dropped again once it is done. */
+  recordPublicationOutcome(
+    threadId: string,
+    publicationId: string,
+    event: PublicationOutcomeEvent,
+  ): Promise<void> {
+    return this.#relayFor(threadId).recordPublicationOutcome(publicationId, event);
+  }
+
   #relayFor(threadId: string): ThreadRelay {
     const existingRelay = this.#relaysByThreadId.get(threadId);
     if (existingRelay !== undefined) {
@@ -92,6 +113,7 @@ export class ThreadRelayRegistry implements ThreadRuns {
       threadId,
       threadEventLog: this.#options.threadEventLog,
       threadActivity: this.#options.threadActivity,
+      ...(this.#options.workspaces === undefined ? {} : { workspaces: this.#options.workspaces }),
       logger,
       whenUnused: () => this.#drop(relay, logger),
     });

@@ -3,6 +3,7 @@ import { createConfiguredAuthentication } from "./authentication/create-authenti
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
+import { assembleRepositoryServices } from "./repositories/assemble-repository-services.js";
 import {
   assembleThreadServices,
   type ThreadServices,
@@ -34,6 +35,13 @@ async function main(): Promise<void> {
     storage.userStore,
     logger,
   );
+  const repositoryServices = assembleRepositoryServices({
+    threadStore: storage.threadStore,
+    repositories: storage.threadRepositoryStore,
+    connections: storage.githubConnectionStore,
+    github: configuration.github,
+    logger,
+  });
   const threadServices = assembleThreadServices({
     threadStore: storage.threadStore,
     threadEventLog: storage.threadEventLog,
@@ -41,6 +49,7 @@ async function main(): Promise<void> {
     sandboxProviderName: configuration.sandboxProvider.kind,
     supervisorEnvironment: configuration.supervisorEnvironment,
     settings: configuration.sandboxLifecycle,
+    workspaces: repositoryServices.workspaces,
     logger,
   });
   const server = await startControlPlaneServer({
@@ -49,6 +58,8 @@ async function main(): Promise<void> {
     threadStore: storage.threadStore,
     relays: threadServices.relays,
     sandboxLifecycle: threadServices.sandboxLifecycle,
+    repositoryServices,
+    publisher: repositoryServices.createPublisher(threadServices.relays),
     authenticator: authentication.authenticator,
     clientAuthentication: authentication.clientAuthentication,
     logger,
@@ -85,6 +96,22 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
   if (sandboxProvider.kind === "local-process") {
     logger.warn(
       "The local-process sandbox provider runs every agent on this machine, as this user, with NO isolation. It is for development only.",
+    );
+  }
+  const { github } = configuration;
+  logger.info(
+    {
+      isGithubAppConfigured: github.app !== undefined,
+      githubUrl: github.webUrl,
+      allowPlainHttpRepositories: github.allowPlainHttp,
+    },
+    github.app === undefined
+      ? "No GitHub App is configured: threads can clone public repositories only, and nothing can be published"
+      : "Threads can work on repositories linked through the GitHub App",
+  );
+  if (github.allowPlainHttp) {
+    logger.warn(
+      "Repository URLs may use plain http://, for tests and local development only; never set BARRACK_ALLOW_PLAIN_HTTP_REPOSITORIES in a deployment.",
     );
   }
   if (supervisorEnvironment.agent.harness === "pi") {

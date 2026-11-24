@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { parsePageAddress, threadPageAddress } from "./page-address";
+import {
+  parsePageAddress,
+  parsePageLocation,
+  settingsAddress,
+  threadPageAddress,
+} from "./page-address";
+
+describe("the settings and GitHub's callback", () => {
+  it("are the settings page at its address", () => {
+    expect(parsePageAddress(new URL(settingsAddress, "http://localhost").search)).toEqual({
+      ok: true,
+      value: { page: "settings" },
+    });
+  });
+
+  it("are GitHub's callback, by its path, with the code and state GitHub added", () => {
+    expect(parsePageLocation("/github/callback", "?code=abc&state=xyz")).toEqual({
+      ok: true,
+      value: { page: "github-callback", code: "abc", state: "xyz" },
+    });
+    expect(parsePageLocation("/github/callback", "?installation_id=1").ok).toBe(false);
+  });
+
+  it("read any other path's page from its query, as before", () => {
+    expect(parsePageLocation("/", "?thread=thread-1")).toEqual({
+      ok: true,
+      value: { page: "thread", threadId: "thread-1" },
+    });
+  });
+});
 
 describe("the page named in the address", () => {
   it("is the thread list when the address names no thread", () => {

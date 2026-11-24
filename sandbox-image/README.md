@@ -44,6 +44,10 @@ Stopping and starting a sandbox keeps everything as it was: the files the agent 
 
 To act inside a running sandbox as the agent, use `docker exec --user barrack-agent`; the default user is the supervisor's, which cannot list the agent's directories. But see the first open route below.
 
+#### Repository credentials
+
+The supervisor answers Git's credential helper on a socket in `/run/barrack-git`, owned by the supervisor and open to the agent's group only (`BARRACK_GIT_HELPER_SOCKET`). The agent can ask it directly, as Git does, so it can obtain what the helper is given: a token that reads the thread's one repository, for an hour. Nothing that can write to a repository ever enters the sandbox; publishing is done by the control plane (see the [architecture](../docs/architecture.md#working-with-a-git-repository)).
+
 #### What the agent can still reach
 
 Checked by `pnpm test:docker` ([`docker-agent-isolation.test.ts`](../tests/end-to-end/src/docker-agent-isolation.test.ts)), in which the real Pi runs commands as the agent and its own tool output is asserted. Closed:

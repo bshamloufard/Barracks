@@ -9,6 +9,7 @@
     "typecheck": "tsc --project tsconfig.json"
   },
   "devDependencies": {
+    "@barrack/fake-github": "workspace:*",
     "@barrack/mock-model-server": "workspace:*",
     "@barrack/protocol": "workspace:*",
     "@barrack/sandbox-providers": "workspace:*",

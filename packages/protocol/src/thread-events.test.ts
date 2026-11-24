@@ -1,16 +1,20 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { type AgentEvent, agentEventSchema } from "./agent-events.js";
 import { maximumUserMessageLength } from "./limits.js";
+import { repositoryEventSchema } from "./repository-events.js";
 import { recordedThreadEventSchema, type ThreadEvent, threadEventSchema } from "./thread-events.js";
 
 const userMessage = { type: "user_message", messageId: "user-1", text: "Please say hello" };
 
 describe("thread events", () => {
-  it("include the user message alongside every agent event", () => {
+  it("include the user message alongside every agent event and every repository event", () => {
     const agentEventTypes = agentEventSchema.options.map((option) => option.shape.type.value);
+    const repositoryEventTypes = repositoryEventSchema.options.map(
+      (option) => option.shape.type.value,
+    );
     const threadEventTypes = threadEventSchema.options.map((option) => option.shape.type.value);
 
-    expect(threadEventTypes).toEqual(["user_message", ...agentEventTypes]);
+    expect(threadEventTypes).toEqual(["user_message", ...agentEventTypes, ...repositoryEventTypes]);
   });
 
   it("exclude the user message from the events an agent may emit", () => {

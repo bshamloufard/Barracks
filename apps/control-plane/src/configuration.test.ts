@@ -64,6 +64,12 @@ describe("the control plane configuration", () => {
           admission: { maximumPerUser: 3, maximumInInstallation: undefined },
           checkIntervalInMilliseconds: 30_000,
         },
+        github: {
+          app: undefined,
+          webUrl: "https://github.com",
+          apiUrl: "https://api.github.com",
+          allowPlainHttp: false,
+        },
       },
     });
   });
