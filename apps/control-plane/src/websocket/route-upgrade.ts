@@ -9,6 +9,8 @@ import type { UpgradeDependencies } from "./upgrade-dependencies.js";
  * Handles the HTTP server's `upgrade` event. The last path segment picks the
  * endpoint; the endpoint's protocol parser then checks the whole request
  * target, so a malformed path for a known endpoint is reported precisely.
+ * The endpoints look the thread up before accepting and answer every
+ * failure of that themselves, so their promises need no handling here.
  */
 export function createUpgradeRouter(
   dependencies: UpgradeDependencies,
@@ -22,11 +24,11 @@ export function createUpgradeRouter(
     );
     const pathname = URL.parse(request.url ?? "", "http://placeholder.invalid")?.pathname ?? "";
     if (pathname.endsWith("/supervisor")) {
-      acceptSupervisorUpgrade(request, socket, head, dependencies);
+      void acceptSupervisorUpgrade(request, socket, head, dependencies);
       return;
     }
     if (pathname.endsWith("/client")) {
-      acceptClientUpgrade(request, socket, head, dependencies);
+      void acceptClientUpgrade(request, socket, head, dependencies);
       return;
     }
     dependencies.logger.warn({ pathname }, "Refused a WebSocket upgrade for an unknown path");

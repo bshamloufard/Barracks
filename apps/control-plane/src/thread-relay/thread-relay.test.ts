@@ -16,7 +16,7 @@ import {
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
 import { readWholeThread } from "../test-support/read-whole-thread.js";
-import { TestControlPlane } from "../test-support/test-control-plane.js";
+import { TestControlPlane, type TestThread } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor, TestClient } from "../test-support/test-peers.js";
 import { replayPageSize } from "./read-missed-events.js";
 import { ThreadRelay } from "./thread-relay.js";
@@ -28,12 +28,14 @@ import { ThreadRelay } from "./thread-relay.js";
  * cannot promise when its frames reach the relay.
  */
 
-const threadId = "thread-1";
-
 let controlPlane: TestControlPlane;
+let thread: TestThread;
+let threadId: string;
 
 beforeEach(async () => {
   controlPlane = await TestControlPlane.start();
+  thread = await controlPlane.createThread();
+  threadId = thread.threadId;
 });
 
 afterEach(async () => {
@@ -107,7 +109,7 @@ describe("a client connecting to a thread", () => {
   });
 
   it("is announced the range it missed, then sent exactly those events, then the supervisor status", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 5);
 
@@ -130,7 +132,7 @@ describe("a client connecting to a thread", () => {
   });
 
   it("is sent events recorded during its replay exactly once and in sequence order", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 5);
     const readGates = controlPlane.threadEventLog.holdNextNewestSequenceRead();
@@ -157,7 +159,7 @@ describe("a client connecting to a thread", () => {
   });
 
   it("is sent the supervisor status and streamed text as they are when its replay ends, not as they changed during it", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 2);
     const readGates = controlPlane.threadEventLog.holdNextNewestSequenceRead();
@@ -232,7 +234,7 @@ describe("a client connecting to a thread", () => {
   });
 
   it("receives live events after its replay without a gap", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 2);
     const client = await controlPlane.connectClient(threadId, 1);
@@ -248,7 +250,7 @@ describe("a client connecting to a thread", () => {
     const client = await controlPlane.connectClient(threadId);
     await client.inbox.waitFor("told no supervisor is connected", isSupervisorStatus(false));
 
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     await client.inbox.waitFor("told the supervisor connected", isSupervisorStatus(true));
     await supervisor.close();
     await client.inbox.waitUntil(
@@ -265,7 +267,7 @@ describe("a client connecting to a thread", () => {
   });
 
   it("is replayed the whole thread when it claims to have seen more than the log holds", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 2);
 
@@ -355,7 +357,7 @@ describe("a live client", () => {
 
 describe("agent events from the supervisor", () => {
   it("are recorded with consecutive sequences and shown to every client in the order they were sent", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const firstClient = await controlPlane.connectClient(threadId);
     const secondClient = await controlPlane.connectClient(threadId);
     const events = [
@@ -381,7 +383,7 @@ describe("agent events from the supervisor", () => {
   });
 
   it("are not shown to clients until they have been recorded", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(threadId);
     await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
     const appendGates = controlPlane.threadEventLog.holdNextAppend();
@@ -451,7 +453,7 @@ describe("agent events from the supervisor", () => {
 
 describe("stream fragments from the supervisor", () => {
   it("are relayed to clients and never recorded", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(threadId);
     const fragment = {
       messageId: "assistant-1",
@@ -474,7 +476,7 @@ describe("stream fragments from the supervisor", () => {
   });
 
   it("reach a client that joins mid-message as the text so far, after its replay", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     supervisor.sendAgentEvent(agentRunStarted);
     supervisor.sendTextFragment({
@@ -549,7 +551,7 @@ describe("stream fragments from the supervisor", () => {
   ])(
     "of a message never completed are no longer sent to joining clients once %s",
     async (_, runEnd) => {
-      const supervisor = await controlPlane.connectSupervisor(threadId);
+      const supervisor = await controlPlane.connectSupervisor(thread);
       const observer = await controlPlane.connectClient(threadId);
       supervisor.sendAgentEvent(agentRunStarted);
       supervisor.sendTextFragment({
@@ -574,7 +576,7 @@ describe("stream fragments from the supervisor", () => {
   );
 
   it("are no longer sent to joining clients once the completed message is recorded", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     supervisor.sendTextFragment({
       messageId: "assistant-1",
@@ -598,7 +600,7 @@ describe("stream fragments from the supervisor", () => {
 
 describe("user messages from a client", () => {
   it("are recorded, shown to clients, and only then delivered to the supervisor", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(threadId);
     await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
     const appendGates = controlPlane.threadEventLog.holdNextAppend();
@@ -666,7 +668,7 @@ describe("user messages from a client", () => {
 
 describe("interrupts from a client", () => {
   it("are forwarded to the supervisor", async () => {
-    const supervisor = await controlPlane.connectSupervisor(threadId);
+    const supervisor = await controlPlane.connectSupervisor(thread);
     const client = await controlPlane.connectClient(threadId);
 
     client.interruptAgent();

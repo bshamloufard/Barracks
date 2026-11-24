@@ -2,13 +2,18 @@ import { type DatabaseConfiguration, locationOf } from "../database/database-con
 import { createDatabasePool } from "../database/database-pool.js";
 import { migrateOnceDatabaseIsReachable } from "../database/prepare-database.js";
 import type { Logger } from "../logger.js";
-import { InMemoryThreadEventLog } from "./in-memory-thread-event-log.js";
-import { PostgresThreadEventLog } from "./postgres-thread-event-log.js";
-import type { ThreadEventLog } from "./thread-event-log.js";
+import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
+import { PostgresThreadEventLog } from "../thread-event-log/postgres-thread-event-log.js";
+import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
+import { PostgresThreadStore } from "../threads/postgres-thread-store.js";
+import type { ThreadStore } from "../threads/thread-store.js";
 
-export type OpenThreadEventLog = {
+/** Where the control plane keeps threads and their history. */
+export type OpenStorage = {
   threadEventLog: ThreadEventLog;
-  /** Releases what the log holds open, such as its database connections. */
+  threadStore: ThreadStore;
+  /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
 
@@ -24,19 +29,23 @@ const certificateVerificationErrorCodes = new Set([
 ]);
 
 /**
- * The Postgres log, with its schema migrated, when a database is
- * configured; otherwise the in-memory log, with a warning that history will
- * not survive a restart.
+ * Postgres, with its schema migrated, when a database is configured;
+ * otherwise memory, with a warning that threads and their history will not
+ * survive a restart.
  */
-export async function openThreadEventLog(
+export async function openStorage(
   database: DatabaseConfiguration | undefined,
   logger: Logger,
-): Promise<OpenThreadEventLog> {
+): Promise<OpenStorage> {
   if (database === undefined) {
     logger.warn(
-      "BARRACK_DATABASE_URL is not set, so thread history is kept in memory and LOST whenever the control plane stops. That suits local development only; never deploy without a database.",
+      "BARRACK_DATABASE_URL is not set, so threads and their history are kept in memory and LOST whenever the control plane stops. That suits local development only; never deploy without a database.",
     );
-    return { threadEventLog: new InMemoryThreadEventLog(), close: async () => undefined };
+    return {
+      threadEventLog: new InMemoryThreadEventLog(),
+      threadStore: new InMemoryThreadStore(),
+      close: async () => undefined,
+    };
   }
   const location = locationOf(database);
   if (database.tlsMode === "disable") {
@@ -47,7 +56,7 @@ export async function openThreadEventLog(
   }
   logger.info(
     { database: location, poolSize: database.poolSize },
-    "Storing thread history in Postgres",
+    "Storing threads and their history in Postgres",
   );
   const pool = createDatabasePool(database, logger);
   try {
@@ -56,7 +65,11 @@ export async function openThreadEventLog(
     await pool.end();
     throw explainStartFailure(error);
   }
-  return { threadEventLog: new PostgresThreadEventLog(pool), close: () => pool.end() };
+  return {
+    threadEventLog: new PostgresThreadEventLog(pool),
+    threadStore: new PostgresThreadStore(pool),
+    close: () => pool.end(),
+  };
 }
 
 /** Adds what to do about the failures a deployer is most likely to meet first. */

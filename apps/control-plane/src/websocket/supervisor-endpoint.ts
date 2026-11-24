@@ -13,13 +13,16 @@ import { rejectUpgrade } from "./reject-upgrade.js";
 import type { UpgradeDependencies } from "./upgrade-dependencies.js";
 import { WebSocketSupervisorConnection } from "./web-socket-connections.js";
 
-/** Accepts a sandbox supervisor's connection for `/threads/{threadId}/supervisor`. */
-export function acceptSupervisorUpgrade(
+/**
+ * Accepts a sandbox supervisor's connection for `/threads/{threadId}/supervisor`,
+ * if it presents that thread's token.
+ */
+export async function acceptSupervisorUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
   dependencies: UpgradeDependencies,
-): void {
+): Promise<void> {
   const endpoint = parseSupervisorEndpointPath(request.url ?? "");
   if (!endpoint.ok) {
     dependencies.logger.warn(
@@ -35,10 +38,21 @@ export function acceptSupervisorUpgrade(
     peer: "supervisor",
     connectionId: randomUUID(),
   });
-  const isAuthorized = dependencies.authorizeSupervisor({
-    threadId,
-    authorizationHeader: request.headers.authorization,
-  });
+  let isAuthorized: boolean;
+  try {
+    isAuthorized = await dependencies.authorizeSupervisor({
+      threadId,
+      authorizationHeader: request.headers.authorization,
+    });
+  } catch (error) {
+    logger.error({ err: error }, "Could not check a supervisor's credentials");
+    rejectUpgrade(socket, 503, "The control plane cannot check credentials now; try again later.");
+    return;
+  }
+  if (socket.destroyed) {
+    logger.info("A supervisor went away while its credentials were being checked");
+    return;
+  }
   if (!isAuthorized) {
     logger.warn("Refused a supervisor connection with missing or wrong credentials");
     rejectUpgrade(socket, 401, "Missing or wrong supervisor credentials.", {

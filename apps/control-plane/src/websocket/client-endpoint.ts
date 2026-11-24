@@ -15,7 +15,8 @@ import type { UpgradeDependencies } from "./upgrade-dependencies.js";
 import { WebSocketClientConnection } from "./web-socket-connections.js";
 
 /**
- * Accepts a client's connection for `/threads/{threadId}/client`.
+ * Accepts a client's connection for `/threads/{threadId}/client`, for a
+ * thread that exists.
  *
  * Clients are not authenticated until Milestone 3. Checking `Origin` stops a
  * web page on another site from opening this connection from the user's
@@ -23,12 +24,12 @@ import { WebSocketClientConnection } from "./web-socket-connections.js";
  * forge it). It does not stop other programs on the same machine, which is
  * why the control plane listens only on the loopback interface by default.
  */
-export function acceptClientUpgrade(
+export async function acceptClientUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
   dependencies: UpgradeDependencies,
-): void {
+): Promise<void> {
   const endpoint = parseClientEndpointPath(request.url ?? "");
   if (!endpoint.ok) {
     dependencies.logger.warn(
@@ -47,6 +48,23 @@ export function acceptClientUpgrade(
   if (origin === undefined || !dependencies.allowedClientOrigins.has(origin)) {
     logger.warn({ origin }, "Refused a client connection from an origin that is not allowed");
     rejectUpgrade(socket, 403, `Origin "${origin ?? ""}" is not allowed to connect.`);
+    return;
+  }
+  let threadExists: boolean;
+  try {
+    threadExists = (await dependencies.threadStore.find(endpoint.value.threadId)) !== undefined;
+  } catch (error) {
+    logger.error({ err: error }, "Could not look up the thread a client asked for");
+    rejectUpgrade(socket, 503, "The control plane cannot look up threads now; try again later.");
+    return;
+  }
+  if (socket.destroyed) {
+    logger.info("A client went away while its thread was being looked up");
+    return;
+  }
+  if (!threadExists) {
+    logger.warn("Refused a client connection to a thread that does not exist");
+    rejectUpgrade(socket, 404, `There is no thread "${endpoint.value.threadId}".`);
     return;
   }
   dependencies.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {

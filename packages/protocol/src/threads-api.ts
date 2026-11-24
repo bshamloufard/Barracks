@@ -63,6 +63,7 @@ export const apiErrorResponseSchema = z.strictObject({
       "bad_request",
       "forbidden_origin",
       "unsupported_media_type",
+      "payload_too_large",
       "not_found",
       "unavailable",
     ]),

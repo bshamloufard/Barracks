@@ -1,16 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { readConfiguration } from "./configuration.js";
 
-const validToken = "a".repeat(32);
+/** The fewest settings that start a control plane: where sandboxes run, how they reach it, and the agent. */
+const minimalEnvironment = {
+  BARRACK_SANDBOX_PROVIDER: "docker",
+  BARRACK_DOCKER_IMAGE: "barrack-sandbox:dev",
+  BARRACK_SANDBOX_CONTROL_PLANE_URL: "ws://host.docker.internal:8787/",
+  BARRACK_AGENT_HARNESS: "fake",
+};
+
+const localProcessEnvironment = {
+  BARRACK_SANDBOX_PROVIDER: "local-process",
+  BARRACK_ALLOW_UNISOLATED_SANDBOXES: "development-only",
+  BARRACK_LOCAL_SANDBOX_DIRECTORY: "/tmp/barrack-sandboxes",
+  BARRACK_LOCAL_SUPERVISOR_COMMAND: '["node", "supervisor.js"]',
+  BARRACK_SANDBOX_CONTROL_PLANE_URL: "ws://127.0.0.1:8787",
+  BARRACK_AGENT_HARNESS: "fake",
+};
 
 describe("the control plane configuration", () => {
-  it("listens on the loopback interface, port 8787, when only the token is given", () => {
-    const result = readConfiguration({ BARRACK_SUPERVISOR_TOKEN: validToken });
+  it("listens on the loopback interface, port 8787, when given only where sandboxes run, how they reach it and the agent", () => {
+    const result = readConfiguration(minimalEnvironment);
 
     expect(result).toEqual({
       ok: true,
       configuration: {
-        supervisorToken: validToken,
         host: "127.0.0.1",
         port: 8787,
         allowedClientOrigins: [
@@ -21,50 +35,111 @@ describe("the control plane configuration", () => {
         ],
         webClientDirectory: undefined,
         logLevel: "info",
+        database: undefined,
+        sandboxProvider: expect.objectContaining({ kind: "docker" }),
+        supervisorEnvironment: {
+          controlPlaneUrlForSandboxes: "ws://host.docker.internal:8787",
+          agent: { harness: "fake" },
+          modelCredentials: {},
+        },
       },
     });
   });
 
-  it("refuses to start without a supervisor token", () => {
-    const result = readConfiguration({});
+  it("has no shared supervisor token any more", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_SUPERVISOR_TOKEN: "a-shared-token-from-milestone-one",
+    });
 
-    expect(result).toEqual({
+    expect(JSON.stringify(result)).not.toContain("a-shared-token-from-milestone-one");
+  });
+
+  it("runs Pi by default, which needs a model in provider/model form", () => {
+    const { BARRACK_AGENT_HARNESS: _harness, ...withoutHarness } = minimalEnvironment;
+
+    const withoutModel = readConfiguration(withoutHarness);
+    const withModel = readConfiguration({
+      ...withoutHarness,
+      BARRACK_MODEL: "anthropic/example-model",
+    });
+
+    expect(withoutModel).toEqual({
       ok: false,
-      problems: [expect.stringMatching(/^BARRACK_SUPERVISOR_TOKEN: required/)],
+      problems: [expect.stringMatching(/^BARRACK_MODEL: required for the Pi agent/)],
+    });
+    expect(withModel.ok && withModel.configuration.supervisorEnvironment.agent).toEqual({
+      harness: "pi",
+      model: "anthropic/example-model",
     });
   });
 
-  it("reports every problem at once", () => {
+  it("forwards only the allowlisted model provider keys to sandboxes", () => {
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: "short",
+      ...minimalEnvironment,
+      ANTHROPIC_API_KEY: "developer-key",
+      AWS_SECRET_ACCESS_KEY: "cloud-credentials",
+    });
+
+    expect(result.ok && result.configuration.supervisorEnvironment.modelCredentials).toEqual({
+      ANTHROPIC_API_KEY: "developer-key",
+    });
+  });
+
+  it("reports every problem at once, the sandbox provider's included", () => {
+    const result = readConfiguration({
       BARRACK_CONTROL_PLANE_PORT: "not-a-port",
       BARRACK_ALLOWED_CLIENT_ORIGINS: "not a url",
       BARRACK_WEB_CLIENT_DIRECTORY: "/no/such/directory",
       BARRACK_LOG_LEVEL: "loud",
+      BARRACK_AGENT_HARNESS: "fake",
     });
 
     expect(result.ok).toBe(false);
     const problems = result.ok ? [] : result.problems;
     expect(problems.map((problem) => problem.split(/[.:]/)[0])).toEqual([
-      "BARRACK_SUPERVISOR_TOKEN",
       "BARRACK_CONTROL_PLANE_PORT",
+      "BARRACK_SANDBOX_CONTROL_PLANE_URL",
       "BARRACK_ALLOWED_CLIENT_ORIGINS",
       "BARRACK_WEB_CLIENT_DIRECTORY",
       "BARRACK_LOG_LEVEL",
+      "BARRACK_SANDBOX_PROVIDER",
     ]);
   });
 
-  it("never repeats the supervisor token in a problem", () => {
-    const shortSecret = "secret-but-short";
+  it("refuses a sandbox URL that is not a WebSocket URL", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_SANDBOX_CONTROL_PLANE_URL: "http://127.0.0.1:8787",
+    });
 
-    const result = readConfiguration({ BARRACK_SUPERVISOR_TOKEN: shortSecret });
+    expect(result).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^BARRACK_SANDBOX_CONTROL_PLANE_URL: required/)],
+    });
+  });
 
-    expect(JSON.stringify(result)).not.toContain(shortSecret);
+  it("accepts the local-process provider while listening on the loopback interface", () => {
+    const result = readConfiguration(localProcessEnvironment);
+
+    expect(result.ok && result.configuration.sandboxProvider.kind).toBe("local-process");
+  });
+
+  it("refuses the local-process provider on an interface other machines can reach", () => {
+    const result = readConfiguration({
+      ...localProcessEnvironment,
+      BARRACK_CONTROL_PLANE_HOST: "0.0.0.0",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^BARRACK_CONTROL_PLANE_HOST: must be a loopback address/)],
+    });
   });
 
   it("compares allowed origins the way browsers send them", () => {
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: validToken,
+      ...minimalEnvironment,
       BARRACK_ALLOWED_CLIENT_ORIGINS: "https://barrack.example/ , http://localhost:3000",
     });
 
@@ -74,15 +149,15 @@ describe("the control plane configuration", () => {
     ]);
   });
 
-  it("keeps thread history in memory when no database URL is given", () => {
-    const result = readConfiguration({ BARRACK_SUPERVISOR_TOKEN: validToken });
+  it("keeps threads and their history in memory when no database URL is given", () => {
+    const result = readConfiguration(minimalEnvironment);
 
     expect(result.ok && result.configuration.database).toBeUndefined();
   });
 
   it("verifies the database's certificate by default, with a pool of five connections", () => {
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: validToken,
+      ...minimalEnvironment,
       BARRACK_DATABASE_URL:
         "postgresql://postgres.project:p%40ss%2Fword@aws-0-eu-west-1.pooler.supabase.com:5432/postgres",
     });
@@ -101,7 +176,7 @@ describe("the control plane configuration", () => {
 
   it("refuses a database URL whose query string would override the TLS settings", () => {
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: validToken,
+      ...minimalEnvironment,
       BARRACK_DATABASE_URL: "postgres://user:secret@db.example:5432/barrack?sslmode=disable",
     });
 
@@ -115,7 +190,7 @@ describe("the control plane configuration", () => {
     const password = "correct-horse-battery-staple";
 
     const result = readConfiguration({
-      BARRACK_SUPERVISOR_TOKEN: validToken,
+      ...minimalEnvironment,
       BARRACK_DATABASE_URL: `mysql://user:${password}@db.example/barrack`,
       BARRACK_DATABASE_TLS: "require",
       BARRACK_DATABASE_CA_CERTIFICATE: "not a certificate",

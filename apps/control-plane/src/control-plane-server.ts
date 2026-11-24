@@ -3,13 +3,15 @@ import { maximumFrameLength } from "@barrack/protocol";
 import { getRequestListener } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import type { ControlPlaneConfiguration } from "./configuration.js";
-import { createHttpApp } from "./http-app.js";
+import { createHttpApp } from "./http/http-app.js";
 import type { Logger } from "./logger.js";
 import { standardCloseCodes } from "./standard-close-codes.js";
 import type { ThreadEventLog } from "./thread-event-log/thread-event-log.js";
 import { ThreadRelayRegistry } from "./thread-relay/thread-relay-registry.js";
+import type { ThreadCreator } from "./threads/thread-creator.js";
+import type { ThreadStore } from "./threads/thread-store.js";
 import { createUpgradeRouter } from "./websocket/route-upgrade.js";
-import { authorizeWithSharedToken } from "./websocket/supervisor-authorization.js";
+import { authorizeWithThreadTokens } from "./websocket/supervisor-authorization.js";
 
 /**
  * Frames are limited in characters (UTF-16 code units), but WebSocket payloads
@@ -27,8 +29,13 @@ const maximumPayloadInBytes = 3 * maximumFrameLength;
 const defaultHeartbeatIntervalInMilliseconds = 30_000;
 
 export type ControlPlaneServerOptions = {
-  configuration: ControlPlaneConfiguration;
+  configuration: Pick<
+    ControlPlaneConfiguration,
+    "host" | "port" | "allowedClientOrigins" | "webClientDirectory"
+  >;
   threadEventLog: ThreadEventLog;
+  threadStore: ThreadStore;
+  threadCreator: ThreadCreator;
   logger: Logger;
   heartbeatIntervalInMilliseconds?: number;
 };
@@ -44,12 +51,21 @@ export type RunningControlPlaneServer = {
 export async function startControlPlaneServer(
   options: ControlPlaneServerOptions,
 ): Promise<RunningControlPlaneServer> {
-  const { configuration, logger } = options;
+  const { configuration, threadStore, logger } = options;
+  const allowedClientOrigins = new Set(configuration.allowedClientOrigins);
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: maximumPayloadInBytes,
   });
-  const httpApp = createHttpApp(configuration.webClientDirectory);
+  const httpApp = createHttpApp({
+    threads: {
+      threadStore,
+      threadCreator: options.threadCreator,
+      allowedClientOrigins,
+      logger,
+    },
+    webClientDirectory: configuration.webClientDirectory,
+  });
   // Hono's adapter would otherwise replace the global Request and Response
   // classes with faster ones; nothing here needs that, so globals are left alone.
   const httpServer = createServer(
@@ -60,8 +76,9 @@ export async function startControlPlaneServer(
     createUpgradeRouter({
       webSocketServer,
       relays: new ThreadRelayRegistry(options.threadEventLog, logger),
-      authorizeSupervisor: authorizeWithSharedToken(configuration.supervisorToken),
-      allowedClientOrigins: new Set(configuration.allowedClientOrigins),
+      threadStore,
+      authorizeSupervisor: authorizeWithThreadTokens(threadStore),
+      allowedClientOrigins,
       heartbeatIntervalInMilliseconds:
         options.heartbeatIntervalInMilliseconds ?? defaultHeartbeatIntervalInMilliseconds,
       logger,

@@ -1,43 +1,75 @@
 # @barrack/control-plane
 
-The service between thread sandboxes and clients. Each thread's sandbox supervisor connects to it over a WebSocket, and so does each client viewing the thread. The control plane records every agent event in the thread's ordered history before showing it to anyone, relays streamed text live, and passes the user's messages and interrupts to the supervisor.
+The service between thread sandboxes and clients. It creates threads: each new thread gets a sandbox of its own from the configured [sandbox provider](../../packages/sandbox-providers), whose supervisor is given a token minted for that thread alone. Each thread's supervisor then connects to the control plane over a WebSocket, and so does each client viewing the thread. The control plane records every agent event in the thread's ordered history before showing it to anyone, relays streamed text live, and passes the user's messages and interrupts to the supervisor.
 
-> **Do not expose this build to a network.** Clients are not authenticated until Milestone 3: anyone who can reach the port can read every thread and send messages to its agent. It listens only on `127.0.0.1` by default, and checks the `Origin` header so that other websites open in your browser cannot connect. Keep it that way.
+> **Do not expose this build to a network.** Clients are not authenticated until Milestone 3: anyone who can reach the port can create threads, read every thread and send messages to its agent. It listens only on `127.0.0.1` by default, and checks the `Origin` header (and, for creating threads, that the body is JSON) so that other websites open in your browser cannot connect or create threads. Keep it that way.
 
-History is stored in Postgres when `BARRACK_DATABASE_URL` is set, and survives restarts. Without it, history is kept in memory and lost when the process stops, which suits local development only; the control plane says so in a warning at startup.
+Threads and their history are stored in Postgres when `BARRACK_DATABASE_URL` is set, and survive restarts. Without it, they are kept in memory and lost when the process stops, which suits local development only; the control plane says so in a warning at startup.
+
+## Threads and their sandboxes
+
+1. `POST /api/threads` mints a thread identifier (a UUID) and a supervisor token (32 random bytes), records the thread with the token's SHA-256 digest and its sandbox `creating`, and answers `201` at once.
+2. In the background it asks the provider to create the sandbox, with the supervisor's environment: `BARRACK_CONTROL_PLANE_URL` (from `BARRACK_SANDBOX_CONTROL_PLANE_URL`), `BARRACK_THREAD_ID`, `BARRACK_SUPERVISOR_TOKEN`, `BARRACK_AGENT_HARNESS`, and for Pi `BARRACK_MODEL` and the model provider keys described below. The token goes nowhere else: it is never stored, logged or returned.
+3. When the provider answers, the thread's sandbox is recorded `ready`; if it refuses, or stays unavailable after two more tries (1 s and 5 s later), it is recorded `failed` with a reason the user is shown. If the sandbox was created but cannot be recorded, it is destroyed, so none is left running unrecorded. A provider that reports the sandbox already exists on a retry is taken to have created it on the earlier attempt.
+4. The supervisor's WebSocket upgrade is accepted only with the token minted for the thread in its URL, compared by digest in constant time: another thread's valid token gets `401`. Clients can connect only to threads that exist (`404` otherwise).
+
+A client learns that the sandbox failed, and why, from the thread's `sandbox` field, fetching `GET /api/threads/{threadId}` until it leaves `creating`; whether the agent is reachable right now it learns from the thread's WebSocket, as before.
+
+**Not handled yet:** a thread whose sandbox was being created when the control plane stopped stays `creating`, and its sandbox (if the provider made one) is not reconciled. Stopping, resuming and reconciling sandboxes come with the thread lifecycle in Milestone 3.
+
+### Model provider keys (temporary)
+
+Until each user brings their own model access (Milestone 4), a control plane running Pi forwards the model provider keys in its own environment to every sandbox: the variables listed in [`src/threads/model-credentials.ts`](src/threads/model-credentials.ts), the same list the supervisor passes on to Pi, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Every thread can spend on those keys and every agent can read them. Their names are logged at startup, never their values.
+
+## The HTTP API
+
+JSON in and out, with shapes defined in [`@barrack/protocol`](../../packages/protocol/src/threads-api.ts). Errors answer `{ "error": { "code": "...", "message": "..." } }`.
+
+| Request                       | Answer                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `POST /api/threads` with `{}` | `201 { "thread": Thread }`. Needs an allowed `Origin` (`403`) and `Content-Type: application/json` (`415`). |
+| `GET /api/threads`            | `200 { "threads": [Thread, …] }`, newest first, at most 100.                                                |
+| `GET /api/threads/{threadId}` | `200 { "thread": Thread }`, or `404`.                                                                       |
+
+A `Thread` is `{ "threadId": "…", "createdAt": "2026-11-24T09:00:00.000Z", "sandbox": { "state": "creating" | "ready" } | { "state": "failed", "reason": "…" } }`. When the store cannot be reached, requests answer `503`.
 
 ## How it is organised
 
 | Path                          | What it holds                                                                                                          |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`                 | Reads configuration, opens the event log, starts the server, shuts down on SIGINT or SIGTERM.                          |
+| `src/main.ts`                 | Reads configuration, opens storage, builds the sandbox provider, starts the server, shuts down on SIGINT or SIGTERM.   |
 | `src/migrate.ts`              | Applies pending database migrations and exits.                                                                         |
 | `src/configuration.ts`        | Environment variables, validated together at startup.                                                                  |
 | `src/control-plane-server.ts` | One HTTP server on one port: HTTP routes plus both WebSocket endpoints.                                                |
-| `src/http-app.ts`             | `GET /health`, and the built web client when configured (Hono).                                                        |
+| `src/http/`                   | `GET /health`, the threads API and its cross-site guard, and the built web client when configured (Hono).              |
+| `src/threads/`                | The `ThreadStore` interface and its implementations, creating threads and their sandboxes, supervisor tokens.          |
+| `src/storage/`                | Opens Postgres (migrated) or memory for the thread store and the event log.                                            |
 | `src/database/`               | Database settings, the connection pool, the migration runner, and waiting for the database at startup (`pg`).          |
 | `migrations/`                 | The SQL migrations, applied in name order.                                                                             |
 | `src/thread-event-log/`       | The `ThreadEventLog` interface, which assigns sequences, with its Postgres and in-memory implementations.              |
 | `src/thread-relay/`           | `ThreadRelay`: per-thread ordering of recording, broadcasting, paged replay and in-progress text. No sockets in here.  |
-| `src/websocket/`              | Upgrade routing, supervisor authorisation, origin check, frame validation, heartbeats and slow-client handling (`ws`). |
-| `src/test-support/`           | Fake peers and fake connections, a pausable event log, the log contract suite, test database helpers. Not built.       |
+| `src/websocket/`              | Upgrade routing, per-thread supervisor tokens, origin check, frame validation, heartbeats, slow clients (`ws`).        |
+| `src/test-support/`           | Fake peers and connections, a pausable event log, the store and log contract suites, test database helpers. Not built. |
 
 The endpoints and messages are defined in [`@barrack/protocol`](../../packages/protocol); see [docs/architecture.md](../../docs/architecture.md) for how they fit together.
 
 ## Configuration
 
-| Variable                          | Default                                                                                   | Meaning                                                                                                                                             |
-| --------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BARRACK_SUPERVISOR_TOKEN`        | none, required                                                                            | Shared secret every supervisor sends as `Authorization: Bearer <token>`. At least 32 characters. Never logged.                                      |
-| `BARRACK_CONTROL_PLANE_HOST`      | `127.0.0.1`                                                                               | Interface to listen on.                                                                                                                             |
-| `BARRACK_CONTROL_PLANE_PORT`      | `8787`                                                                                    | Port for HTTP and both WebSocket endpoints.                                                                                                         |
-| `BARRACK_ALLOWED_CLIENT_ORIGINS`  | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to open the client endpoint.                                                                                |
-| `BARRACK_WEB_CLIENT_DIRECTORY`    | unset                                                                                     | Directory of the built web client (`apps/web/dist`). When set, the control plane serves it.                                                         |
-| `BARRACK_LOG_LEVEL`               | `info`                                                                                    | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.                                                                                     |
-| `BARRACK_DATABASE_URL`            | unset: history in memory                                                                  | `postgres://user:password@host:port/database`, with no query parameters. Never logged; logs name only the host, port and database.                  |
-| `BARRACK_DATABASE_TLS`            | `verify-full`                                                                             | `verify-full` encrypts and checks the server's certificate and host name. `disable` sends everything in the clear; see below for when that is fine. |
-| `BARRACK_DATABASE_CA_CERTIFICATE` | unset: the authorities Node trusts                                                        | PEM text of the certificate authority to trust instead. Required for Supabase.                                                                      |
-| `BARRACK_DATABASE_POOL_SIZE`      | `5`                                                                                       | Most database connections one control plane holds open at once (1 to 100).                                                                          |
+| Variable                            | Default                                                                                   | Meaning                                                                                                                                                                                                       |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BARRACK_SANDBOX_PROVIDER`          | none, required                                                                            | `docker`, `daytona`, `local-process` (development only) or `fake`, with that provider's settings; see [its README](../../packages/sandbox-providers).                                                         |
+| `BARRACK_SANDBOX_CONTROL_PLANE_URL` | none, required                                                                            | The control plane's `ws://` or `wss://` URL as sandboxes reach it, which differs from where it listens: `ws://host.docker.internal:8787` for Docker on this machine, the public `wss://` URL in a deployment. |
+| `BARRACK_AGENT_HARNESS`             | `pi`                                                                                      | What new sandboxes' supervisors run: `pi` or `fake`.                                                                                                                                                          |
+| `BARRACK_MODEL`                     | none; required for `pi`                                                                   | Pi's `provider/model`, e.g. `anthropic/<model-id>`.                                                                                                                                                           |
+| `BARRACK_CONTROL_PLANE_HOST`        | `127.0.0.1`                                                                               | Interface to listen on. Must be a loopback address with the `local-process` provider.                                                                                                                         |
+| `BARRACK_CONTROL_PLANE_PORT`        | `8787`                                                                                    | Port for HTTP and both WebSocket endpoints.                                                                                                                                                                   |
+| `BARRACK_ALLOWED_CLIENT_ORIGINS`    | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to open the client endpoint.                                                                                                                                          |
+| `BARRACK_WEB_CLIENT_DIRECTORY`      | unset                                                                                     | Directory of the built web client (`apps/web/dist`). When set, the control plane serves it.                                                                                                                   |
+| `BARRACK_LOG_LEVEL`                 | `info`                                                                                    | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.                                                                                                                                               |
+| `BARRACK_DATABASE_URL`              | unset: history in memory                                                                  | `postgres://user:password@host:port/database`, with no query parameters. Never logged; logs name only the host, port and database.                                                                            |
+| `BARRACK_DATABASE_TLS`              | `verify-full`                                                                             | `verify-full` encrypts and checks the server's certificate and host name. `disable` sends everything in the clear; see below for when that is fine.                                                           |
+| `BARRACK_DATABASE_CA_CERTIFICATE`   | unset: the authorities Node trusts                                                        | PEM text of the certificate authority to trust instead. Required for Supabase.                                                                                                                                |
+| `BARRACK_DATABASE_POOL_SIZE`        | `5`                                                                                       | Most database connections one control plane holds open at once (1 to 100).                                                                                                                                    |
 
 If anything is wrong, the control plane refuses to start and lists every problem.
 
@@ -75,10 +107,15 @@ Migrations are plain SQL files in [`migrations/`](migrations), named `NNNN_descr
 
 ## Running it
 
-From the repository root, after `pnpm install`:
+`pnpm dev` at the repository root runs it with the web client and the local-process provider. To run it by itself with Docker sandboxes, from the repository root, after `pnpm install` and `pnpm sandbox-image:build`:
 
 ```sh
-export BARRACK_SUPERVISOR_TOKEN="$(openssl rand -hex 32)"
+export BARRACK_SANDBOX_PROVIDER=docker BARRACK_DOCKER_IMAGE=barrack-sandbox:dev
+export BARRACK_AGENT_HARNESS=fake
+# Containers reach the host through Docker's bridge, so listen on its gateway address
+# (reachable from this machine and its containers only, never 0.0.0.0).
+export BARRACK_CONTROL_PLANE_HOST="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+export BARRACK_SANDBOX_CONTROL_PLANE_URL=ws://host.docker.internal:8787
 
 # Development: restarts on every change.
 pnpm --filter @barrack/control-plane dev
@@ -88,7 +125,7 @@ pnpm build
 BARRACK_WEB_CLIENT_DIRECTORY="$PWD/apps/web/dist" pnpm --filter @barrack/control-plane start
 ```
 
-The built client is then at <http://127.0.0.1:8787/?thread=local>. `pnpm --filter` runs scripts inside `apps/control-plane`, so give `BARRACK_WEB_CLIENT_DIRECTORY` as an absolute path.
+The built client is then at `http://<that address>:8787/` (add it to `BARRACK_ALLOWED_CLIENT_ORIGINS`). `pnpm --filter` runs scripts inside `apps/control-plane`, so give `BARRACK_WEB_CLIENT_DIRECTORY` as an absolute path.
 
 To keep history across restarts locally, start the throwaway test database (below) and add `BARRACK_DATABASE_URL=postgres://barrack:barrack@127.0.0.1:54329/barrack_test BARRACK_DATABASE_TLS=disable`.
 
@@ -96,9 +133,9 @@ Logs are JSON lines on standard output. Every line about a thread carries its `t
 
 ## Tests
 
-`pnpm test` at the repository root runs them. They start a real control plane on an ephemeral port and drive it with real WebSocket connections from a fake supervisor and test clients.
+`pnpm test` at the repository root runs them. They start a real control plane on an ephemeral port with the fake sandbox provider, create threads through the API, and drive them with real WebSocket connections from a fake supervisor (holding the token the provider was given) and test clients.
 
-The tests of the Postgres event log and the migration runner need a real database. Without one they are skipped, and their names say why. To run them:
+The tests of the Postgres thread store, the Postgres event log and the migration runner need a real database. Without one they are skipped, and their names say why. To run them:
 
 ```sh
 pnpm test-database:start   # Postgres 17 in Docker on 127.0.0.1:54329, data in memory
