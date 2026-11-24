@@ -383,7 +383,7 @@ Each entry records a decision, what the project plan said about it, what we actu
 ## 2026-11-24: Messages are accepted while no agent is connected
 
 - **What the plan said:** Sandboxes stop when idle and wake when there is work.
-- **What we did:** A message sent while no supervisor is connected is recorded instead of refused, and delivered when one attaches. Clients are sent `user_message_delivery_status` after their replay and whenever it advances, and the page shows later user messages as waiting for the agent. Sending is blocked only while the thread is loading or its sandbox could not be created.
+- **What we did:** A message sent while no supervisor is connected is recorded instead of refused, and delivered when one attaches. Clients that have authenticated and been found to own the thread are sent `user_message_delivery_status` after their replay and whenever it advances, and the page shows later user messages as waiting for the agent. Sending is blocked only while the thread is loading or its sandbox could not be created.
 - **Why:** The next milestone lets a sandbox sleep, and a message is what should wake it. A one-off notice to the sender would be missed by every other device and lost on reconnect; a delivery position is replayed like any status.
 
 ## 2026-11-24: Interrupts are delivered at most once
@@ -391,3 +391,9 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** The user can interrupt the agent.
 - **What we did:** An interrupt goes only to a supervisor connected at that moment, and is neither stored, acknowledged nor resent; with none connected the user is told so, and that waiting messages will still be delivered.
 - **Why:** An interrupt resent after a reconnection would stop whatever the agent was doing by then, which nobody asked for. One lost to a dying connection shows as a run that keeps going, and the user can press again.
+
+## 2026-11-24: Sign-in and acknowledged delivery share protocol version 2
+
+- **What the plan said:** Nothing specific.
+- **What we did:** Client sign-in (an `authenticate` first message) and acknowledged delivery were built side by side from the same base and merged together. Both change the protocol incompatibly, and neither had reached a deployed peer, so they share one increment, version 2. The client connection's order of events is specified once, in `client-messages.ts`: nothing before authentication and the ownership check, then the replay, the supervisor's status, the delivery status, the text streamed so far, and live traffic. Close codes keep one meaning each: 4400 for an invalid message or a broken protocol rule, 4401 to 4404 for sign-in and ownership, 4408 for a slow client, 4409 for a superseded supervisor.
+- **Why:** A version per feature would only have marked a state that never ran anywhere. A client that receives the delivery status (or anything else) before it is known to own the thread would leak whether the thread exists, so the status starts after the ownership check like everything else.

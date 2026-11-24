@@ -13,6 +13,9 @@
  * - 1: unacknowledged messages.
  * - 2: acknowledged delivery between supervisor and control plane (a hello
  *   and welcome, numbered agent events, user messages carrying their
- *   sequence), and the user message delivery status sent to clients.
+ *   sequence), and the user message delivery status sent to clients; and
+ *   clients authenticating with an `authenticate` first message. Both came
+ *   in together, before any version 1 peer was deployed, so one increment
+ *   covers them.
  */
 export const protocolVersion = 2;

@@ -18,7 +18,8 @@ import { userMessageTextSchema } from "./thread-events.js";
  * when a connection dies, half-open or not, or when either side restarts.
  * Stream fragments are the exception: they stay best-effort and unnumbered.
  *
- * The handshake, on every connection:
+ * The handshake, on every connection, which the control plane has accepted
+ * only with the token minted for the thread named in its URL:
  * 1. The supervisor sends `supervisor_hello`, and nothing else until it is
  *    answered. It names its instance (a fresh identifier each time its
  *    process starts) and how far it has handed user messages to the agent.
@@ -30,6 +31,12 @@ import { userMessageTextSchema } from "./thread-events.js";
  *    forgets those and sends every later one again, in order.
  * 4. The control plane sends every recorded user message the agent has not
  *    yet been handed, in order, and then each new one as it is recorded.
+ *
+ * A thread has one supervisor at a time: the newest connection to say hello
+ * wins, and the one it replaces is closed with
+ * `closeCodes.supersededByNewerSupervisor` and must not reconnect. Anything
+ * else sent before the hello, or a claim the thread's history contradicts,
+ * closes the connection with `closeCodes.invalidMessage`.
  *
  * Agent events, supervisor to control plane: each carries an `eventNumber`,
  * 1 for an instance's first and one more for each later one. The control

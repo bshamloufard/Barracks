@@ -11,7 +11,12 @@
  * its first message, so what follows from that is told with the codes below.
  */
 export const closeCodes = {
-  /** The peer sent a frame that is not a valid message. Reconnecting will not help. */
+  /**
+   * The peer sent a frame that is not a valid message, or a valid one that
+   * breaks the protocol (a supervisor speaking before its hello, skipping an
+   * event number, or claiming a delivery its thread's history contradicts).
+   * Reconnecting with the same behaviour will not help.
+   */
   invalidMessage: 4400,
   /**
    * The client did not authenticate: its first message was something other

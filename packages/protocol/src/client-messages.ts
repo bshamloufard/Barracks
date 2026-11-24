@@ -24,10 +24,18 @@ import { userMessageDeliveryStatusSchema } from "./user-message-delivery-status.
  * about the thread; a connection that sends anything else first, or nothing
  * in time, is closed (see `closeCodes`).
  *
- * After successful authentication, the control plane's first message is a
- * `replay_announcement`. Exactly the announced thread events follow, in
- * sequence order, and only then does anything else arrive. A client can
- * therefore tell catching up from watching live.
+ * Once the client is authenticated and found to own the thread, the control
+ * plane sends, in this order:
+ * 1. a `replay_announcement`;
+ * 2. exactly the announced thread events, in sequence order;
+ * 3. any thread events recorded during the replay, and any rejection of a
+ *    message the client sent meanwhile;
+ * 4. the current `supervisor_connection_status`;
+ * 5. the current `user_message_delivery_status`;
+ * 6. the text streamed so far of an assistant message still in progress;
+ * and from then on live traffic, as it happens. A client can therefore tell
+ * catching up from watching live, and the two statuses describe the thread
+ * as of the end of its replay.
  */
 
 /**
@@ -108,7 +116,8 @@ export const controlPlaneToClientMessageSchema = z.discriminatedUnion("type", [
 /**
  * Something the user typed for the agent. The control plane mints the message
  * identifier, records a `user_message` thread event and delivers it to the
- * supervisor.
+ * supervisor, at once if one is connected and otherwise once one connects
+ * (see `UserMessageDeliveryStatus`). It is accepted either way.
  */
 export const sendUserMessageSchema = z.strictObject({
   type: z.literal("send_user_message"),
