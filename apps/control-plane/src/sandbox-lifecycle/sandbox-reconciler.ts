@@ -135,13 +135,13 @@ export class SandboxReconciler {
   }
 
   async #recordSupervisorAttachedAgain(threadId: string): Promise<void> {
-    const { threadStore, logger } = this.#options;
+    const { threadStore, clock, logger } = this.#options;
     logger.warn(
       { threadId },
       "A thread's supervisor is attached but its sandbox is recorded as awaiting one; recording it attached again",
     );
     try {
-      await threadStore.recordSupervisorAttached(threadId);
+      await threadStore.recordSupervisorAttached(threadId, clock());
     } catch (error) {
       logger.error(
         { err: error, threadId },

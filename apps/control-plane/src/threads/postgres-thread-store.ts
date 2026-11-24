@@ -176,10 +176,13 @@ export class PostgresThreadStore implements ThreadStore {
     ]);
   }
 
-  async recordSupervisorAttached(threadId: string): Promise<void> {
+  async recordSupervisorAttached(threadId: string, at: Date): Promise<void> {
     await this.#pool.query(
-      `update ${this.#table} set awaiting_supervisor_since = null where thread_id = $1`,
-      [threadId],
+      `update ${this.#table} set
+          awaiting_supervisor_since = null,
+          last_activity_at = greatest(last_activity_at, $2)
+        where thread_id = $1 and awaiting_supervisor_since is not null`,
+      [threadId, at],
     );
   }
 

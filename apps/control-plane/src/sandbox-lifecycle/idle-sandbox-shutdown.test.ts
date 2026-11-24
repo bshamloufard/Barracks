@@ -1,4 +1,5 @@
 import { buildThreadApiPath, type ThreadSummary, threadResponseSchema } from "@barrack/protocol";
+import { type FakeSandboxLaunch, FakeSandboxProvider } from "@barrack/sandbox-providers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControllableClock } from "../test-support/controllable-clock.js";
 import {
@@ -8,6 +9,7 @@ import {
 } from "../test-support/example-agent-events.js";
 import { LaunchedSupervisors } from "../test-support/launched-supervisors.js";
 import { TestControlPlane, testLifecycleSettings } from "../test-support/test-control-plane.js";
+import { connectFakeSupervisor } from "../test-support/test-peers.js";
 
 /**
  * Idle shutdown, with a clock the test moves on: a running sandbox is
@@ -95,6 +97,43 @@ describe("idle shutdown", () => {
     expect(afterMessage).toBe("running");
     expect(afterAgentEvent).toBe("running");
     expect(await sandboxStateOf(threadId)).toBe("stopped");
+  });
+
+  it("leaves a sandbox whose supervisor has not attached yet, and gives it a whole idle period once one does", async () => {
+    const launches: FakeSandboxLaunch[] = [];
+    clock = new ControllableClock();
+    controlPlane = await TestControlPlane.start({
+      sandboxProvider: new FakeSandboxProvider({
+        supervisorLauncher: (launch) => {
+          launches.push(launch);
+          return { stop: async () => undefined };
+        },
+      }),
+      clock: clock.now,
+    });
+    const { threadId } = await controlPlane.createThread();
+
+    clock.advanceBy(idlePeriod * 2);
+    await stopIdleSandboxes();
+    const whileStarting = await sandboxStateOf(threadId);
+    const { BARRACK_SUPERVISOR_TOKEN: token = "" } = launches[0]?.supervisorSecrets ?? {};
+    const supervisor = await connectFakeSupervisor(controlPlane.baseUrl, threadId, token);
+    await supervisor.sayHello(0);
+    await vi.waitFor(async () => {
+      expect((await controlPlane.threadStore.find(threadId))?.awaitingSupervisorSince).toBe(
+        undefined,
+      );
+    });
+    clock.advanceBy(idlePeriod - 1);
+    await stopIdleSandboxes();
+    const justBeforeAWholePeriod = await sandboxStateOf(threadId);
+    clock.advanceBy(1);
+    await stopIdleSandboxes();
+
+    expect(whileStarting).toBe("running");
+    expect(justBeforeAWholePeriod).toBe("running");
+    expect(await sandboxStateOf(threadId)).toBe("stopped");
+    await supervisor.close();
   });
 
   it("never stops a sandbox whose agent has a run open, however long it is quiet", async () => {

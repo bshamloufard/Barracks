@@ -57,11 +57,14 @@ export interface ThreadStore {
   recordActivity(threadId: string, at: Date): Promise<void>;
 
   /**
-   * Notes that a supervisor of the thread's sandbox has attached, so the
-   * sandbox no longer awaits one (`awaitingSupervisorSince`). It does not
-   * change the version: no operation under way depends on it.
+   * Notes that a supervisor of the thread's sandbox has attached, at `at`,
+   * so the sandbox no longer awaits one (`awaitingSupervisorSince`). The
+   * first attachment after it awaited one also records the thread active
+   * then, so idle shutdown gives the sandbox a whole idle period from when
+   * it could first be used. It does not change the version: no operation
+   * under way depends on it.
    */
-  recordSupervisorAttached(threadId: string): Promise<void>;
+  recordSupervisorAttached(threadId: string, at: Date): Promise<void>;
 
   /**
    * Switches the thread's model, if it exists and belongs to `ownerUserId`;

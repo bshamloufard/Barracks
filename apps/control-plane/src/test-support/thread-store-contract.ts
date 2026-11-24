@@ -479,7 +479,7 @@ export function describeThreadStoreContract(
       const created = await createThread(store, "thread-a");
 
       const running = await changeTo(store, created, "running", secondsAfterStart(30));
-      await store.recordSupervisorAttached("thread-a");
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(40));
       const attached = await store.find("thread-a");
       const stopped = await changeTo(store, await threadOrThrow(store, "thread-a"), "stopped");
       const starting = await changeTo(store, stopped, "starting", secondsAfterStart(90));
@@ -490,6 +490,21 @@ export function describeThreadStoreContract(
       expect(attached?.version).toBe(running.version);
       expect(stopped.awaitingSupervisorSince).toBeUndefined();
       expect(starting.awaitingSupervisorSince).toEqual(secondsAfterStart(90));
+    });
+
+    it("records a thread active when its awaited supervisor attaches, and not when one attaches again", async () => {
+      const store = await createEmptyStore();
+      const created = await createThread(store, "thread-a");
+      await changeTo(store, created, "running", secondsAfterStart(30));
+
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(50));
+      const attached = await threadOrThrow(store, "thread-a");
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(90));
+
+      expect(attached.lastActivityAt).toEqual(secondsAfterStart(50));
+      expect((await threadOrThrow(store, "thread-a")).lastActivityAt).toEqual(
+        secondsAfterStart(50),
+      );
     });
 
     it("fails a sandbox for want of its supervisor only if it still awaits it since the time read", async () => {
@@ -505,7 +520,7 @@ export function describeThreadStoreContract(
           onlyIfAwaitingSupervisorSince: secondsAfterStart(30),
         });
 
-      await store.recordSupervisorAttached("thread-a");
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(35));
       const afterAttaching = await stopForWantOfSupervisor();
 
       expect(afterAttaching).toEqual({ kind: "conflict" });
@@ -532,7 +547,7 @@ export function describeThreadStoreContract(
       const store = await createEmptyStore();
       const created = await createThread(store, "thread-a");
 
-      await store.recordSupervisorAttached("thread-a");
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(35));
       const running = await changeTo(store, created, "running", secondsAfterStart(30));
 
       expect(running.awaitingSupervisorSince).toBeUndefined();
@@ -541,7 +556,7 @@ export function describeThreadStoreContract(
     it("has a sandbox woken as it stops await its supervisor from then", async () => {
       const store = await createEmptyStore();
       const stopping = await threadIn(store, "stopping", "thread-a");
-      await store.recordSupervisorAttached("thread-a");
+      await store.recordSupervisorAttached("thread-a", secondsAfterStart(35));
       await store.recordUserMessageArrival("thread-a", { at: startTime, title: undefined });
 
       const woken = await store.finishStopping({

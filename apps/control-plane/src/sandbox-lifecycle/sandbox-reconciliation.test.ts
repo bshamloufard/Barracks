@@ -129,13 +129,13 @@ class ThreadStoreFailingFirstAttachment extends InMemoryThreadStore {
     return this.#refused.promise;
   }
 
-  override async recordSupervisorAttached(threadId: string): Promise<void> {
+  override async recordSupervisorAttached(threadId: string, at: Date): Promise<void> {
     if (!this.#hasRefused) {
       this.#hasRefused = true;
       this.#refused.resolve();
       throw new Error("The database did not answer in time.");
     }
-    await super.recordSupervisorAttached(threadId);
+    await super.recordSupervisorAttached(threadId, at);
   }
 }
 
@@ -159,7 +159,7 @@ class ThreadStoreAttachingAfterListing extends InMemoryThreadStore {
     const threadId = this.#threadIdToAttach;
     if (threadId !== undefined && states.includes("running")) {
       this.#threadIdToAttach = undefined;
-      await this.recordSupervisorAttached(threadId);
+      await this.recordSupervisorAttached(threadId, clock.now());
     }
     return threads;
   }

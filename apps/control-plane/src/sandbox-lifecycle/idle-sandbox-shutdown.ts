@@ -30,6 +30,13 @@ const sandboxesPerSweep = 100;
  * since a forgotten tab would otherwise keep a sandbox billing for ever, and
  * watching needs only the control plane, which holds the history.
  *
+ * A sandbox whose supervisor has not attached since it started is not idle
+ * but still starting, however long that takes (a supervisor that never
+ * attaches is stopped by reconciliation, saying why); its idle period
+ * begins when the supervisor attaches. Otherwise a supervisor slower to
+ * start than the idle period would have its sandbox stopped under it,
+ * before anyone could use it.
+ *
  * The stop is made only if the thread is still as it was read, activity
  * included, so a message arriving in between keeps the sandbox running. The
  * decision lives entirely in the database, so it survives a restart, and of
@@ -52,7 +59,7 @@ export class IdleSandboxShutdown {
 
   async #stopIfIdle(thread: ThreadRecord): Promise<void> {
     const { threadStore, threadEventLog, operations, clock, logger } = this.#options;
-    if (thread.sandbox.state !== "running") {
+    if (thread.sandbox.state !== "running" || thread.awaitingSupervisorSince !== undefined) {
       return;
     }
     const work = await threadEventLog.readAgentWork(thread.threadId);

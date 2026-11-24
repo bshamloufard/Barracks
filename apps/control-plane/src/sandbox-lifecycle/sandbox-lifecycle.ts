@@ -262,7 +262,7 @@ export class SandboxLifecycle {
    */
   async recordSupervisorAttached(threadId: string): Promise<void> {
     try {
-      await this.#options.threadStore.recordSupervisorAttached(threadId);
+      await this.#options.threadStore.recordSupervisorAttached(threadId, this.#options.clock());
     } catch (error) {
       this.#options.logger.error(
         { err: error, threadId },
