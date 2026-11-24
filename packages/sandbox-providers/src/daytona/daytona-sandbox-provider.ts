@@ -13,8 +13,10 @@ import type {
   ServiceAddressRequest,
 } from "../sandbox-provider.js";
 import {
+  describeFailedUndo,
   SandboxAlreadyExistsError,
   SandboxNotFoundError,
+  type SandboxProviderError,
   SandboxProviderUnavailableError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
@@ -104,7 +106,18 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       }
       throw toSandboxProviderError(failure, attemptedOperation);
     }
-    await this.#launchSupervisor(created, attemptedOperation);
+    const launchFailure = await this.#tryToLaunchSupervisor(created, attemptedOperation);
+    if (launchFailure !== undefined) {
+      // Auto-stop and auto-delete are off, so nothing else would ever remove
+      // it: it would run, and be billed, with no supervisor, and a retry
+      // would be told that the thread already has it.
+      throw await this.#undo(launchFailure, {
+        attemptedOperation: `delete sandbox "${created.id}"`,
+        sandboxId: created.id,
+        undoneBy: () => this.#daytona.deleteSandbox(created.id, deleteTimeoutInSeconds),
+        consequence: `sandbox "${created.id}" is left behind and must be deleted by hand before the thread can have another`,
+      });
+    }
     return { sandboxId: created.id };
   }
 
@@ -124,7 +137,18 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     });
     // Even a sandbox that was already running gets this, so a start repairs
     // a sandbox whose supervisor could not be launched before.
-    await this.#launchSupervisor(sandbox, attemptedOperation);
+    const launchFailure = await this.#tryToLaunchSupervisor(sandbox, attemptedOperation);
+    if (launchFailure !== undefined) {
+      // A running sandbox is one whose supervisor runs, so one without it is
+      // stopped again rather than reported as running, and billed, while it
+      // does nothing.
+      throw await this.#undo(launchFailure, {
+        attemptedOperation: `stop sandbox "${sandboxId}"`,
+        sandboxId,
+        undoneBy: () => this.#daytona.stopSandbox(sandboxId, stopTimeoutInSeconds),
+        consequence: `sandbox "${sandboxId}" may be running without its supervisor until it is stopped by hand`,
+      });
+    }
   }
 
   async stop(sandboxId: string): Promise<void> {
@@ -207,25 +231,62 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     }
   }
 
-  async #launchSupervisor(
+  /** Why the supervisor could not be launched, or `undefined` once it has been. */
+  async #tryToLaunchSupervisor(
     sandbox: DaytonaSandboxRecord,
     attemptedOperation: string,
-  ): Promise<void> {
-    // The command gets the sandbox's environment explicitly as well, in case
-    // Daytona does not pass the sandbox's variables to commands it runs.
-    const result = await this.#call(attemptedOperation, sandbox.id, () =>
-      this.#daytona.executeCommand(
+  ): Promise<SandboxProviderError | undefined> {
+    let exitCode: number;
+    try {
+      // The command gets the sandbox's environment explicitly as well, in case
+      // Daytona does not pass the sandbox's variables to commands it runs.
+      const result = await this.#daytona.executeCommand(
         sandbox.id,
         ensureSupervisorCommand,
         sandbox.environment,
         launchSupervisorTimeoutInSeconds,
-      ),
-    );
-    if (result.exitCode !== 0) {
-      throw new SandboxRefusedError(
-        attemptedOperation,
-        `the sandbox could not launch its supervisor (exit code ${result.exitCode}); check that the snapshot was made from Barrack's sandbox image`,
       );
+      exitCode = result.exitCode;
+    } catch (failure) {
+      return toSandboxProviderError(failure, attemptedOperation, sandbox.id);
+    }
+    if (exitCode === 0) {
+      return undefined;
+    }
+    return new SandboxRefusedError(
+      attemptedOperation,
+      `the sandbox could not launch its supervisor (exit code ${exitCode}); check that the snapshot was made from Barrack's sandbox image`,
+    );
+  }
+
+  /**
+   * Undoes what a failed operation did to a sandbox, and returns the error to
+   * throw: the operation's own failure, or, if undoing it failed too, both
+   * failures and what was left behind.
+   */
+  async #undo(
+    failure: SandboxProviderError,
+    undo: {
+      attemptedOperation: string;
+      sandboxId: string;
+      undoneBy: () => Promise<void>;
+      consequence: string;
+    },
+  ): Promise<SandboxProviderError> {
+    try {
+      await undo.undoneBy();
+      return failure;
+    } catch (undoFailure) {
+      const undoError = toSandboxProviderError(
+        undoFailure,
+        undo.attemptedOperation,
+        undo.sandboxId,
+      );
+      // A sandbox that is gone is neither billed nor running.
+      if (undoError instanceof SandboxNotFoundError) {
+        return failure;
+      }
+      return describeFailedUndo(failure, undoError, undo.consequence);
     }
   }
 

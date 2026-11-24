@@ -10,11 +10,14 @@
 export abstract class SandboxProviderError extends Error {
   /** A short description of the operation that failed, such as "start sandbox abc". */
   readonly attemptedOperation: string;
+  /** What went wrong, without the attempted operation. */
+  readonly explanation: string;
 
   constructor(attemptedOperation: string, explanation: string) {
     super(`Could not ${attemptedOperation}: ${explanation}`);
     this.name = new.target.name;
     this.attemptedOperation = attemptedOperation;
+    this.explanation = explanation;
   }
 }
 
@@ -56,4 +59,26 @@ export class SandboxAlreadyExistsError extends SandboxProviderError {
     this.threadId = threadId;
     this.existingSandboxId = existingSandboxId;
   }
+}
+
+/**
+ * An operation failed part-way, and undoing what it had done failed as well,
+ * so something it made or started is left behind. Both failures are kept:
+ * the first says why the operation failed, the second why it could not be
+ * undone, and `consequence` what is left for someone to clean up.
+ *
+ * It is a refusal, whatever the first failure was, because repeating the
+ * operation automatically would find what was left behind rather than start
+ * afresh: a second create, for one, would be told that the thread already
+ * has the half-created sandbox, and could take it as ready.
+ */
+export function describeFailedUndo(
+  failure: SandboxProviderError,
+  undoFailure: SandboxProviderError,
+  consequence: string,
+): SandboxRefusedError {
+  return new SandboxRefusedError(
+    failure.attemptedOperation,
+    `${failure.explanation}; undoing it failed too (${undoFailure.message}), so ${consequence}`,
+  );
 }

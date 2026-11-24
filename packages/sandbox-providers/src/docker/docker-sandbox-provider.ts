@@ -13,8 +13,10 @@ import type {
   ServiceAddressRequest,
 } from "../sandbox-provider.js";
 import {
+  describeFailedUndo,
   SandboxAlreadyExistsError,
   SandboxNotFoundError,
+  SandboxProviderError,
   SandboxRefusedError,
 } from "../sandbox-provider-errors.js";
 import { createDockerCommandRunner, type DockerCommandRunner } from "./docker-cli.js";
@@ -84,8 +86,10 @@ export class DockerSandboxProvider implements SandboxProvider {
       if (isContainerNameConflict(failure)) {
         throw await this.#describeExistingSandbox(request.threadId, attemptedOperation);
       }
-      await this.#removeHalfCreatedContainer(request.threadId);
-      throw toSandboxProviderError(failure, attemptedOperation);
+      throw await this.#removeHalfCreatedContainer(
+        request.threadId,
+        toSandboxProviderError(failure, attemptedOperation),
+      );
     }
   }
 
@@ -173,19 +177,37 @@ export class DockerSandboxProvider implements SandboxProvider {
    * `docker run` creates the container before starting it, so a run that
    * fails to start (an impossible resource limit, say) leaves a container
    * behind that would make every retry for the thread fail as a duplicate.
+   * Returns the error to throw: the create's own failure, or, if removing the
+   * container failed too, both failures and the container left behind.
    */
-  async #removeHalfCreatedContainer(threadId: string): Promise<void> {
+  async #removeHalfCreatedContainer(
+    threadId: string,
+    creationFailure: SandboxProviderError,
+  ): Promise<SandboxProviderError> {
+    const containerName = containerNameFor(threadId);
+    const attemptedOperation = `remove the half-created container "${containerName}"`;
     try {
-      const leftover = await this.#inspect(containerNameFor(threadId), "inspect a leftover");
+      const leftover = await this.#inspect(containerName, attemptedOperation);
       if (leftover !== undefined && isBarrackSandbox(leftover)) {
         await this.#docker(["container", "rm", "--force", "--volumes", leftover.Id], {
           timeoutInMilliseconds: quickCommandTimeoutInMilliseconds,
         });
       }
-    } catch {
-      // The failure of the create itself is what the caller is told about. If
-      // this clean-up failed too, the container is still labelled with its
-      // thread, and the next create reports it as the thread's sandbox.
+      return creationFailure;
+    } catch (removalFailure) {
+      if (isMissingContainer(removalFailure)) {
+        return creationFailure;
+      }
+      // `#inspect` reports its own failures as provider errors already.
+      const removalError =
+        removalFailure instanceof SandboxProviderError
+          ? removalFailure
+          : toSandboxProviderError(removalFailure, attemptedOperation);
+      return describeFailedUndo(
+        creationFailure,
+        removalError,
+        `container "${containerName}" is left behind and must be removed by hand before the thread can have another`,
+      );
     }
   }
 

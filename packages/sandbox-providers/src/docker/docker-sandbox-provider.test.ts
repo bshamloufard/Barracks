@@ -73,6 +73,32 @@ function createScriptedDocker() {
   return { docker, commands };
 }
 
+const leftoverId = "e".repeat(64);
+
+/**
+ * A docker command whose `run` creates the container and then fails to start
+ * it, as an impossible memory limit does, and whose removal of that
+ * container can be made to fail.
+ */
+function createDockerWhoseRunLeavesAContainer({ removalFails }: { removalFails: boolean }) {
+  const commands: (readonly string[])[] = [];
+  const docker = async (commandArguments: readonly string[]) => {
+    commands.push(commandArguments);
+    const [command, subcommand] = commandArguments;
+    if (command === "run") {
+      throw new DockerCommandFailure("exited-with-error", "Error: Minimum memory limit allowed");
+    }
+    if (command === "container" && subcommand === "inspect") {
+      return inspectOutput(leftoverId, { "barrack.sandbox": "true" });
+    }
+    if (removalFails) {
+      throw new DockerCommandFailure("exited-with-error", "Cannot connect to the Docker daemon");
+    }
+    return "";
+  };
+  return { docker, commands };
+}
+
 describe("the Docker sandbox provider", () => {
   it("passes the supervisor's environment to docker through the CLI's environment only", async () => {
     const { docker, commands } = createScriptedDocker();
@@ -105,6 +131,29 @@ describe("the Docker sandbox provider", () => {
 
     await expect(creation).rejects.toThrow(SandboxAlreadyExistsError);
     await expect(creation).rejects.toMatchObject({ existingSandboxId: barrackContainerId });
+  });
+
+  it("removes the container a failed run left behind and reports the run's failure", async () => {
+    const { docker, commands } = createDockerWhoseRunLeavesAContainer({ removalFails: false });
+    const provider = new DockerSandboxProvider(settings, docker);
+
+    const creation = provider.create({ threadId: "half-created", supervisorEnvironment: {} });
+
+    await expect(creation).rejects.toThrow(SandboxRefusedError);
+    await expect(creation).rejects.toThrow(/Minimum memory limit/);
+    expect(commands.at(-1)).toEqual(["container", "rm", "--force", "--volumes", leftoverId]);
+  });
+
+  it("reports both failures, naming the container left behind, when it cannot be removed", async () => {
+    const { docker } = createDockerWhoseRunLeavesAContainer({ removalFails: true });
+    const provider = new DockerSandboxProvider(settings, docker);
+
+    const creation = provider.create({ threadId: "half-created", supervisorEnvironment: {} });
+
+    await expect(creation).rejects.toThrow(SandboxRefusedError);
+    await expect(creation).rejects.toThrow(
+      /Minimum memory limit.*undoing it failed too \(.*docker said "Cannot connect to the Docker daemon"\), so container "barrack-thread-half-created" is left behind/,
+    );
   });
 
   it("never acts on a container that is not one of Barrack's sandboxes", async () => {

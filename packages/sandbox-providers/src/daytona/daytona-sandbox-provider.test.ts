@@ -36,6 +36,8 @@ class InMemoryDaytona implements DaytonaApi {
   readonly calls: ApiCall[] = [];
   readonly sandboxes = new Map<string, DaytonaSandboxRecord & { name: string }>();
   supervisorLaunchExitCode = 0;
+  /** What every call of each method listed here throws, as Daytona would fail. */
+  readonly failures = new Map<keyof DaytonaApi, DaytonaApiFailure>();
   #count = 0;
 
   async createSandbox(parameters: DaytonaCreationParameters): Promise<DaytonaSandboxRecord> {
@@ -66,6 +68,7 @@ class InMemoryDaytona implements DaytonaApi {
 
   async stopSandbox(sandboxId: string): Promise<void> {
     this.calls.push({ method: "stopSandbox", sandboxId });
+    this.#throwIfFailing("stopSandbox");
     this.#setState(sandboxId, "stopped");
   }
 
@@ -81,6 +84,7 @@ class InMemoryDaytona implements DaytonaApi {
 
   async deleteSandbox(sandboxId: string): Promise<void> {
     this.calls.push({ method: "deleteSandbox", sandboxId });
+    this.#throwIfFailing("deleteSandbox");
     this.sandboxes.delete(sandboxId);
   }
 
@@ -90,6 +94,7 @@ class InMemoryDaytona implements DaytonaApi {
     environment: Readonly<Record<string, string>> | undefined,
   ) {
     this.calls.push({ method: "executeCommand", sandboxId, detail: { command, environment } });
+    this.#throwIfFailing("executeCommand");
     return { exitCode: this.supervisorLaunchExitCode, output: "" };
   }
 
@@ -108,6 +113,13 @@ class InMemoryDaytona implements DaytonaApi {
 
   callsTo(method: keyof DaytonaApi): ApiCall[] {
     return this.calls.filter((call) => call.method === method);
+  }
+
+  #throwIfFailing(method: keyof DaytonaApi): void {
+    const failure = this.failures.get(method);
+    if (failure !== undefined) {
+      throw failure;
+    }
   }
 
   #setState(sandboxId: string, state: string): void {
@@ -159,14 +171,69 @@ describe("the Daytona sandbox provider", () => {
     expect(daytona.callsTo("startSandbox")).toHaveLength(1);
   });
 
-  it("refuses to report a sandbox as created when its supervisor could not be launched", async () => {
-    const daytona = new InMemoryDaytona();
+  it("deletes a sandbox whose supervisor could not be launched and reports the launch failure", async () => {
+    const { daytona, provider } = createProvider();
     daytona.supervisorLaunchExitCode = 1;
-    const { provider } = createProvider(daytona);
 
     const creation = provider.create({ threadId: "thread-1", supervisorEnvironment });
 
     await expect(creation).rejects.toThrow(SandboxRefusedError);
+    await expect(creation).rejects.toThrow(/could not launch its supervisor \(exit code 1\)/);
+    expect(daytona.callsTo("deleteSandbox")).toEqual([
+      { method: "deleteSandbox", sandboxId: "daytona-1" },
+    ]);
+    expect(daytona.sandboxes.size).toBe(0);
+  });
+
+  it("creates a fresh sandbox on the retry after a launch that could not reach Daytona", async () => {
+    const { daytona, provider } = createProvider();
+    daytona.failures.set("executeCommand", new DaytonaApiFailure("timed out", undefined, true));
+
+    const firstAttempt = provider.create({ threadId: "thread-1", supervisorEnvironment });
+    await expect(firstAttempt).rejects.toThrow(SandboxProviderUnavailableError);
+    daytona.failures.delete("executeCommand");
+    const retry = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+
+    expect(retry).toEqual({ sandboxId: "daytona-2" });
+    expect([...daytona.sandboxes.keys()]).toEqual(["daytona-2"]);
+  });
+
+  it("reports both failures, as a refusal naming the sandbox left behind, when the sandbox cannot be deleted either", async () => {
+    const { daytona, provider } = createProvider();
+    daytona.failures.set("executeCommand", new DaytonaApiFailure("timed out", undefined, true));
+    daytona.failures.set("deleteSandbox", new DaytonaApiFailure("bad gateway", 502, false));
+
+    const creation = provider.create({ threadId: "thread-1", supervisorEnvironment });
+
+    await expect(creation).rejects.toThrow(SandboxRefusedError);
+    await expect(creation).rejects.toThrow(
+      'Could not create a sandbox for thread "thread-1": Daytona said "timed out"; undoing it failed too (Could not delete sandbox "daytona-1": Daytona said "bad gateway"), so sandbox "daytona-1" is left behind and must be deleted by hand before the thread can have another',
+    );
+  });
+
+  it("stops a started sandbox whose supervisor could not be launched instead of leaving it running", async () => {
+    const { daytona, provider } = createProvider();
+    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    await provider.stop(sandboxId);
+    daytona.supervisorLaunchExitCode = 1;
+
+    await expect(provider.start(sandboxId)).rejects.toThrow(/could not launch its supervisor/);
+
+    expect(await provider.getStatus(sandboxId)).toEqual({ state: "stopped" });
+  });
+
+  it("reports both failures when a started sandbox without its supervisor cannot be stopped", async () => {
+    const { daytona, provider } = createProvider();
+    const { sandboxId } = await provider.create({ threadId: "thread-1", supervisorEnvironment });
+    daytona.supervisorLaunchExitCode = 1;
+    daytona.failures.set("stopSandbox", new DaytonaApiFailure("bad gateway", 502, false));
+
+    const start = provider.start(sandboxId);
+
+    await expect(start).rejects.toThrow(SandboxRefusedError);
+    await expect(start).rejects.toThrow(
+      /exit code 1.*undoing it failed too \(Could not stop sandbox "daytona-1": Daytona said "bad gateway"\), so sandbox "daytona-1" may be running without its supervisor/,
+    );
   });
 
   it("names the thread's existing sandbox instead of creating a second one", async () => {
