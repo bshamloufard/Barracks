@@ -102,6 +102,20 @@ beforeAll(async () => {
   installationId = github.installApp([firstRepository, secondRepository]);
 }, 30_000);
 
+/** The owner can push to both repositories on GitHub, as when they linked them. */
+function grantOwnerAccessOnGithub(): void {
+  github.addUser({ login: "octocat", push: [firstRepository, secondRepository] });
+}
+
+function readTokensIssued() {
+  return github.issuedTokens.filter((issued) => issued.permissions.contents === "read");
+}
+
+/** Moves the clock on until the token minted at the start has less than a quarter of an hour left. */
+function bringTokenNearExpiry(): void {
+  now = new Date(now.getTime() + 50 * 60_000);
+}
+
 afterAll(async () => {
   await github.close();
 });
@@ -111,6 +125,8 @@ beforeEach(async () => {
   threadStore = new InMemoryThreadStore();
   connections = new InMemoryGithubConnectionStore();
   github.issuedTokens.length = 0;
+  github.setApiDown(false);
+  grantOwnerAccessOnGithub();
   await createThread("thread-a", repositoryOf(firstRepository, "thread-a"));
   await createThread("thread-b", repositoryOf(secondRepository, "thread-b"));
   await linkOwnerTo([firstRepository, secondRepository]);
@@ -148,7 +164,7 @@ describe("repository credentials for a sandbox", () => {
     await service.issue("thread-a");
 
     expect(new Set(answers.map((answer) => answer.isGranted && answer.password)).size).toBe(1);
-    expect(github.issuedTokens).toHaveLength(1);
+    expect(readTokensIssued()).toHaveLength(1);
   });
 
   it("are refused beyond the rate limit, and allowed again once it refills", async () => {
@@ -183,6 +199,44 @@ describe("repository credentials for a sandbox", () => {
     await connections.remove(owner);
     expect(await service.issue("thread-b")).toMatchObject({ isGranted: false });
     expect(github.issuedTokens).toHaveLength(0);
+  });
+
+  it("are refused, and the token handed out last revoked, once GitHub says the owner can no longer read the repository", async () => {
+    const service = credentials();
+    const first = await service.issue("thread-a");
+    bringTokenNearExpiry();
+    github.revokeAccess("octocat", firstRepository);
+
+    const afterRemoval = await service.issue("thread-a");
+
+    expect(first.isGranted).toBe(true);
+    expect(afterRemoval).toEqual({
+      isGranted: false,
+      reason: `GitHub says @octocat can no longer read ${firstRepository.fullName}.`,
+    });
+    await expect.poll(() => readTokensIssued()[0]?.isRevoked).toBe(true);
+    expect(readTokensIssued()).toHaveLength(1);
+  });
+
+  it("are not minted while GitHub cannot be asked, but the token handed out last is handed out again while it lasts", async () => {
+    const service = credentials();
+    const first = await service.issue("thread-a");
+    bringTokenNearExpiry();
+    github.setApiDown(true);
+
+    const duringOutage = await service.issue("thread-a");
+    now = new Date(now.getTime() + 11 * 60_000);
+    const onceItExpired = await service.issue("thread-a");
+
+    expect(duringOutage).toMatchObject({
+      isGranted: true,
+      password: first.isGranted ? first.password : "",
+    });
+    expect(onceItExpired).toMatchObject({
+      isGranted: false,
+      reason: expect.stringContaining("GitHub could not be asked"),
+    });
+    expect(readTokensIssued()).toHaveLength(1);
   });
 
   it("are refused when GitHub no longer lets the App reach the repository", async () => {

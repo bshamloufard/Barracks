@@ -133,6 +133,7 @@ export class FakeGithub {
   readonly #codes = new Map<string, CodeRecord>();
   readonly #userTokens = new Map<string, string>();
   readonly #heldGitRequests = new Map<GitRequestKind, HeldGitRequest>();
+  #isApiDown = false;
   #nextIdentifier = 1000;
 
   private constructor(server: Server, baseUrl: string, repositoriesDirectory: string) {
@@ -221,6 +222,17 @@ export class FakeGithub {
   /** Takes away a user's push access, as a repository's owner might. */
   revokePush(login: string, repository: FakeRepository): void {
     this.#users.get(login)?.pushRepositoryIds.delete(repository.id);
+  }
+
+  /** Takes away all of a user's access, as removing them from an organisation does. */
+  revokeAccess(login: string, repository: FakeRepository): void {
+    this.revokePush(login, repository);
+    this.#users.get(login)?.readRepositoryIds.delete(repository.id);
+  }
+
+  /** While down, every API request is answered 503, as during a GitHub outage; Git is unaffected. */
+  setApiDown(isDown: boolean): void {
+    this.#isApiDown = isDown;
   }
 
   /** Installs the App on these repositories; returns the installation's identifier. */
@@ -418,6 +430,9 @@ export class FakeGithub {
     authorization: string | undefined,
     body: unknown,
   ): Promise<Answer> {
+    if (this.#isApiDown) {
+      return { status: 503, body: { message: "Service Unavailable" } };
+    }
     const route = `${method} ${url.pathname.slice("/api".length)}`;
     const installationToken = route.match(/^POST \/app\/installations\/(\d+)\/access_tokens$/);
     if (installationToken !== null) {

@@ -92,7 +92,9 @@ const repositoriesPageSchema = z.object({
 
 const collaboratorPermissionSchema = z.object({
   permission: z.string(),
-  user: z.object({ permissions: z.object({ push: z.boolean() }).optional() }).nullish(),
+  user: z
+    .object({ permissions: z.object({ pull: z.boolean(), push: z.boolean() }).optional() })
+    .nullish(),
 });
 
 const pullRequestSchema = z.object({ number: z.number().int().positive(), html_url: z.url() });
@@ -245,19 +247,29 @@ export class GithubApi {
   }
 
   /**
-   * Whether `login` can push to the repository today, asked with an
-   * installation token (which needs only `metadata: read`).
+   * Whether `login` can read and push to the repository today, asked with
+   * an installation token (which needs only `metadata: read`). GitHub
+   * answers 404 for a user who has no access at all.
+   * https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
    */
-  async canUserPush(installationToken: string, fullName: string, login: string): Promise<boolean> {
+  async readUserPermission(
+    installationToken: string,
+    fullName: string,
+    login: string,
+  ): Promise<{ canRead: boolean; canPush: boolean }> {
     const answer = await this.#request(
       "GET",
       `/repos/${fullName}/collaborators/${encodeURIComponent(login)}/permission`,
       `Bearer ${installationToken}`,
     );
     const parsed = parseAnswer(collaboratorPermissionSchema, answer, "the user's permission");
-    return (
-      parsed.user?.permissions?.push ?? ["admin", "maintain", "write"].includes(parsed.permission)
-    );
+    const permissions = parsed.user?.permissions;
+    return {
+      canRead:
+        permissions?.pull ??
+        ["admin", "maintain", "write", "triage", "read"].includes(parsed.permission),
+      canPush: permissions?.push ?? ["admin", "maintain", "write"].includes(parsed.permission),
+    };
   }
 
   /**
