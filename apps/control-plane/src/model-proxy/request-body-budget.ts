@@ -171,8 +171,9 @@ export class RequestBodyBudget {
         change(bytes);
         return undefined;
       },
-      // What replaces a body differs from it by a few bytes at most, so it
-      // is held whatever the shares (see `request-body.ts`).
+      // What replaces a body differs from it only in the few top-level
+      // members the proxy writes out again, each at most 64 KiB (see
+      // `request-body-members.ts`), so it is held whatever the shares.
       resize: (bytes) => {
         if (!isReleased) {
           change(bytes - taken);
