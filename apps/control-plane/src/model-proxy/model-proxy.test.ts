@@ -457,6 +457,34 @@ describe("the model proxy", () => {
     expect(statuses.filter((status) => status === 503).length).toBeGreaterThanOrEqual(14);
   });
 
+  it.each([
+    ["a background response", "openai", { background: true }],
+    ["background options", "openai", { background_options: { completion_window: "8h" } }],
+    ["a deferred completion", "groq", { deferred: true }],
+  ] as const)(
+    "refuses %s, whose output could never be counted, in words the agent shows",
+    async (_description, providerId, detaching) => {
+      await start();
+      const ownersKey = providerId === "openai" ? keys.adasOpenAi : keys.adasGroq;
+      await controlPlane.saveModelCredential(providerId, ownersKey, adaToken);
+      const { access } = await startThread(adaToken, `${providerId}/a-model`);
+      const example = relayedFormatExamples[providerId];
+
+      const response = await callModelProxy(controlPlane, access, example, "Think hard", {
+        body: JSON.stringify({ ...example.body("Think hard"), ...detaching }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: {
+          type: "invalid_request_error",
+          message: expect.stringContaining("does not relay background or deferred requests"),
+        },
+      });
+      expect(modelServer.receivedRequests).toEqual([]);
+    },
+  );
+
   it("refuses a second request at once from a thread allowed one", async () => {
     await start({ modelProxyLimits: { concurrentRequestsPerThread: 1 } });
     await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
