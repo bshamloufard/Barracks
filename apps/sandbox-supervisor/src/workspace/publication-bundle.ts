@@ -80,7 +80,7 @@ async function writeBundle(
   bundlePath: string,
   maximumSizeInBytes: number,
 ): Promise<void> {
-  const limit = new SizeLimit(maximumSizeInBytes);
+  const limit = new DiscardPastSizeLimit(maximumSizeInBytes);
   const file = createWriteStream(bundlePath, { mode: 0o600 });
   limit.pipe(file);
   const outcome = await workspace.git?.run(
@@ -131,8 +131,13 @@ function finished(file: WriteStream): Promise<void> {
   });
 }
 
-/** Passes bytes on until there are more than the limit, then passes nothing more. */
-class SizeLimit extends Transform {
+/**
+ * Passes bytes on until there are more than the limit, then discards the
+ * rest, noting that it did. Git's output must still be read to its end, or
+ * Git would wait for ever to write it; the caller refuses the bundle as too
+ * large once Git is done.
+ */
+class DiscardPastSizeLimit extends Transform {
   readonly #maximumSizeInBytes: number;
   #passedBytes = 0;
   wasExceeded = false;

@@ -124,7 +124,7 @@ export class PublicationBundleUploads {
       return { kind: "not_expected" };
     }
     expected.isReceiving = true;
-    const limit = new SizeLimit(expected.maximumSizeInBytes);
+    const limit = new FailPastSizeLimit(expected.maximumSizeInBytes);
     try {
       await pipeline(
         Readable.fromWeb(body as import("node:stream/web").ReadableStream<Uint8Array>),
@@ -166,8 +166,11 @@ export class PublicationBundleUploads {
   }
 }
 
-/** Passes bytes through until there are more than the limit, then fails the stream. */
-class SizeLimit extends Transform {
+/**
+ * Passes bytes through until there are more than the limit, then fails the
+ * stream, which ends the upload: nothing more is read from the sandbox.
+ */
+class FailPastSizeLimit extends Transform {
   readonly #maximumSizeInBytes: number;
   #receivedBytes = 0;
   wasExceeded = false;
