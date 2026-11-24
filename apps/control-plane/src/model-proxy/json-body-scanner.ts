@@ -100,11 +100,13 @@ const byte = {
   lowerE: 0x65,
 } as const;
 
-const literals: Record<number, Buffer> = {
-  [0x74]: Buffer.from("rue"),
-  [0x66]: Buffer.from("alse"),
-  [0x6e]: Buffer.from("ull"),
-};
+/** What follows the first letter of `true`, `false` and `null`, by that letter. */
+const literalRests = new Map(
+  ["true", "false", "null"].map((literal) => [
+    literal.charCodeAt(0),
+    Buffer.from(literal.slice(1)),
+  ]),
+);
 
 /** The characters a JSON string escape may name after its backslash. */
 const escapeLetters = new Set(Buffer.from('"\\/bfnrtu'));
@@ -163,7 +165,7 @@ export class JsonBodyScanner {
   #stringPrefixLength = 0;
   #unicodeDigitsLeft = 0;
   // The literal being read.
-  #literal: Buffer = literals[0x74] as Buffer;
+  #literal: Buffer = Buffer.alloc(0);
   #literalPosition = 0;
   // What the scan found.
   readonly #members: TopLevelMember[] = [];
@@ -350,8 +352,8 @@ export class JsonBodyScanner {
       this.#expecting = expecting.afterLeadingZero;
     } else if (current > byte.zero && current <= byte.nine) {
       this.#expecting = expecting.integerDigits;
-    } else if (literals[current] !== undefined) {
-      this.#literal = literals[current];
+    } else if (literalRests.has(current)) {
+      this.#literal = literalRests.get(current) ?? Buffer.alloc(0);
       this.#literalPosition = 0;
       this.#expecting = expecting.literalLetters;
     } else {
