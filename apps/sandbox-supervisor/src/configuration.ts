@@ -22,7 +22,7 @@ const sharedVariablesSchema = z.object({
   BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
   BARRACK_SUPERVISOR_STATE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema.optional(),
-  BARRACK_GIT_CREDENTIAL_SOCKET: absoluteDirectorySchema.optional(),
+  BARRACK_GIT_HELPER_SOCKET: absoluteDirectorySchema.optional(),
   BARRACK_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -125,7 +125,7 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
     supervisorStateDirectory: variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
     workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
     gitCredentialSocketPath:
-      variables.BARRACK_GIT_CREDENTIAL_SOCKET ??
+      variables.BARRACK_GIT_HELPER_SOCKET ??
       defaultCredentialSocketPath(
         variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
         variables.BARRACK_THREAD_ID,

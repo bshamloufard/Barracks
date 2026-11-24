@@ -88,12 +88,19 @@ RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 # its process ID file, the lock that serialises starting it, its log, and
 # the state it keeps across its own restarts (how far the agent has been
 # handed user messages), which the agent must not be able to rewrite.
+#
+# Git's credential helper, which runs as the agent, asks the supervisor for
+# repository credentials on a socket in /run/barrack-git: the supervisor's,
+# and open to the agent's group alone, so nothing else in the sandbox can
+# reach it. What it answers is read-only and short-lived, and assumed to be
+# the agent's.
 RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
       /workspace /var/lib/barrack/state \
       /var/lib/barrack/state/pi /var/lib/barrack/state/pi/agent /var/lib/barrack/state/pi/sessions \
  && chmod 0700 /home/barrack-agent \
  && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 \
       /run/barrack /var/log/barrack /var/lib/barrack/supervisor \
+ && install -d -o barrack-supervisor -g barrack-agent -m 0750 /run/barrack-git \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /run/barrack/ensure-supervisor.lock \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /var/log/barrack/supervisor.log
 
@@ -108,6 +115,7 @@ COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ens
 ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_STATE_DIRECTORY=/var/lib/barrack/state \
     BARRACK_SUPERVISOR_STATE_DIRECTORY=/var/lib/barrack/supervisor \
+    BARRACK_GIT_HELPER_SOCKET=/run/barrack-git/credential.sock \
     BARRACK_SUPERVISOR_USER=barrack-supervisor \
     BARRACK_AGENT_USER=barrack-agent
 
