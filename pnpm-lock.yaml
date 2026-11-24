@@ -57,6 +57,9 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
+      '@barrack/fake-github':
+        specifier: workspace:*
+        version: link:../../tests/fake-github
       '@barrack/test-identity-issuer':
         specifier: workspace:*
         version: link:../../tests/test-identity-issuer
@@ -88,6 +91,9 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
+      '@barrack/fake-github':
+        specifier: workspace:*
+        version: link:../../tests/fake-github
       '@barrack/mock-model-server':
         specifier: workspace:*
         version: link:../../tests/mock-model-server
@@ -150,6 +156,9 @@ importers:
 
   tests/end-to-end:
     devDependencies:
+      '@barrack/fake-github':
+        specifier: workspace:*
+        version: link:../fake-github
       '@barrack/mock-model-server':
         specifier: workspace:*
         version: link:../mock-model-server
@@ -177,6 +186,12 @@ importers:
       ws:
         specifier: 8.23.0
         version: 8.23.0
+
+  tests/fake-github:
+    dependencies:
+      jose:
+        specifier: 6.2.18
+        version: 6.2.18
 
   tests/mock-model-server: {}
 

@@ -1,0 +1,17 @@
+{
+  "name": "@barrack/fake-github",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A stand-in for GitHub: the few REST and OAuth endpoints Barrack calls, and Git repositories served over smart HTTP with token checks, so tests never reach the real GitHub.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/fake-github.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "jose": "6.2.18"
+  }
+}
