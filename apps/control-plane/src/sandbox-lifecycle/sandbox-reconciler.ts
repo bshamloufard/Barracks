@@ -1,5 +1,6 @@
 import type { SandboxProvider, SandboxStatus } from "@barrack/sandbox-providers";
 import type { Logger } from "../logger.js";
+import type { OpenRun, ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import {
   operatingStates,
   type SandboxState,
@@ -20,6 +21,7 @@ export type SandboxReconcilerOptions = {
   threadStore: ThreadStore;
   sandboxProvider: SandboxProvider;
   operations: SandboxOperations;
+  threadEventLog: ThreadEventLog;
   threadRuns: ThreadRuns;
   clock: Clock;
   logger: Logger;
@@ -107,6 +109,10 @@ export class SandboxReconciler {
     if (repair === undefined) {
       return;
     }
+    const openRun =
+      thread.sandbox.state === "running"
+        ? await this.#readOpenRun(thread.threadId, logger)
+        : undefined;
     const outcome = await this.#options.threadStore.transition({
       threadId: thread.threadId,
       fromVersion: thread.version,
@@ -124,14 +130,28 @@ export class SandboxReconciler {
       },
       "The provider reported a sandbox in another state than recorded; recorded what it reports",
     );
-    if (thread.sandbox.state === "running") {
-      await this.#closeOpenRun(thread.threadId, logger);
+    if (openRun !== undefined) {
+      await this.#closeOpenRun(thread.threadId, openRun, logger);
     }
   }
 
-  async #closeOpenRun(threadId: string, logger: Logger): Promise<void> {
+  /**
+   * Read before the repair is recorded at the version the thread was read
+   * at, so it is the run the stopped sandbox left, never one opened after a
+   * wake that followed the repair.
+   */
+  async #readOpenRun(threadId: string, logger: Logger): Promise<OpenRun | undefined> {
     try {
-      await this.#options.threadRuns.closeOpenRun(threadId, runEndedBySandboxStoppingMessage);
+      return await this.#options.threadEventLog.readOpenRun(threadId);
+    } catch (error) {
+      logger.warn({ err: error }, "Could not read whether a stopped sandbox left a run open");
+      return undefined;
+    }
+  }
+
+  async #closeOpenRun(threadId: string, run: OpenRun, logger: Logger): Promise<void> {
+    try {
+      await this.#options.threadRuns.closeOpenRun(threadId, run, runEndedBySandboxStoppingMessage);
     } catch (error) {
       logger.error({ err: error }, "Could not close the run a stopped sandbox left open");
     }

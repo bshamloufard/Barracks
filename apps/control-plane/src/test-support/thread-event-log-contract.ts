@@ -1,7 +1,13 @@
-import type { AgentEvent, ThreadEvent, UserMessageEvent } from "@barrack/protocol";
+import type {
+  AgentEvent,
+  AgentFailedEvent,
+  ThreadEvent,
+  UserMessageEvent,
+} from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import { readWholeThread } from "./read-whole-thread.js";
+import { recordTestEvent } from "./record-test-events.js";
 
 /**
  * The behaviour every `ThreadEventLog` must have. Each implementation's test
@@ -16,7 +22,7 @@ export function describeThreadEventLogContract(
     it("assigns sequence 1 to a thread's first event", async () => {
       const log = await createEmptyLog();
 
-      const recorded = await log.append("thread-a", userMessageNumbered(1));
+      const recorded = await recordTestEvent(log, "thread-a", userMessageNumbered(1));
 
       expect(recorded.sequence).toBe(1);
     });
@@ -26,7 +32,9 @@ export function describeThreadEventLogContract(
 
       const sequences = [];
       for (const number of [1, 2, 3, 4]) {
-        sequences.push((await log.append("thread-a", userMessageNumbered(number))).sequence);
+        sequences.push(
+          (await recordTestEvent(log, "thread-a", userMessageNumbered(number))).sequence,
+        );
       }
 
       expect(sequences).toEqual([1, 2, 3, 4]);
@@ -35,9 +43,9 @@ export function describeThreadEventLogContract(
     it("numbers each thread's events independently", async () => {
       const log = await createEmptyLog();
 
-      await log.append("thread-a", userMessageNumbered(1));
-      await log.append("thread-a", userMessageNumbered(2));
-      const firstOfOtherThread = await log.append("thread-b", userMessageNumbered(3));
+      await recordTestEvent(log, "thread-a", userMessageNumbered(1));
+      await recordTestEvent(log, "thread-a", userMessageNumbered(2));
+      const firstOfOtherThread = await recordTestEvent(log, "thread-b", userMessageNumbered(3));
 
       expect(firstOfOtherThread.sequence).toBe(1);
     });
@@ -47,7 +55,7 @@ export function describeThreadEventLogContract(
 
       const recorded = await Promise.all(
         Array.from({ length: 20 }, (_, index) =>
-          log.append("thread-a", userMessageNumbered(index + 1)),
+          recordTestEvent(log, "thread-a", userMessageNumbered(index + 1)),
         ),
       );
 
@@ -61,7 +69,7 @@ export function describeThreadEventLogContract(
       const log = await createEmptyLog();
       const before = Date.now();
 
-      const recorded = await log.append("thread-a", userMessageNumbered(1));
+      const recorded = await recordTestEvent(log, "thread-a", userMessageNumbered(1));
 
       expect(recorded.recordedAt).toMatch(/Z$/);
       expect(Date.parse(recorded.recordedAt)).toBeGreaterThanOrEqual(before - 1000);
@@ -119,7 +127,7 @@ export function describeThreadEventLogContract(
         durationInMilliseconds: 12,
       };
 
-      const recorded = await log.append("thread-a", event);
+      const recorded = await recordTestEvent(log, "thread-a", event);
 
       expect(await readWholeThread(log, "thread-a")).toEqual([recorded]);
       expect(recorded.event).toEqual(event);
@@ -171,7 +179,7 @@ export function describeThreadEventLogContract(
 
     it("reads nothing after the newest sequence", async () => {
       const log = await createEmptyLog();
-      await log.append("thread-a", userMessageNumbered(1));
+      await recordTestEvent(log, "thread-a", userMessageNumbered(1));
 
       for (const afterSequence of [1, 7]) {
         expect(
@@ -182,7 +190,7 @@ export function describeThreadEventLogContract(
 
     it("reads nothing from a thread that has no events", async () => {
       const log = await createEmptyLog();
-      await log.append("thread-a", userMessageNumbered(1));
+      await recordTestEvent(log, "thread-a", userMessageNumbered(1));
 
       expect(await readWholeThread(log, "thread-b")).toEqual([]);
     });
@@ -219,7 +227,7 @@ export function describeThreadEventLogContract(
       await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
       await log.appendSupervisorEvent("thread-a", toolStarted("call-1"), origin);
 
-      const next = await log.append("thread-a", userMessageNumbered(2));
+      const next = await recordTestEvent(log, "thread-a", userMessageNumbered(2));
 
       expect(next.sequence).toBe(2);
     });
@@ -285,12 +293,16 @@ export function describeThreadEventLogContract(
       await appendFromInstance({ type: "agent_run_started" }, 1);
       const afterStart = await openRun();
       await appendFromInstance(toolStarted("call-1"), 2);
-      await log.append("thread-a", userMessageNumbered(3));
+      await recordTestEvent(log, "thread-a", userMessageNumbered(3));
       const afterOtherEvents = await openRun();
       await appendFromInstance({ type: "agent_run_settled", wasInterrupted: false }, 3);
       const afterSettling = await openRun();
       await appendFromInstance({ type: "agent_run_started" }, 4);
-      await log.append("thread-a", { type: "agent_failed", errorMessage: "Gone" });
+      await log.closeOpenRun(
+        "thread-a",
+        { openedBySupervisorInstanceId: "instance-1" },
+        { type: "agent_failed", errorMessage: "Gone" },
+      );
       const afterFailing = await openRun();
 
       expect([afterStart, afterOtherEvents, afterSettling, afterFailing]).toEqual([
@@ -320,6 +332,78 @@ export function describeThreadEventLogContract(
     });
   });
 
+  describe(`${implementationName} closing a run nobody else can end`, () => {
+    const gone: AgentFailedEvent = { type: "agent_failed", errorMessage: "Its sandbox stopped" };
+    const openedByFirst = { openedBySupervisorInstanceId: "instance-1" };
+
+    /** Opens a run with the instance's first event. */
+    async function openRunFrom(log: ThreadEventLog, supervisorInstanceId: string): Promise<void> {
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "agent_run_started" },
+        { supervisorInstanceId, eventNumber: 1 },
+      );
+    }
+
+    it("names the run open, by the instance that opened it, and nothing once it is closed", async () => {
+      const log = await createEmptyLog();
+      const beforeAnyRun = await log.readOpenRun("thread-a");
+      await openRunFrom(log, "instance-1");
+      const whileOpen = await log.readOpenRun("thread-a");
+      await log.closeOpenRun("thread-a", openedByFirst, gone);
+
+      expect(beforeAnyRun).toBeUndefined();
+      expect(whileOpen).toEqual(openedByFirst);
+      expect(await log.readOpenRun("thread-a")).toBeUndefined();
+    });
+
+    it("records the end once, however often it is asked, and nothing for a run already ended", async () => {
+      const log = await createEmptyLog();
+      await openRunFrom(log, "instance-1");
+
+      const first = await log.closeOpenRun("thread-a", openedByFirst, gone);
+      const again = await log.closeOpenRun("thread-a", openedByFirst, gone);
+
+      expect(first).toMatchObject({ sequence: 2, event: gone });
+      expect(again).toBeUndefined();
+      expect(await readWholeThread(log, "thread-a")).toHaveLength(2);
+      expect((await log.readAgentWork("thread-a")).hasOpenRun).toBe(false);
+    });
+
+    it("records one end when several ask at once", async () => {
+      const log = await createEmptyLog();
+      await openRunFrom(log, "instance-1");
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () => log.closeOpenRun("thread-a", openedByFirst, gone)),
+      );
+
+      expect(outcomes.filter((outcome) => outcome !== undefined)).toHaveLength(1);
+      expect(await log.readNewestSequence("thread-a")).toBe(2);
+    });
+
+    it("leaves alone a run opened since by another instance, and a thread with no run open", async () => {
+      const log = await createEmptyLog();
+      await openRunFrom(log, "instance-1");
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "agent_run_settled", wasInterrupted: false },
+        { supervisorInstanceId: "instance-1", eventNumber: 2 },
+      );
+      const withNoRunOpen = await log.closeOpenRun("thread-a", openedByFirst, gone);
+      await openRunFrom(log, "instance-2");
+
+      const withAnotherRunOpen = await log.closeOpenRun("thread-a", openedByFirst, gone);
+
+      expect(withNoRunOpen).toBeUndefined();
+      expect(withAnotherRunOpen).toBeUndefined();
+      expect(await log.readOpenRun("thread-a")).toEqual({
+        openedBySupervisorInstanceId: "instance-2",
+      });
+      expect(await log.readNewestSequence("thread-a")).toBe(3);
+    });
+  });
+
   describe(`${implementationName} as a record of the agent's work`, () => {
     it("reports a thread with no history as having no open run and nothing to deliver", async () => {
       const log = await createEmptyLog();
@@ -333,7 +417,7 @@ export function describeThreadEventLogContract(
     it("reports a user message as waiting until delivery reaches it, whatever comes after it", async () => {
       const log = await createEmptyLog();
       await appendUserMessages(log, "thread-a", 2);
-      await log.append("thread-a", { type: "agent_failed", errorMessage: "Gone" });
+      await recordTestEvent(log, "thread-a", toolStarted("call-1"));
 
       const beforeDelivery = await log.readAgentWork("thread-a");
       await log.recordUserMessagesDelivered("thread-a", 1);
@@ -379,7 +463,7 @@ export function describeThreadEventLogContract(
         hasUndeliveredUserMessage: false,
       });
       expect(await log.readNewestSequence("thread-b")).toBe(2);
-      expect((await log.append("thread-a", userMessageNumbered(1))).sequence).toBe(1);
+      expect((await recordTestEvent(log, "thread-a", userMessageNumbered(1))).sequence).toBe(1);
     });
   });
 }
@@ -394,7 +478,7 @@ async function appendUserMessages(
   count: number,
 ): Promise<void> {
   for (let number = 1; number <= count; number += 1) {
-    await log.append(threadId, userMessageNumbered(number));
+    await recordTestEvent(log, threadId, userMessageNumbered(number));
   }
 }
 

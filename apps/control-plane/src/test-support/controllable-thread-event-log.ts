@@ -1,12 +1,13 @@
 import type {
   AgentEvent,
+  AgentFailedEvent,
   RecordedThreadEvent,
-  ThreadEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import type {
   AgentWork,
+  OpenRun,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -51,7 +52,7 @@ export type AppendGates = {
 };
 
 /**
- * An in-memory log whose next append (of either kind), or next read of a
+ * An in-memory log whose next append (of any kind), or next read of a
  * thread's newest sequence, can be paused, so a test can make events arrive
  * at exactly the moment a race would happen in production, when the log is
  * a database round trip away. Its next append or read can also be made to
@@ -94,10 +95,6 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     this.#nextReadFailure = failure;
   }
 
-  append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    return this.#controlAppend(() => this.#log.append(threadId, event));
-  }
-
   appendUserMessage(threadId: string, event: UserMessageEvent): Promise<UserMessageAppendOutcome> {
     return this.#controlAppend(() => this.#log.appendUserMessage(threadId, event));
   }
@@ -108,6 +105,19 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome> {
     return this.#controlAppend(() => this.#log.appendSupervisorEvent(threadId, event, origin));
+  }
+
+  closeOpenRun(
+    threadId: string,
+    run: OpenRun,
+    event: AgentFailedEvent,
+  ): Promise<RecordedThreadEvent | undefined> {
+    return this.#controlAppend(() => this.#log.closeOpenRun(threadId, run, event));
+  }
+
+  async readOpenRun(threadId: string): Promise<OpenRun | undefined> {
+    this.#throwNextReadFailure();
+    return this.#log.readOpenRun(threadId);
   }
 
   async readNewestSequence(threadId: string): Promise<number> {

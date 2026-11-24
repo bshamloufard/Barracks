@@ -1,4 +1,9 @@
-import { type ThreadEvent, type ToolArguments, threadEventSchema } from "@barrack/protocol";
+import {
+  type ThreadEvent,
+  type ToolArguments,
+  threadEventSchema,
+  type UserMessageEvent,
+} from "@barrack/protocol";
 import { escapeIdentifier, type Pool } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { acceptingThreadActivity } from "../test-support/accepting-thread-activity.js";
@@ -9,6 +14,7 @@ import {
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
 import { readWholeThread } from "../test-support/read-whole-thread.js";
+import { recordTestEvent } from "../test-support/record-test-events.js";
 import {
   createTestPool,
   describeWithTestDatabase,
@@ -22,7 +28,7 @@ import { PostgresThreadEventLog } from "./postgres-thread-event-log.js";
 
 const threadId = "thread-1";
 
-function userMessage(messageId: string): ThreadEvent {
+function userMessage(messageId: string): UserMessageEvent {
   return { type: "user_message", messageId, text: `Message ${messageId}` };
 }
 
@@ -60,7 +66,7 @@ describeWithTestDatabase("the Postgres thread event log", () => {
 
       const recorded = await Promise.all(
         messageIds.map((messageId, index) =>
-          (index % 2 === 0 ? firstLog : secondLog).append(threadId, userMessage(messageId)),
+          recordTestEvent(index % 2 === 0 ? firstLog : secondLog, threadId, userMessage(messageId)),
         ),
       );
       const stored = await readWholeThread(firstLog, threadId);
@@ -104,7 +110,11 @@ describeWithTestDatabase("the Postgres thread event log", () => {
           ),
         ),
       );
-      const followingMessage = await firstLog.append(threadId, userMessage("after-the-race"));
+      const followingMessage = await recordTestEvent(
+        firstLog,
+        threadId,
+        userMessage("after-the-race"),
+      );
       const stored = await readWholeThread(firstLog, threadId);
 
       const recordedCount = outcomes.filter((outcome) => !outcome.isAlreadyRecorded).length;
@@ -125,8 +135,8 @@ describeWithTestDatabase("the Postgres thread event log", () => {
   it("lets appends to one thread go ahead while an append to another waits for that thread's lock", async () => {
     const schema = await schemas.createMigrated();
     const log = new PostgresThreadEventLog(pool, schema);
-    await log.append("thread-a", userMessage("a-1"));
-    await log.append("thread-b", userMessage("b-1"));
+    await recordTestEvent(log, "thread-a", userMessage("a-1"));
+    await recordTestEvent(log, "thread-b", userMessage("b-1"));
     const lockHolder = await pool.connect();
     try {
       await lockHolder.query("begin");
@@ -134,9 +144,9 @@ describeWithTestDatabase("the Postgres thread event log", () => {
         `select 1 from ${escapeIdentifier(schema)}.thread_sequence_counters where thread_id = 'thread-a' for update`,
       );
 
-      const appendingToThreadA = log.append("thread-a", userMessage("a-2"));
+      const appendingToThreadA = recordTestEvent(log, "thread-a", userMessage("a-2"));
       await vi.waitFor(() => expectAnAppendWaitingForALock(schema), { timeout: 5_000 });
-      const appendedToThreadB = await log.append("thread-b", userMessage("b-2"));
+      const appendedToThreadB = await recordTestEvent(log, "thread-b", userMessage("b-2"));
       await lockHolder.query("commit");
 
       expect(appendedToThreadB.sequence).toBe(2);
@@ -164,7 +174,7 @@ describeWithTestDatabase("the Postgres thread event log", () => {
     expect(new Set(events.map((event) => event.type)).size).toBe(threadEventSchema.options.length);
 
     for (const event of events) {
-      await log.append(threadId, event);
+      await recordTestEvent(log, threadId, event);
     }
     const stored = await readWholeThread(log, threadId);
 
@@ -181,7 +191,7 @@ describeWithTestDatabase("the Postgres thread event log", () => {
     const appending = Promise.all(
       Array.from({ length: appenderCount }, async (_, appenderIndex) => {
         for (let index = 0; index < appendsPerAppender; index += 1) {
-          await log.append(threadId, userMessage(`appender-${appenderIndex}-${index}`));
+          await recordTestEvent(log, threadId, userMessage(`appender-${appenderIndex}-${index}`));
         }
       }),
     ).finally(() => {

@@ -1,6 +1,6 @@
 import type { Logger } from "../logger.js";
 import type { ThreadRuns } from "../sandbox-lifecycle/thread-runs.js";
-import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type { OpenRun, ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import type { ThreadActivity } from "./thread-activity.js";
@@ -69,8 +69,8 @@ export class ThreadRelayRegistry implements ThreadRuns {
   }
 
   /** A relay is made for this if nobody is connected, and dropped again once it is done. */
-  closeOpenRun(threadId: string, errorMessage: string): Promise<void> {
-    return this.#relayFor(threadId).closeOpenRun(errorMessage);
+  closeOpenRun(threadId: string, run: OpenRun, errorMessage: string): Promise<void> {
+    return this.#relayFor(threadId).closeOpenRun(run, errorMessage);
   }
 
   disconnectEveryone(threadId: string): void {

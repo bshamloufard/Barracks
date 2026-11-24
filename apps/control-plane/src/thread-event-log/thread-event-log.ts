@@ -1,7 +1,7 @@
 import type {
   AgentEvent,
+  AgentFailedEvent,
   RecordedThreadEvent,
-  ThreadEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
 
@@ -22,15 +22,15 @@ import type {
  * time rather than all at once.
  */
 export interface ThreadEventLog {
-  /**
-   * Stores an event as the thread's next one, with nothing to recognise it
-   * by if it is appended again (the end of a run nobody else can end). The
-   * log assigns its sequence (1 for a thread's first event, then one more
-   * each time, with no gaps) and the time it was recorded. Concurrent
-   * appends to one thread each get a distinct sequence; the order between
-   * them is whichever the log processes first.
+  /*
+   * Every append stores its event as the thread's next one: the log assigns
+   * its sequence (1 for a thread's first event, then one more each time,
+   * with no gaps) and the time it was recorded. Concurrent appends to one
+   * thread each get a distinct sequence; the order between them is
+   * whichever the log processes first. Each kind of append also says how a
+   * second attempt to store the same thing is recognised, so that none is
+   * ever stored twice.
    */
-  append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent>;
 
   /**
    * Stores a user's message, exactly once: a message with the same
@@ -51,6 +51,25 @@ export interface ThreadEventLog {
     event: AgentEvent,
     origin: SupervisorEventOrigin,
   ): Promise<SupervisorEventAppendOutcome>;
+
+  /**
+   * Stores `event` as the end of `run`, if that run is still the thread's
+   * open one; otherwise stores nothing and returns undefined. This is how
+   * the control plane ends a run nobody else can end (its supervisor has
+   * gone, or its sandbox has stopped): the check and the append are one
+   * step, so however many tries the control plane makes to close one run
+   * (two instances, a stop and reconciliation) at most one end is stored,
+   * none once the run's own supervisor has ended it, and a run opened
+   * since is never closed by mistake.
+   */
+  closeOpenRun(
+    threadId: string,
+    run: OpenRun,
+    event: AgentFailedEvent,
+  ): Promise<RecordedThreadEvent | undefined>;
+
+  /** The run open in the thread's history, or undefined if none is. */
+  readOpenRun(threadId: string): Promise<OpenRun | undefined>;
 
   /**
    * The sequence of the thread's newest event, or 0 if it has none. Every
@@ -118,6 +137,14 @@ export type SupervisorEventOrigin = { supervisorInstanceId: string; eventNumber:
 export type SupervisorEventAppendOutcome =
   | { isAlreadyRecorded: false; recordedEvent: RecordedThreadEvent }
   | { isAlreadyRecorded: true };
+
+/**
+ * A run open in a thread's history, named by the supervisor instance that
+ * opened it: an instance's runs follow one another, and an instance never
+ * comes back once its process has gone, so a run closed on that instance's
+ * behalf cannot be confused with a later one.
+ */
+export type OpenRun = { openedBySupervisorInstanceId: string };
 
 /** `recordedEvent` is the message as it was first recorded, whether or not by this append. */
 export type UserMessageAppendOutcome = {

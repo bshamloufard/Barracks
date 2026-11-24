@@ -18,6 +18,7 @@ import {
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
 import { readWholeThread } from "../test-support/read-whole-thread.js";
+import { recordTestEvent } from "../test-support/record-test-events.js";
 import { TestControlPlane, type TestThread } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor, TestClient } from "../test-support/test-peers.js";
 import { replayPageSize } from "./read-missed-events.js";
@@ -297,7 +298,7 @@ describe("a client connecting to a thread", () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const eventCount = replayPageSize * 2 + 7;
     for (let index = 1; index <= eventCount; index += 1) {
-      await threadEventLog.append(threadId, toolExecutionStarted(`call-${index}`));
+      await recordTestEvent(threadEventLog, threadId, toolExecutionStarted(`call-${index}`));
     }
     const client = new FakeClientConnection();
 
@@ -353,7 +354,7 @@ describe("a live client", () => {
     await allPendingWorkSettled();
 
     // As another control plane instance appending to the same thread would.
-    await threadEventLog.append(threadId, toolExecutionStarted("call-from-elsewhere"));
+    await recordTestEvent(threadEventLog, threadId, toolExecutionStarted("call-from-elsewhere"));
     sendAgentEvent(relay, supervisor, agentRunSettled);
     await allPendingWorkSettled();
 

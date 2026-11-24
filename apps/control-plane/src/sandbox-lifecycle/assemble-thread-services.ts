@@ -83,6 +83,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     threadStore,
     sandboxProvider,
     operations,
+    threadEventLog,
     threadRuns: relays,
     clock,
     logger,

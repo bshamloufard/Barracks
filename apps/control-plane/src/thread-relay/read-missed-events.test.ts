@@ -2,6 +2,7 @@ import type { RecordedThreadEvent } from "@barrack/protocol";
 import { pino } from "pino";
 import { describe, expect, it } from "vitest";
 import { toolExecutionStarted } from "../test-support/example-agent-events.js";
+import { recordTestEvent } from "../test-support/record-test-events.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import type { ThreadEventPage } from "../thread-event-log/thread-event-log.js";
 import { findMissedRange, readMissedEvents, replayPageSize } from "./read-missed-events.js";
@@ -21,7 +22,7 @@ async function logHoldingEvents(
   log = new InMemoryThreadEventLog(),
 ): Promise<InMemoryThreadEventLog> {
   for (let index = 1; index <= count; index += 1) {
-    await log.append(threadId, toolExecutionStarted(`call-${index}`));
+    await recordTestEvent(log, threadId, toolExecutionStarted(`call-${index}`));
   }
   return log;
 }

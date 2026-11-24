@@ -1,3 +1,5 @@
+import type { OpenRun } from "../thread-event-log/thread-event-log.js";
+
 /**
  * What the lifecycle asks of the thread relays, which alone record events
  * and talk to supervisors and clients (`ThreadRelayRegistry` implements it).
@@ -15,11 +17,12 @@ export interface ThreadRuns {
   finishStop(threadId: string): void;
 
   /**
-   * If a run is still open in the thread's history, records its end as a
+   * If `run` is still open in the thread's history, records its end as a
    * failure with `errorMessage`, in sequence with everything else the relay
-   * records, and shows it to everyone watching.
+   * records, and shows it to everyone watching. Of any number of calls for
+   * one run, from any control plane, at most one records anything.
    */
-  closeOpenRun(threadId: string, errorMessage: string): Promise<void>;
+  closeOpenRun(threadId: string, run: OpenRun, errorMessage: string): Promise<void>;
 
   /** Disconnects every client and supervisor attached to a thread that has been deleted. */
   disconnectEveryone(threadId: string): void;

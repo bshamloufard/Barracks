@@ -6,7 +6,7 @@ import {
   SandboxProviderUnavailableError,
 } from "@barrack/sandbox-providers";
 import type { Logger } from "../logger.js";
-import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type { OpenRun, ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import {
   buildSupervisorEnvironment,
   type SupervisorEnvironmentSettings,
@@ -295,6 +295,10 @@ export class SandboxOperations {
    * closes in history any run that is still open, since the agent can no
    * longer end it. Meanwhile the agent is handed no user messages; one that
    * arrived wakes the sandbox again once it has stopped.
+   *
+   * The run to close is read once the sandbox has stopped, and closed only
+   * once the stop is recorded at the operation's version, so it is the
+   * stopped agent's run and not one a sandbox woken since has opened.
    */
   async #stop(thread: ThreadRecord, sandboxId: string, logger: Logger): Promise<void> {
     const { threadRuns } = this.#options;
@@ -318,7 +322,7 @@ export class SandboxOperations {
     } finally {
       threadRuns.finishStop(thread.threadId);
     }
-    await this.#closeOpenRun(thread.threadId, runEndedByStopMessage, logger);
+    const openRun = await this.#readOpenRun(thread.threadId, logger);
     const finished = await this.#options.threadStore.finishStopping({
       threadId: thread.threadId,
       fromVersion: thread.version,
@@ -330,6 +334,7 @@ export class SandboxOperations {
       );
       return;
     }
+    await this.#closeOpenRun(thread.threadId, openRun, runEndedByStopMessage, logger);
     logger.info({ sandboxId }, "The thread's sandbox is stopped");
     if (finished.thread.sandbox.state === "starting") {
       logger.info("A message arrived while the sandbox was stopping; waking it again");
@@ -395,9 +400,11 @@ export class SandboxOperations {
       return;
     }
     const to = await this.#describeAfterFailure(sandboxId, problem, error, logger);
+    const openRun =
+      to.state === "running" ? undefined : await this.#readOpenRun(thread.threadId, logger);
     const recorded = await this.#record(thread, logger, to);
-    if (recorded.kind === "changed" && to.state !== "running") {
-      await this.#closeOpenRun(thread.threadId, runEndedBySandboxStoppingMessage, logger);
+    if (recorded.kind === "changed") {
+      await this.#closeOpenRun(thread.threadId, openRun, runEndedBySandboxStoppingMessage, logger);
     }
   }
 
@@ -462,9 +469,30 @@ export class SandboxOperations {
     }
   }
 
-  async #closeOpenRun(threadId: string, errorMessage: string, logger: Logger): Promise<void> {
+  /**
+   * The run open in the thread's history, or undefined if none is or it
+   * cannot be read; one left open is closed when a supervisor next attaches.
+   */
+  async #readOpenRun(threadId: string, logger: Logger): Promise<OpenRun | undefined> {
     try {
-      await this.#options.threadRuns.closeOpenRun(threadId, errorMessage);
+      return await this.#options.threadEventLog.readOpenRun(threadId);
+    } catch (error) {
+      logger.error({ err: error }, "Could not read whether the stopped sandbox left a run open");
+      return undefined;
+    }
+  }
+
+  async #closeOpenRun(
+    threadId: string,
+    run: OpenRun | undefined,
+    errorMessage: string,
+    logger: Logger,
+  ): Promise<void> {
+    if (run === undefined) {
+      return;
+    }
+    try {
+      await this.#options.threadRuns.closeOpenRun(threadId, run, errorMessage);
     } catch (error) {
       logger.error(
         { err: error },

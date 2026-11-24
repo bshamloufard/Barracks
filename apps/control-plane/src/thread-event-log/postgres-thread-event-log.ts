@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  AgentFailedEvent,
   RecordedThreadEvent,
   ThreadEvent,
   UserMessageEvent,
@@ -8,6 +9,7 @@ import { DatabaseError, escapeIdentifier, type Pool } from "pg";
 import { type RunBoundary, runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
+  OpenRun,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -55,6 +57,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #pool: Pool;
   readonly #qualifiedSchema: string;
   readonly #appendStatement: string;
+  readonly #closeOpenRunStatement: string;
   readonly #readNewestSequenceStatement: string;
   readonly #readEventsStatement: string;
   readonly #readResumePointStatement: string;
@@ -67,6 +70,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     const qualifiedSchema = escapeIdentifier(schema);
     this.#qualifiedSchema = qualifiedSchema;
     this.#appendStatement = appendStatementFor(qualifiedSchema);
+    this.#closeOpenRunStatement = closeOpenRunStatementFor(qualifiedSchema);
     this.#readNewestSequenceStatement = `select last_sequence from ${qualifiedSchema}.thread_sequence_counters where thread_id = $1`;
     this.#readEventsStatement = `select sequence, recorded_at, event from ${qualifiedSchema}.thread_events
       where thread_id = $1 and sequence > $2 and sequence <= $3
@@ -81,10 +85,6 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     this.#recordUserMessagesDeliveredStatement = `update ${qualifiedSchema}.thread_sequence_counters
       set user_messages_delivered_through = greatest(user_messages_delivered_through, $2)
       where thread_id = $1`;
-  }
-
-  async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    return this.#insert(threadId, event, {});
   }
 
   /** Lets the unique index decide, as `appendSupervisorEvent` does, then reads the message it kept. */
@@ -130,6 +130,32 @@ export class PostgresThreadEventLog implements ThreadEventLog {
       }
       throw error;
     }
+  }
+
+  async closeOpenRun(
+    threadId: string,
+    run: OpenRun,
+    event: AgentFailedEvent,
+  ): Promise<RecordedThreadEvent | undefined> {
+    const result = await this.#pool.query<AppendedEventRow>(this.#closeOpenRunStatement, [
+      threadId,
+      JSON.stringify(event),
+      run.openedBySupervisorInstanceId,
+    ]);
+    const row = result.rows[0];
+    return row === undefined
+      ? undefined
+      : { sequence: Number(row.sequence), recordedAt: row.recorded_at.toISOString(), event };
+  }
+
+  async readOpenRun(threadId: string): Promise<OpenRun | undefined> {
+    const result = await this.#pool.query<{ open_run_supervisor_instance_id: string | null }>(
+      `select open_run_supervisor_instance_id from ${this.#qualifiedSchema}.thread_sequence_counters
+        where thread_id = $1`,
+      [threadId],
+    );
+    const openedBy = result.rows[0]?.open_run_supervisor_instance_id ?? undefined;
+    return openedBy === undefined ? undefined : { openedBySupervisorInstanceId: openedBy };
   }
 
   async readNewestSequence(threadId: string): Promise<number> {
@@ -310,6 +336,28 @@ function appendStatementFor(qualifiedSchema: string): string {
         user_message_id)
     select $1::text, assigned.sequence, clock_timestamp(), $2::json, $3::text, $4::bigint, $7::text
     from assigned
+    returning sequence, recorded_at`;
+}
+
+/**
+ * Appends a run's end only if the run is still open and was opened by the
+ * instance given ($3), in one statement. The update locks the thread's
+ * counter row; one waiting on another's lock checks its condition again
+ * against the row as the other left it, so of two tries to close one run
+ * the second finds it closed, and inserts nothing.
+ * https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED
+ */
+function closeOpenRunStatementFor(qualifiedSchema: string): string {
+  return `with closed as (
+      update ${qualifiedSchema}.thread_sequence_counters as counter set
+        last_sequence = counter.last_sequence + 1,
+        open_run_supervisor_instance_id = null
+      where counter.thread_id = $1::text and counter.open_run_supervisor_instance_id = $3::text
+      returning counter.last_sequence as sequence
+    )
+    insert into ${qualifiedSchema}.thread_events (thread_id, sequence, recorded_at, event)
+    select $1::text, closed.sequence, clock_timestamp(), $2::json
+    from closed
     returning sequence, recorded_at`;
 }
 

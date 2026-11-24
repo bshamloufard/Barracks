@@ -19,6 +19,7 @@ import { closeCodes, maximumFrameLength, measureLargestThreadEventFrame } from "
 import type { Logger } from "../logger.js";
 import { standardCloseCodes } from "../standard-close-codes.js";
 import type {
+  OpenRun,
   SupervisorResumePoint,
   ThreadEventLog,
 } from "../thread-event-log/thread-event-log.js";
@@ -336,18 +337,16 @@ export class ThreadRelay {
   }
 
   /**
-   * Records the end of the run still open in history, if any, as a failure
-   * with `errorMessage`: its sandbox has stopped, so no agent will end it.
-   * It goes through the queue, after everything the supervisor sent before
-   * its sandbox stopped. Resolves once recorded, or at once if no run is
-   * open.
+   * Records the end of `run` as a failure with `errorMessage`, if it is
+   * still open: its sandbox has stopped, so no agent will end it. It goes
+   * through the queue, after everything the supervisor sent before its
+   * sandbox stopped. Resolves once recorded, or once found already closed.
    */
-  closeOpenRun(errorMessage: string): Promise<void> {
+  closeOpenRun(run: OpenRun, errorMessage: string): Promise<void> {
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     this.#enqueue("close a run left open by a stopped sandbox", async () => {
       try {
-        if ((await this.#threadEventLog.readAgentWork(this.threadId)).hasOpenRun) {
-          await this.#recordAndBroadcast({ type: "agent_failed", errorMessage });
+        if (await this.#closeRun(run, errorMessage)) {
           this.#logger.info("Closed the run the stopped sandbox left open");
         }
         resolve();
@@ -356,6 +355,19 @@ export class ThreadRelay {
       }
     });
     return promise;
+  }
+
+  /** Returns whether this closed the run; it may have been closed already, by anyone. */
+  async #closeRun(run: OpenRun, errorMessage: string): Promise<boolean> {
+    const recordedEvent = await this.#threadEventLog.closeOpenRun(this.threadId, run, {
+      type: "agent_failed",
+      errorMessage,
+    });
+    if (recordedEvent === undefined) {
+      return false;
+    }
+    await this.#broadcastRecordedEvent(recordedEvent);
+    return true;
   }
 
   /** The thread was deleted: everyone attached is disconnected, and its supervisor forgotten. */
@@ -498,8 +510,10 @@ export class ThreadRelay {
    * ever, so the control plane records the end itself, as a failure, since
    * the run did not complete. A supervisor that merely disconnected comes
    * back as the same instance and finishes its own run, however long it was
-   * away. Returns false, having closed the connection, if it could not be
-   * recorded; the supervisor then tries again.
+   * away. Another control plane may close the same run at the same moment,
+   * so the end is recorded only if the run is still open. Returns false,
+   * having closed the connection, if it could not be recorded; the
+   * supervisor then tries again.
    */
   async #closeRunAbandonedByEarlierSupervisor(
     connection: SupervisorConnection,
@@ -515,10 +529,7 @@ export class ThreadRelay {
       "Closing a run whose supervisor was replaced before the run ended",
     );
     try {
-      await this.#recordAndBroadcast({
-        type: "agent_failed",
-        errorMessage: abandonedRunErrorMessage,
-      });
+      await this.#closeRun({ openedBySupervisorInstanceId: openedBy }, abandonedRunErrorMessage);
       return true;
     } catch (error) {
       this.#logger.error({ err: error }, "Could not close a run an earlier supervisor left open");
@@ -771,12 +782,6 @@ export class ThreadRelay {
       return;
     }
     this.#logger.info("Forwarded an interrupt to the supervisor");
-  }
-
-  async #recordAndBroadcast(event: ThreadEvent): Promise<RecordedThreadEvent> {
-    const recordedEvent = await this.#threadEventLog.append(this.threadId, event);
-    await this.#broadcastRecordedEvent(recordedEvent);
-    return recordedEvent;
   }
 
   /**

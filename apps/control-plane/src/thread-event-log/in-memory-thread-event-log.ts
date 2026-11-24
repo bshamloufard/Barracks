@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  AgentFailedEvent,
   RecordedThreadEvent,
   ThreadEvent,
   UserMessageEvent,
@@ -7,6 +8,7 @@ import type {
 import { runBoundaryOf } from "./run-boundary.js";
 import type {
   AgentWork,
+  OpenRun,
   SupervisorEventAppendOutcome,
   SupervisorEventOrigin,
   SupervisorResumePoint,
@@ -32,15 +34,11 @@ type ThreadHistory = {
  * for tests. History is lost when the process exits.
  *
  * Every method changes its thread in one synchronous step, so concurrent
- * calls can never be given the same sequence or record one supervisor event
- * twice.
+ * calls can never be given the same sequence, or record one supervisor
+ * event, one user message or one run's end twice.
  */
 export class InMemoryThreadEventLog implements ThreadEventLog {
   readonly #historiesByThreadId = new Map<string, ThreadHistory>();
-
-  async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
-    return this.#store(this.#historyOf(threadId), event, undefined);
-  }
 
   async appendUserMessage(
     threadId: string,
@@ -71,6 +69,23 @@ export class InMemoryThreadEventLog implements ThreadEventLog {
     numbers.add(origin.eventNumber);
     history.recordedEventNumbersByInstance.set(origin.supervisorInstanceId, numbers);
     return { isAlreadyRecorded: false, recordedEvent };
+  }
+
+  async closeOpenRun(
+    threadId: string,
+    run: OpenRun,
+    event: AgentFailedEvent,
+  ): Promise<RecordedThreadEvent | undefined> {
+    const history = this.#historiesByThreadId.get(threadId);
+    if (history?.openRunSupervisorInstanceId !== run.openedBySupervisorInstanceId) {
+      return undefined;
+    }
+    return this.#store(history, event, undefined);
+  }
+
+  async readOpenRun(threadId: string): Promise<OpenRun | undefined> {
+    const openedBy = this.#historiesByThreadId.get(threadId)?.openRunSupervisorInstanceId;
+    return openedBy === undefined ? undefined : { openedBySupervisorInstanceId: openedBy };
   }
 
   async readNewestSequence(threadId: string): Promise<number> {
