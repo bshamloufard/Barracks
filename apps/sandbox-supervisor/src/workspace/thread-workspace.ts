@@ -43,6 +43,11 @@ export type ThreadWorkspaceSettings = {
   requestCredential: () => Promise<CredentialAnswer>;
   logger: Logger;
   cloneTimeoutInMilliseconds?: number;
+  /**
+   * The command Git runs as its credential helper; this supervisor's own
+   * helper (`describeCredentialHelperCommand`) unless a test gives another.
+   */
+  credentialHelperCommand?: string;
 };
 
 type WorkspaceState = "waiting_for_description" | "ready" | "needs_clone";
@@ -219,7 +224,7 @@ export class ThreadWorkspace {
       "credential.helper=",
       ...(repository.access === "github_app"
         ? [
-            `credential.helper=${describeCredentialHelperCommand(this.#settings.credentialSocketPath)}`,
+            `credential.helper=${this.#settings.credentialHelperCommand ?? describeCredentialHelperCommand(this.#settings.credentialSocketPath)}`,
             "credential.useHttpPath=true",
           ]
         : []),
@@ -267,18 +272,21 @@ export class ThreadWorkspace {
 }
 
 /**
- * The command Git runs as its credential helper: this Node running the
- * helper's entry point (with the same loader, such as tsx under `pnpm dev`),
- * given the socket. Git runs a value starting with `!` through the shell,
+ * The command Git runs as its credential helper: `nodeCommand`, this Node
+ * with the same loader (such as tsx under `pnpm dev`) unless given another,
+ * running the helper's entry point, given the socket. Git runs a value starting with `!` through the shell,
  * so each word is quoted. Nothing in it is secret.
  */
-export function describeCredentialHelperCommand(socketPath: string): string {
+export function describeCredentialHelperCommand(
+  socketPath: string,
+  nodeCommand: readonly string[] = [process.execPath, ...process.execArgv],
+): string {
   const thisFile = fileURLToPath(import.meta.url);
   const helperEntryPoint = path.join(
     path.dirname(thisFile),
     `git-credential-helper-main${path.extname(thisFile)}`,
   );
-  const words = [process.execPath, ...process.execArgv, helperEntryPoint, socketPath];
+  const words = [...nodeCommand, helperEntryPoint, socketPath];
   return `!${words.map(quoteForShell).join(" ")}`;
 }
 

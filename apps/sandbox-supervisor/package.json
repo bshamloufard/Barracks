@@ -20,6 +20,7 @@
   "devDependencies": {
     "@barrack/fake-github": "workspace:*",
     "@barrack/mock-model-server": "workspace:*",
-    "@types/ws": "8.18.2"
+    "@types/ws": "8.18.2",
+    "tsx": "4.23.15"
   }
 }
