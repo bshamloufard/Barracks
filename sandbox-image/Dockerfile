@@ -37,10 +37,12 @@ FROM ${NODE_IMAGE} AS node-runtime
 # --- The sandbox -----------------------------------------------------------
 FROM ${BASE_IMAGE}
 
-# Two users, so that the agent cannot read the supervisor's secrets. The agent
-# owns the workspace and its own state; the supervisor can read both (it is in
-# the agent's group) to find the agent's session file. The supervisor's token
-# lives only in its environment, which /proc shows to its own user alone.
+# Two users, so that the agent cannot read the supervisor's secrets. The
+# supervisor's token lives only in its environment, which /proc shows to its
+# own user alone, and Linux lets a process signal or trace only processes of
+# its own user. The supervisor is a member of the agent's group, for the
+# access to the agent's directories described below; the agent is in no group
+# but its own.
 RUN groupadd --gid 10001 barrack-supervisor \
  && groupadd --gid 10002 barrack-agent \
  && useradd --uid 10002 --gid barrack-agent --create-home --shell /bin/bash barrack-agent \
@@ -51,12 +53,12 @@ RUN groupadd --gid 10001 barrack-supervisor \
 # forward signals to the supervisor and reap the orphans an agent's commands
 # leave behind.
 #
-# The supervisor is to start the agent through run-as-agent, a copy of
-# setpriv that alone carries the capabilities to change user, and that only
-# the supervisor's group may run. It changes to the agent's user and runs the
-# agent, which ends up with no capabilities at all. Granting them to this
-# small binary keeps the supervisor's own process unprivileged. libcap2-bin
-# is needed only to grant them, so it goes again in the same layer.
+# The supervisor starts the agent through run-as-agent, a copy of setpriv
+# that alone carries the capabilities to change user, and that only the
+# supervisor's group may run (or read). It changes to the agent's user and
+# runs the agent, which ends up with no capabilities at all. Granting them to
+# this small binary keeps the supervisor's own process unprivileged.
+# libcap2-bin is needed only to grant them, so it goes again in the same layer.
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends ca-certificates git libcap2-bin tini \
  && install -d -m 0755 /opt/barrack/bin \
@@ -69,17 +71,28 @@ RUN apt-get update \
 COPY --from=node-runtime /usr/local/bin/ /usr/local/bin/
 COPY --from=node-runtime /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 
-# Which user the supervisor runs as. Until the supervisor starts the agent
-# through run-as-agent, both run as the agent's user; switching this to
-# barrack-supervisor separates them (see README.md).
-ARG SUPERVISOR_USER=barrack-agent
+# The capability bounding set keeps SETUID and SETGID for run-as-agent, and
+# no-new-privileges cannot be set without disarming it, so any setuid or
+# setgid program would run with those two capabilities for whoever runs it,
+# the agent included, and a flaw in one (su, passwd, mount...) would let the
+# agent become the supervisor. Nothing here needs them, so none keep the bit.
+RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 
-RUN install -d -o barrack-agent -g barrack-agent -m 0750 \
+# The agent owns its workspace, its state (Pi's credentials, settings and
+# sessions) and its home. The supervisor needs only to pass through the first
+# two: Node changes into the workspace as the supervisor before run-as-agent
+# changes user, and the supervisor checks that the session file it resumes
+# still exists. So the agent's group, which holds the supervisor, may search
+# these directories (0710) but not list them, and the agent's home is closed
+# (0700). The supervisor's own directories are closed to the agent (0750):
+# its process ID file, the lock that serialises starting it, and its log.
+RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
       /workspace /var/lib/barrack/state \
       /var/lib/barrack/state/pi /var/lib/barrack/state/pi/agent /var/lib/barrack/state/pi/sessions \
- && install -d -o "${SUPERVISOR_USER}" -g "${SUPERVISOR_USER}" -m 0755 /run/barrack /var/log/barrack \
- && install -o "${SUPERVISOR_USER}" -g "${SUPERVISOR_USER}" -m 0644 /dev/null /run/barrack/ensure-supervisor.lock \
- && install -o "${SUPERVISOR_USER}" -g "${SUPERVISOR_USER}" -m 0640 /dev/null /var/log/barrack/supervisor.log
+ && chmod 0700 /home/barrack-agent \
+ && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 /run/barrack /var/log/barrack \
+ && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /run/barrack/ensure-supervisor.lock \
+ && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /var/log/barrack/supervisor.log
 
 COPY --from=supervisor-build /opt/barrack/supervisor/ /opt/barrack/supervisor/
 COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ensure-supervisor \
@@ -87,10 +100,10 @@ COPY --chmod=0755 sandbox-image/barrack-run-supervisor sandbox-image/barrack-ens
 
 ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_STATE_DIRECTORY=/var/lib/barrack/state \
-    BARRACK_SUPERVISOR_USER=${SUPERVISOR_USER} \
+    BARRACK_SUPERVISOR_USER=barrack-supervisor \
     BARRACK_AGENT_USER=barrack-agent
 
-USER ${SUPERVISOR_USER}
+USER barrack-supervisor
 WORKDIR /workspace
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/barrack-run-supervisor"]

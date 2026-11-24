@@ -17,8 +17,11 @@ supervisor_is_running() {
   [ -s "$pid_file" ] || return 1
   pid="$(cat "$pid_file")"
   # A recorded ID can outlive its process (the file survives a stop) and be
-  # reused by another, so the process must also be the supervisor.
+  # reused by another, so the process must also be the supervisor: running
+  # its entry point, as its user. The agent can start a process with any
+  # command line, but not as the supervisor's user.
   [ -r "/proc/$pid/cmdline" ] &&
+    [ "$(stat -c %U "/proc/$pid")" = "$BARRACK_SUPERVISOR_USER" ] &&
     tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q '/opt/barrack/supervisor/dist/main.js'
 }
 
@@ -28,8 +31,9 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # Two concurrent runs must not both decide that no supervisor is running.
-# The lock file is made by the image, so every user can open it for reading,
-# which is all flock needs.
+# The lock file is made by the image and only root and the supervisor's user
+# may open it, so the agent cannot hold the lock to stop a supervisor from
+# being started. Reading is all flock needs.
 exec 9< "$lock_file"
 flock 9
 
