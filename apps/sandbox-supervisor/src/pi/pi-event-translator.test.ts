@@ -6,6 +6,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   initialTranslationState,
+  releaseHeldErroredMessage,
   type TranslationState,
   translatePiEvent,
 } from "./pi-event-translator.js";
@@ -38,14 +39,16 @@ function translateAll(events: PiEvent[], state: TranslationState = initialTransl
   const mintIdentifier = () => `minted-${++identifierCount}`;
   const messages: SupervisorToControlPlaneMessage[] = [];
   const unrecognized: string[] = [];
+  const retriedErrorMessages: string[] = [];
   let currentState = state;
   for (const event of events) {
     const translation = translatePiEvent(currentState, event, mintIdentifier);
     currentState = translation.state;
     messages.push(...translation.messages);
     unrecognized.push(...translation.unrecognized);
+    retriedErrorMessages.push(...translation.retriedErrorMessages);
   }
-  return { messages, unrecognized, state: currentState };
+  return { messages, unrecognized, retriedErrorMessages, state: currentState };
 }
 
 function translateFixture(fixtureName: string) {
@@ -173,21 +176,162 @@ describe("translatePiEvent", () => {
     ]);
   });
 
-  it("reports Pi's retries, with their several agent_end events, as one run that settles once", () => {
-    const { messages } = translateFixture("retried-run");
+  it("records only the last error when every one of Pi's retries fails, in one run that settles once", () => {
+    const { messages, retriedErrorMessages } = translateFixture("retried-run");
 
-    const eventTypes = agentEvents(messages).map((event) => event.type);
-    expect(eventTypes).toEqual([
+    expect(agentEvents(messages)).toEqual([
+      { type: "agent_run_started" },
+      {
+        type: "assistant_message",
+        messageId: "minted-4",
+        content: [],
+        endReason: "errored",
+        errorMessage: expect.stringContaining("Proxy response (403)"),
+      },
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+    expect(retriedErrorMessages).toHaveLength(3);
+    expect(
+      readFixtureEvents("retried-run").filter((event) => event.type === "agent_start"),
+    ).toHaveLength(4);
+  });
+
+  it("records no error when Pi retries a failed request and the retry succeeds", () => {
+    const { messages, retriedErrorMessages } = translateFixture("retried-then-answered-run");
+
+    expect(agentEvents(messages)).toEqual([
+      { type: "agent_run_started" },
+      {
+        type: "assistant_message",
+        messageId: "minted-2",
+        content: [{ type: "text", text: "Hello there." }],
+        endReason: "completed",
+      },
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+    expect(retriedErrorMessages).toEqual(['503: {"message":"The model is overloaded."}']);
+  });
+
+  it("records no error when Pi compacts an overflowing context and the retry succeeds", () => {
+    const { messages, retriedErrorMessages } = translateFixture("overflow-recovered-run");
+
+    expect(agentEvents(messages).map((event) => event.type)).toEqual([
       "agent_run_started",
       "assistant_message",
-      "assistant_message",
+      "agent_run_settled",
+    ]);
+    expect(agentEvents(messages)[1]).toMatchObject({ endReason: "completed" });
+    expect(retriedErrorMessages).toEqual([expect.stringContaining("exceeds the context window")]);
+  });
+
+  it("records the error when the user interrupts while Pi waits to retry", () => {
+    const { messages } = translateFixture("interrupted-retry");
+
+    expect(agentEvents(messages)).toEqual([
+      { type: "agent_run_started" },
+      {
+        type: "assistant_message",
+        messageId: "minted-1",
+        content: [],
+        endReason: "errored",
+        errorMessage: '503: {"message":"The model is overloaded."}',
+      },
+      { type: "agent_run_settled", wasInterrupted: true },
+    ]);
+  });
+
+  it("holds an errored message back until what Pi does next shows no retry is coming", () => {
+    const erroredMessageEnd: PiEvent = {
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401" },
+    };
+    const afterMessage = translateAll([{ type: "agent_start" }, erroredMessageEnd]);
+    // No automatic retry, but Pi could still compact an overflowing context and retry.
+    const afterRun = translateAll([{ type: "agent_end", willRetry: false }], afterMessage.state);
+    const afterSettling = translateAll([{ type: "agent_settled", aborted: false }], afterRun.state);
+
+    expect(agentEvents(afterMessage.messages).map((event) => event.type)).toEqual([
+      "agent_run_started",
+    ]);
+    expect(afterRun.messages).toEqual([]);
+    expect(agentEvents(afterSettling.messages)).toEqual([
+      expect.objectContaining({ endReason: "errored", errorMessage: "401" }),
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("never holds back a message that did not end in an error", () => {
+    const { messages } = translateAll([
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "Hi" }], stopReason: "stop" },
+      },
+    ]);
+
+    expect(agentEvents(messages)).toEqual([expect.objectContaining({ endReason: "completed" })]);
+  });
+
+  it("records an error Pi does not retry before the run carries on with a queued message", () => {
+    const { messages } = translateAll([
+      { type: "agent_start" },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401" },
+      },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_start" },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "Hi" }], stopReason: "stop" },
+      },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_settled", aborted: false },
+    ]);
+
+    expect(agentEvents(messages).map((event) => event.type)).toEqual([
+      "agent_run_started",
       "assistant_message",
       "assistant_message",
       "agent_run_settled",
     ]);
-    expect(
-      readFixtureEvents("retried-run").filter((event) => event.type === "agent_start"),
-    ).toHaveLength(4);
+    expect(agentEvents(messages)[1]).toMatchObject({ endReason: "errored" });
+  });
+
+  it("records a held error when compacting after an overflow will not retry", () => {
+    const { messages } = translateAll([
+      { type: "agent_start" },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [], stopReason: "error", errorMessage: "too long" },
+      },
+      { type: "agent_end", willRetry: false },
+      { type: "compaction_start", reason: "overflow" },
+      { type: "compaction_end", willRetry: false },
+      { type: "agent_settled", aborted: false },
+    ]);
+
+    expect(agentEvents(messages).map((event) => event.type)).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+    ]);
+  });
+
+  it("gives up a held error when Pi's process ends", () => {
+    const { state } = translateAll([
+      { type: "agent_start" },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [], stopReason: "error", errorMessage: "503" },
+      },
+    ]);
+
+    const released = releaseHeldErroredMessage(state);
+
+    expect(agentEvents(released.messages)).toEqual([
+      expect.objectContaining({ endReason: "errored", errorMessage: "503" }),
+    ]);
+    expect(released.state.heldErroredMessage).toBeUndefined();
   });
 
   it("produces only messages that satisfy the protocol", () => {
@@ -197,6 +341,9 @@ describe("translatePiEvent", () => {
       "provider-error",
       "interrupted-run",
       "retried-run",
+      "retried-then-answered-run",
+      "overflow-recovered-run",
+      "interrupted-retry",
     ]) {
       for (const message of translateFixture(fixtureName).messages) {
         expect(supervisorToControlPlaneMessageSchema.safeParse(message).success).toBe(true);
@@ -277,6 +424,7 @@ describe("translatePiEvent", () => {
   it("gives an errored message a placeholder when the provider sent no error text", () => {
     const { messages } = translateAll([
       { type: "message_end", message: { role: "assistant", content: [], stopReason: "error" } },
+      { type: "agent_settled", aborted: false },
     ]);
 
     expect(agentEvents(messages)[0]).toMatchObject({

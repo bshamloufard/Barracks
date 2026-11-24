@@ -9,6 +9,8 @@ import type { Logger } from "../logger.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
   initialTranslationState,
+  releaseHeldErroredMessage,
+  type Translation,
   type TranslationState,
   translatePiEvent,
 } from "./pi-event-translator.js";
@@ -290,10 +292,16 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   #handlePiEvent(event: PiEvent): void {
-    const translation = translatePiEvent(this.#translationState, event, this.#mintIdentifier);
+    this.#applyTranslation(translatePiEvent(this.#translationState, event, this.#mintIdentifier));
+  }
+
+  #applyTranslation(translation: Translation): void {
     this.#translationState = translation.state;
     for (const description of translation.unrecognized) {
       this.#logger.debug({ description }, "Ignoring something Pi sent that is not translated");
+    }
+    for (const errorMessage of translation.retriedErrorMessages) {
+      this.#logger.info({ errorMessage }, "Pi is retrying after a model provider error");
     }
     for (const message of translation.messages) {
       if (message.type === "agent_event") {
@@ -322,6 +330,7 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   #handlePiExit(exit: PiExit): void {
+    this.#applyTranslation(releaseHeldErroredMessage(this.#translationState));
     this.#translationState = initialTranslationState;
     if (exit.wasRequested) {
       this.#logger.info({ description: exit.description }, "Pi stopped");

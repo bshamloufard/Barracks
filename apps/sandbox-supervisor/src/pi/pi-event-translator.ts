@@ -24,7 +24,35 @@ import { flattenToolResultContent, truncateToolOutput } from "./tool-output.js";
  * several `agent_start`/`agent_end` pairs (automatic retries, compaction,
  * queued messages), and only `agent_settled` means Pi is done.
  * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md
+ *
+ * Retries are the other. When a model request fails with an error Pi
+ * considers temporary (overloaded, rate limited, a dropped connection), or
+ * because the context outgrew the model, Pi removes the failed attempt from
+ * the model's context and tries again. Recording each attempt would show one
+ * passing failure as several errors, even when a retry then succeeds. So an
+ * assistant message that ended in an error is held back until Pi says
+ * whether it will retry: it is dropped when the retry starts, and recorded
+ * as soon as anything shows no retry is coming.
  */
+
+/**
+ * What Pi has said so far about retrying a failed request, in the order it
+ * says it:
+ * - `awaiting_run_end`: nothing yet; `agent_end.willRetry` comes next.
+ * - `awaiting_recovery`: no automatic retry, but if the context overflowed,
+ *   Pi compacts it and retries, and starts compacting straight away.
+ * - `compacting_after_overflow`: `compaction_end.willRetry` will decide.
+ * - `retry_announced`: the next `agent_start` is the retry.
+ */
+type RetryOutlook =
+  | "awaiting_run_end"
+  | "awaiting_recovery"
+  | "compacting_after_overflow"
+  | "retry_announced";
+
+type ErroredAssistantMessageEvent = AssistantMessageEvent & { errorMessage: string };
+
+type HeldErroredMessage = { event: ErroredAssistantMessageEvent; retryOutlook: RetryOutlook };
 
 export type TranslationState = {
   /** Between the first `agent_start` after idle and the `agent_settled` that ends the run. */
@@ -34,11 +62,13 @@ export type TranslationState = {
    * message starts and reused for its fragments and its completed event.
    */
   currentAssistantMessageId: string | undefined;
+  heldErroredMessage: HeldErroredMessage | undefined;
 };
 
 export const initialTranslationState: TranslationState = {
   isRunActive: false,
   currentAssistantMessageId: undefined,
+  heldErroredMessage: undefined,
 };
 
 export type Translation = {
@@ -46,6 +76,8 @@ export type Translation = {
   messages: SupervisorToControlPlaneMessage[];
   /** Things Pi sent that this translation does not know, for the caller to log. */
   unrecognized: string[];
+  /** Model provider errors Pi is retrying, which are not recorded, for the caller to log. */
+  retriedErrorMessages: string[];
 };
 
 export function translatePiEvent(
@@ -53,7 +85,80 @@ export function translatePiEvent(
   event: PiEvent,
   mintIdentifier: () => string,
 ): Translation {
+  const heldMessageOutcome = resolveHeldErroredMessage(state, event);
+  const translation = translateEvent(heldMessageOutcome.state, event, mintIdentifier);
+  return {
+    state: translation.state,
+    messages: [...heldMessageOutcome.messages, ...translation.messages],
+    unrecognized: translation.unrecognized,
+    retriedErrorMessages: heldMessageOutcome.retriedErrorMessages,
+  };
+}
+
+/**
+ * Records a held errored message now, for when no more events will come
+ * because Pi's process has ended.
+ */
+export function releaseHeldErroredMessage(state: TranslationState): Translation {
+  const held = state.heldErroredMessage;
+  if (held === undefined) {
+    return nothing(state);
+  }
+  return emit({ ...state, heldErroredMessage: undefined }, held.event);
+}
+
+function resolveHeldErroredMessage(state: TranslationState, event: PiEvent): Translation {
+  const held = state.heldErroredMessage;
+  if (held === undefined) {
+    return nothing(state);
+  }
+  const nextOutlook = foreseeRetry(held.retryOutlook, event);
+  if (nextOutlook === "retry_started") {
+    return {
+      ...nothing({ ...state, heldErroredMessage: undefined }),
+      retriedErrorMessages: [held.event.errorMessage],
+    };
+  }
+  if (nextOutlook === "no_retry") {
+    return releaseHeldErroredMessage(state);
+  }
+  return nothing({ ...state, heldErroredMessage: { ...held, retryOutlook: nextOutlook } });
+}
+
+/** Anything Pi sends out of the order described on `RetryOutlook` means no retry is coming. */
+function foreseeRetry(
+  outlook: RetryOutlook,
+  event: PiEvent,
+): RetryOutlook | "retry_started" | "no_retry" {
+  if (outlook === "awaiting_run_end" && event.type === "agent_end") {
+    return event.willRetry ? "retry_announced" : "awaiting_recovery";
+  }
+  if (
+    outlook === "awaiting_recovery" &&
+    event.type === "compaction_start" &&
+    event.reason === "overflow"
+  ) {
+    return "compacting_after_overflow";
+  }
+  if (outlook === "compacting_after_overflow" && event.type === "compaction_end") {
+    return event.willRetry ? "retry_announced" : "no_retry";
+  }
+  if (outlook === "retry_announced" && event.type === "agent_start") {
+    return "retry_started";
+  }
+  return "no_retry";
+}
+
+function translateEvent(
+  state: TranslationState,
+  event: PiEvent,
+  mintIdentifier: () => string,
+): Translation {
   switch (event.type) {
+    case "agent_end":
+    case "compaction_start":
+    case "compaction_end":
+      return nothing(state);
     case "agent_start":
       return translateAgentStart(state);
     case "agent_settled":
@@ -136,7 +241,7 @@ function translateMessageUpdate(
     return nothing(state);
   }
   return {
-    state,
+    ...nothing(state),
     messages: [
       {
         type: "stream_fragment",
@@ -149,7 +254,6 @@ function translateMessageUpdate(
         },
       },
     ],
-    unrecognized: [],
   };
 }
 
@@ -174,11 +278,17 @@ function translateMessageEnd(
     ...ending.fields,
     content: content.blocks,
   };
-  return {
-    state: { ...state, currentAssistantMessageId: undefined },
-    messages: [{ type: "agent_event", event }],
-    unrecognized: [...content.unrecognized, ...ending.unrecognized],
-  };
+  const unrecognized = [...content.unrecognized, ...ending.unrecognized];
+  const nextState = { ...state, currentAssistantMessageId: undefined };
+  if (isErrored(event)) {
+    const heldErroredMessage: HeldErroredMessage = { event, retryOutlook: "awaiting_run_end" };
+    return { ...nothing({ ...nextState, heldErroredMessage }), unrecognized };
+  }
+  return { ...emit(nextState, event), unrecognized };
+}
+
+function isErrored(event: AssistantMessageEvent): event is ErroredAssistantMessageEvent {
+  return event.endReason === "errored" && event.errorMessage !== undefined;
 }
 
 /**
@@ -262,9 +372,9 @@ function describeProviderError(errorMessage: string | undefined): string {
 }
 
 function emit(state: TranslationState, event: AgentEvent): Translation {
-  return { state, messages: [{ type: "agent_event", event }], unrecognized: [] };
+  return { ...nothing(state), messages: [{ type: "agent_event", event }] };
 }
 
 function nothing(state: TranslationState): Translation {
-  return { state, messages: [], unrecognized: [] };
+  return { state, messages: [], unrecognized: [], retriedErrorMessages: [] };
 }

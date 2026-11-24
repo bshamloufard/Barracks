@@ -10,10 +10,33 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * - containing `RUN_TOOL`: a `bash` tool call that runs `echo hi`;
  * - containing `CRASH_AGENT`: a `bash` tool call that kills Pi, the shell's
  *   parent process, to test recovery from a crash;
+ * - containing `FAIL_ONCE`: an "overloaded" error the first time, which Pi
+ *   retries, and the usual reply after that;
+ * - containing `FAIL_ALWAYS`: an "overloaded" error every time, so Pi's
+ *   retries run out;
+ * - containing `REJECT_KEY`: an invalid key error, which Pi does not retry;
+ * - containing `OVERFLOW_ONCE`: a context overflow error the first time, so
+ *   Pi compacts the conversation (when it has enough to compact) and retries;
  * - anything else: "Hello there.".
  * A tool result gets the reply "Done.".
  */
-export const mockModelTriggers = { toolExecution: "RUN_TOOL", crash: "CRASH_AGENT" } as const;
+export const mockModelTriggers = {
+  toolExecution: "RUN_TOOL",
+  crash: "CRASH_AGENT",
+  transientFailure: "FAIL_ONCE",
+  persistentFailure: "FAIL_ALWAYS",
+  invalidKey: "REJECT_KEY",
+  contextOverflow: "OVERFLOW_ONCE",
+} as const;
+
+type MockFailure = { statusCode: number; message: string };
+
+const overloadedFailure: MockFailure = { statusCode: 503, message: "The model is overloaded." };
+const invalidKeyFailure: MockFailure = { statusCode: 401, message: "Incorrect API key provided" };
+const contextOverflowFailure: MockFailure = {
+  statusCode: 400,
+  message: "Your input exceeds the context window of this model.",
+};
 
 export type ChatMessage = { role: string; content: unknown };
 
@@ -55,6 +78,12 @@ async function answerRequest(
   }
   const body: { model: string; messages: ChatMessage[] } = JSON.parse(await readBody(request));
   receivedConversations.push(body.messages);
+  const failure = chooseFailure(body.messages, receivedConversations);
+  if (failure !== undefined) {
+    response.writeHead(failure.statusCode, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: failure.message } }));
+    return;
+  }
   response.writeHead(200, { "content-type": "text/event-stream" });
   const writeChunk: ChunkWriter = (delta, finishReason) => {
     const chunk = {
@@ -70,8 +99,38 @@ async function answerRequest(
   response.end("data: [DONE]\n\n");
 }
 
+/** `receivedConversations` includes this request's. */
+function chooseFailure(
+  messages: ChatMessage[],
+  receivedConversations: ChatMessage[][],
+): MockFailure | undefined {
+  const lastUserText = describeUserMessage(messages.at(-1));
+  if (lastUserText.includes(mockModelTriggers.invalidKey)) {
+    return invalidKeyFailure;
+  }
+  if (lastUserText.includes(mockModelTriggers.persistentFailure)) {
+    return overloadedFailure;
+  }
+  const isFirstRequestWith = (trigger: string) =>
+    lastUserText.includes(trigger) &&
+    receivedConversations.filter((conversation) =>
+      describeUserMessage(conversation.at(-1)).includes(trigger),
+    ).length === 1;
+  if (isFirstRequestWith(mockModelTriggers.transientFailure)) {
+    return overloadedFailure;
+  }
+  if (isFirstRequestWith(mockModelTriggers.contextOverflow)) {
+    return contextOverflowFailure;
+  }
+  return undefined;
+}
+
+function describeUserMessage(message: ChatMessage | undefined): string {
+  return message?.role === "user" ? JSON.stringify(message.content) : "";
+}
+
 function writeReply(lastMessage: ChatMessage | undefined, writeChunk: ChunkWriter): void {
-  const lastUserText = lastMessage?.role === "user" ? JSON.stringify(lastMessage.content) : "";
+  const lastUserText = describeUserMessage(lastMessage);
   if (lastUserText.includes(mockModelTriggers.toolExecution)) {
     writeBashCall(writeChunk, "echo hi");
   } else if (lastUserText.includes(mockModelTriggers.crash)) {

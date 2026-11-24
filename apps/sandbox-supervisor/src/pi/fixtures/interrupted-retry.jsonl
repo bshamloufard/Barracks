@@ -1,0 +1,18 @@
+{"id":"p1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"system","content":"","sections":{"preamble":"You are a coding assistant running inside pi…"},"timestamp":1795515503020}}
+{"type":"message_end","message":{"role":"system","content":"","sections":{"preamble":"You are a coding assistant running inside pi…"},"timestamp":1795515503020}}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Say hi FAIL_ALWAYS"}],"timestamp":1795515503019}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Say hi FAIL_ALWAYS"}],"timestamp":1795515503019}}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515503051,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}","durationMs":35,"thinkingLevel":"off"}}
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515503051,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}","durationMs":35,"thinkingLevel":"off"}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":true}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":5000,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}"}
+{"type":"entry_appended","entry":{"type":"context_edit","id":"810f41e1","parentId":"1f4446a5","timestamp":"2026-11-24T10:18:23.091Z","targetId":"1f4446a5","replacement":null}}
+{"type":"queue_update","steering":[],"followUp":[]}
+{"id":"c1","type":"response","command":"clear_queue","success":true,"data":{"steering":[],"followUp":[]}}
+{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Retry cancelled"}
+{"type":"agent_settled","aborted":true}
+{"id":"a1","type":"response","command":"abort","success":true}

@@ -1,0 +1,25 @@
+{"id":"p1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"system","content":"","sections":{"preamble":"You are a coding assistant running inside pi…"},"timestamp":1795515502199}}
+{"type":"message_end","message":{"role":"system","content":"","sections":{"preamble":"You are a coding assistant running inside pi…"},"timestamp":1795515502199}}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Say hi FAIL_ONCE"}],"timestamp":1795515502198}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Say hi FAIL_ONCE"}],"timestamp":1795515502198}}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515502232,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}","durationMs":40,"thinkingLevel":"off"}}
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515502232,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}","durationMs":40,"thinkingLevel":"off"}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":true}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":10,"errorMessage":"503: {\"message\":\"The model is overloaded.\"}"}
+{"type":"entry_appended","entry":{"type":"context_edit","id":"fbd7c4c1","parentId":"fd5ca809","timestamp":"2026-11-24T10:18:22.279Z","targetId":"fd5ca809","replacement":null}}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1795515502291}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" there."}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello there."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello there."}],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1795515502291,"responseId":"mock-completion","rawStopReason":"stop","durationMs":9,"thinkingLevel":"off"}}
+{"type":"auto_retry_end","success":true,"attempt":1}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled","aborted":false}

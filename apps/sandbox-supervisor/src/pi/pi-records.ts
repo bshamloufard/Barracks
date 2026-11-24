@@ -61,7 +61,13 @@ const toolResultContentBlockSchema = z.union([
 
 const eventSchemas = {
   agent_start: z.looseObject({ type: z.literal("agent_start") }),
+  /** Ends one low-level run; `willRetry` says Pi will retry its failed model request. */
+  agent_end: z.looseObject({ type: z.literal("agent_end"), willRetry: z.boolean() }),
   agent_settled: z.looseObject({ type: z.literal("agent_settled"), aborted: z.boolean() }),
+  /** `reason` is `manual`, `threshold`, or `overflow` (the context outgrew the model). */
+  compaction_start: z.looseObject({ type: z.literal("compaction_start"), reason: z.string() }),
+  /** `willRetry` says Pi will retry the request that overflowed, now that the context is smaller. */
+  compaction_end: z.looseObject({ type: z.literal("compaction_end"), willRetry: z.boolean() }),
   message_start: z.looseObject({ type: z.literal("message_start"), message: messageSchema }),
   message_update: z.looseObject({
     type: z.literal("message_update"),

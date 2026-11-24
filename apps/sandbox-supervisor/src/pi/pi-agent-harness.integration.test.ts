@@ -10,7 +10,7 @@ import {
 } from "../test-support/mock-model-server.js";
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
-import { waitUntil } from "../test-support/wait-until.js";
+import { pause, waitUntil } from "../test-support/wait-until.js";
 import { getPiDirectories, PiAgentHarness } from "./pi-agent-harness.js";
 
 /**
@@ -53,7 +53,22 @@ async function writeMockModelConfiguration(stateDirectory: string, baseUrl: stri
     },
   };
   await writeFile(path.join(agentDirectory, "models.json"), JSON.stringify(modelsConfiguration));
+  await writeRetrySettings(stateDirectory, quickRetryDelayInMilliseconds);
 }
+
+/**
+ * Pi retries a failed model request after `baseDelayMs`, doubling each time
+ * (2 s by default); the model client's own retries are turned off so that
+ * every failure reaches Pi's retry logic, which is what the tests are about.
+ * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md
+ */
+async function writeRetrySettings(stateDirectory: string, baseDelayInMilliseconds: number) {
+  const { agentDirectory } = getPiDirectories(stateDirectory);
+  const settings = { retry: { baseDelayMs: baseDelayInMilliseconds, provider: { maxRetries: 0 } } };
+  await writeFile(path.join(agentDirectory, "settings.json"), JSON.stringify(settings));
+}
+
+const quickRetryDelayInMilliseconds = 10;
 
 async function startHarness(model = "mock/mock-1"): Promise<PiAgentHarness> {
   let identifierCount = 0;
@@ -149,6 +164,100 @@ describe("PiAgentHarness with the real Pi", () => {
     ]);
     const lastConversation = JSON.stringify(modelServer.receivedConversations.at(-1));
     expect(lastConversation).toContain(mockModelTriggers.crash);
+  });
+
+  it("records no error when a failed model request succeeds on Pi's retry", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.transientFailure}`,
+    });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedConversations).toHaveLength(2);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      {
+        type: "assistant_message",
+        messageId: "minted-2",
+        content: [{ type: "text", text: "Hello there." }],
+        endReason: "completed",
+      },
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("records one error, the last, when every retry of a failed model request fails", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.persistentFailure}`,
+    });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedConversations).toHaveLength(4);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      {
+        type: "assistant_message",
+        messageId: "minted-4",
+        content: [],
+        endReason: "errored",
+        errorMessage: expect.stringContaining("The model is overloaded."),
+      },
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("records a model provider error that Pi does not retry", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.invalidKey}`,
+    });
+    await waitUntil(hasEnded(1), "the run settles", piTimeoutInMilliseconds);
+
+    expect(modelServer.receivedConversations).toHaveLength(1);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      expect.objectContaining({
+        endReason: "errored",
+        errorMessage: expect.stringContaining("Incorrect API key provided"),
+      }),
+      { type: "agent_run_settled", wasInterrupted: false },
+    ]);
+  });
+
+  it("records the error, and settles as interrupted, when interrupted while Pi waits to retry", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    await writeRetrySettings(path.join(temporaryDirectory, "state"), 20_000);
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.persistentFailure}`,
+    });
+    await waitUntil(
+      () => modelServer.receivedConversations.length === 1,
+      "the first request fails",
+      piTimeoutInMilliseconds,
+    );
+    // Gives Pi time to read the failure and start waiting to retry.
+    await pause(500);
+    await harness.interrupt();
+
+    expect(modelServer.receivedConversations).toHaveLength(1);
+    expect(observer.events).toEqual([
+      { type: "agent_run_started" },
+      expect.objectContaining({ endReason: "errored" }),
+      { type: "agent_run_settled", wasInterrupted: true },
+    ]);
   });
 
   it("shows a message Pi refuses as an errored assistant message in a run of its own", {

@@ -1,0 +1,23 @@
+{"id":"p2","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Now OVERFLOW_ONCE please"}],"timestamp":1795515589389}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Now OVERFLOW_ONCE please"}],"timestamp":1795515589389}}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515589391,"errorMessage":"400: {\"message\":\"Your input exceeds the context window of this model.\"}","durationMs":12,"thinkingLevel":"off"}}
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1795515589391,"errorMessage":"400: {\"message\":\"Your input exceeds the context window of this model.\"}","durationMs":12,"thinkingLevel":"off"}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"entry_appended","entry":{"type":"context_edit","id":"3ea70791","parentId":"a0515fb8","timestamp":"2026-11-24T10:19:49.405Z","targetId":"a0515fb8","replacement":null}}
+{"type":"compaction_start","reason":"overflow"}
+{"type":"compaction_end","reason":"overflow","result":{"summary":"Hello there.\n\n---\n\n**Turn Context (split turn):**\n\nHello there.","firstKeptEntryId":"a0515fb8","tokensBefore":1464,"estimatedTokensAfter":1465,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0,"totalFromProvider":false}},"details":{"readFiles":[],"modifiedFiles":[]}},"aborted":false,"willRetry":true}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1795515589426}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" there."}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello there."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello there."}],"api":"openai-completions","provider":"mock","model":"mock-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1795515589426,"responseId":"mock-completion","rawStopReason":"stop","durationMs":5,"thinkingLevel":"off"}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled","aborted":false}
