@@ -122,7 +122,10 @@ export class ModelProxy {
   readonly #requestBodies: RequestBodyBudget;
   /** Every request under way here, by the thread its path names. */
   readonly #exchanges = new Map<string, Set<ProxyExchange>>();
+  /** Each request's handling, from its arrival to the end of recording its usage. */
+  readonly #handlings = new Set<Promise<void>>();
   #recordsChecksScheduled = 0;
+  #isShuttingDown = false;
 
   constructor(options: ModelProxyOptions) {
     this.#options = options;
@@ -146,8 +149,52 @@ export class ModelProxy {
   }
 
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const handling = this.#handle(request, response);
+    this.#handlings.add(handling);
+    try {
+      await handling;
+    } finally {
+      this.#handlings.delete(handling);
+    }
+  }
+
+  /**
+   * Ends every request in flight here, as the control plane shuts down,
+   * and refuses any that arrive after, as busy, which the agent retries
+   * (normally reaching the instance that replaces this one); then waits,
+   * at most `gracePeriodInMilliseconds`, for each to finish recording its
+   * usage, estimated where the answer was cut short. A request left to
+   * run until the platform killed the process would be counted nothing.
+   * Returns what the proxy still holds, which is nothing unless the grace
+   * period ran out, and logs it.
+   */
+  async shutDown(gracePeriodInMilliseconds: number): Promise<ModelProxyActivity> {
+    this.#isShuttingDown = true;
+    for (const exchanges of this.#exchanges.values()) {
+      for (const exchange of exchanges) {
+        exchange.end("shutting_down");
+      }
+    }
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.#handlings]),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, gracePeriodInMilliseconds);
+      }),
+    ]);
+    clearTimeout(timer);
+    const left = this.activity;
+    this.#options.logger.info({ ...left }, "The model proxy has ended its requests");
+    return left;
+  }
+
+  async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     // A refused request's body is never read, so its connection is not reused.
     response.shouldKeepAlive = false;
+    if (this.#isShuttingDown) {
+      sendRefusal(response, undefined, proxyRefusals.proxyBusy);
+      return;
+    }
     const target = parseModelProxyRequestTarget(request.url ?? "");
     if (!target.ok) {
       sendRefusal(response, undefined, proxyRefusals.notFound);

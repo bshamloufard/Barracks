@@ -10,6 +10,7 @@ import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
 import { OwnerModelAccess } from "./model-access/owner-model-access.js";
 import { assembleModelProxy } from "./model-proxy/assemble-model-proxy.js";
+import type { ModelProxy } from "./model-proxy/model-proxy.js";
 import { defaultModelProxyLimits } from "./model-proxy/model-proxy-limits.js";
 import { ModelProxyTokens } from "./model-proxy/model-proxy-tokens.js";
 import { ModelSwitchAllowances } from "./model-proxy/model-switch-allowances.js";
@@ -138,7 +139,14 @@ async function main(): Promise<void> {
   threadServices.sweeps.start();
   const resealing = new CredentialResealing(storage.modelCredentialStore, keyring, logger);
   resealing.start();
-  shutDownOnSignal(server, threadServices, storage, logger, () => resealing.stop());
+  shutDownOnSignal({
+    server,
+    modelProxy,
+    threadServices,
+    storage,
+    logger,
+    stopResealing: () => resealing.stop(),
+  });
 }
 
 /** Says where agents will run and with what, naming credentials but never their values. */
@@ -234,20 +242,30 @@ function describePublicationLimits(logger: Logger): void {
 }
 
 /**
- * The first SIGINT or SIGTERM stops the sweeps, closes every connection with
+ * How long the model proxy waits, at shutdown, for the requests it ended to
+ * record their usage: well inside the 120-second drain the deployment
+ * gives (see the deployment guide), with room for the database's retries.
+ */
+const modelProxyShutdownGraceInMilliseconds = 30_000;
+
+/**
+ * The first SIGINT or SIGTERM stops the sweeps, ends the model proxy's
+ * requests in flight and records their usage, closes every connection with
  * "going away" so peers know to reconnect elsewhere, lets sandbox operations
  * under way finish so that their outcomes are recorded, then closes storage;
  * a second signal exits at once, for when a peer or a provider is slow to
  * finish. An operation cut short that way is taken over by the next control
  * plane once its lease expires.
  */
-function shutDownOnSignal(
-  server: RunningControlPlaneServer,
-  threadServices: ThreadServices,
-  storage: OpenStorage,
-  logger: Logger,
-  stopResealing: () => void,
-): void {
+function shutDownOnSignal(running: {
+  server: RunningControlPlaneServer;
+  modelProxy: ModelProxy;
+  threadServices: ThreadServices;
+  storage: OpenStorage;
+  logger: Logger;
+  stopResealing: () => void;
+}): void {
+  const { server, modelProxy, threadServices, storage, logger, stopResealing } = running;
   let isShuttingDown = false;
   const handleSignal = (signal: NodeJS.Signals): void => {
     if (isShuttingDown) {
@@ -259,6 +277,7 @@ function shutDownOnSignal(
     stopResealing();
     threadServices.sweeps
       .stop()
+      .then(() => modelProxy.shutDown(modelProxyShutdownGraceInMilliseconds))
       .then(() => server.close())
       .then(() => threadServices.operations.whenSettled())
       .then(() => storage.close())

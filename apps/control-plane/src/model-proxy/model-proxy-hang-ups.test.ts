@@ -328,3 +328,40 @@ describe("an agent hanging up at each point a request waits", () => {
     ]);
   });
 });
+
+describe("the proxy shutting down", () => {
+  it("ends its requests in flight at once, counts what they may have cost, and takes no more", async () => {
+    const { access, threadId } = await startThread();
+    const proxy = requireControlPlane().modelProxy;
+    const midAnswer = callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "",
+      { body: bodyAsking(holdMidAnswer) },
+    ).then(async (response) => {
+      await response.arrayBuffer().catch(() => undefined);
+      return response.status;
+    });
+    await expect.poll(() => heldAnswers.length).toBe(1);
+
+    const startedAt = Date.now();
+    const left = await proxy.shutDown(10_000);
+    const tookMilliseconds = Date.now() - startedAt;
+    const afterwards = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "",
+      { body: bodyAsking("Hello") },
+    );
+
+    expect(tookMilliseconds).toBeLessThan(2_000);
+    expect(left).toEqual(idleModelProxyActivity);
+    expect(await midAnswer).toBe(200);
+    expect(await countedFor(threadId)).toEqual([
+      expect.objectContaining({ source: "estimated", answerCount: 1 }),
+    ]);
+    expect(afterwards.status).toBe(503);
+  });
+});

@@ -350,6 +350,7 @@ export class TestControlPlane {
       modelProxy,
       logLines,
       closeServer: async () => {
+        await modelProxy.shutDown(5_000);
         await server.close();
         await threadServices.operations.whenSettled();
       },
