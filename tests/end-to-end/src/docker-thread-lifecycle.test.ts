@@ -174,7 +174,7 @@ if (unavailableReason !== undefined) {
     it("runs three threads on three tasks at the same moment, none touching another's history or files, and refuses a fourth", async () => {
       const threads = await Promise.all(projects.map(() => startThreadOnPi()));
 
-      const fourth = await requestCreation(controlPlane);
+      const fourth = await requestCreation(controlPlane, "mock/mock-1");
       threads.forEach(({ client }, index) => {
         client.sendUserMessage(taskFor(projects[index] ?? ""));
       });
