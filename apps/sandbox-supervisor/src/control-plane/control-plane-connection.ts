@@ -1,15 +1,19 @@
 import type { ClientRequest, IncomingMessage } from "node:http";
 import {
-  type AgentEvent,
   type AgentEventMessage,
   buildSupervisorEndpointPath,
   type ControlPlaneToSupervisorMessage,
+  type CreatePublicationBundle,
   closeCodes,
   type DeliverUserMessage,
   type InterruptAgentMessage,
+  type PrepareWorkspace,
   parseControlPlaneToSupervisorMessage,
+  type RepositoryCredential,
   type StreamFragment,
+  type SupervisorEvent,
   type SupervisorToControlPlaneMessage,
+  type SupervisorWorkspaceMessage,
 } from "@barrack/protocol";
 import WebSocket, { type RawData } from "ws";
 import type { Logger } from "../logger.js";
@@ -39,8 +43,15 @@ export const defaultConnectionTiming: ConnectionTiming = {
   closingConfirmationTimeoutInMilliseconds: 5_000,
 };
 
-/** What the control plane asks of the agent; the rest of what it sends is handled here. */
-export type AgentRequest = DeliverUserMessage | InterruptAgentMessage;
+/**
+ * What the control plane asks of the agent and its workspace, carried out
+ * in the order it arrives: the workspace is described before any user
+ * message, so none reaches the agent before its repository does.
+ */
+export type AgentRequest = DeliverUserMessage | InterruptAgentMessage | PrepareWorkspace;
+
+/** The workspace's requests and answers that need not wait their turn behind the agent's. */
+export type WorkspaceMessage = RepositoryCredential | CreatePublicationBundle;
 
 export type ControlPlaneConnectionSettings = {
   /** For example `ws://127.0.0.1:8787`, without a trailing slash. */
@@ -53,6 +64,7 @@ export type ControlPlaneConnectionSettings = {
   readUserMessagesDeliveredThrough: () => number;
   logger: Logger;
   onAgentRequest: (request: AgentRequest) => void;
+  onWorkspaceMessage: (message: WorkspaceMessage) => void;
   /** The connection can never succeed again; the supervisor should exit. */
   onFatalError: (error: Error) => void;
   timing?: Partial<ConnectionTiming>;
@@ -125,7 +137,7 @@ export class ControlPlaneConnection {
    * connection fails for good, and the supervisor exits, rather than drop an
    * event or run out of memory.
    */
-  sendAgentEvent(event: AgentEvent): void {
+  sendAgentEvent(event: SupervisorEvent): void {
     // Once closed or failed for good the supervisor is exiting, and the
     // reason has already been logged.
     if (this.#hasFailed || this.#isClosedByUs) {
@@ -151,6 +163,15 @@ export class ControlPlaneConnection {
     if (!this.#sendOnWelcomedSocket(frame)) {
       this.#droppedFragmentCount += 1;
     }
+  }
+
+  /**
+   * Sends a workspace request or answer if the connection is welcomed;
+   * returns whether it went out. Not kept for resending: whoever asked gives
+   * up and may ask again.
+   */
+  sendWorkspaceMessage(message: SupervisorWorkspaceMessage): boolean {
+    return this.#sendOnWelcomedSocket(JSON.stringify(message));
   }
 
   /** Not kept for resending: every new connection's hello says the same. */
@@ -344,7 +365,12 @@ export class ControlPlaneConnection {
         return;
       case "deliver_user_message":
       case "interrupt_agent":
+      case "prepare_workspace":
         this.#settings.onAgentRequest(message);
+        return;
+      case "repository_credential":
+      case "create_publication_bundle":
+        this.#settings.onWorkspaceMessage(message);
         return;
     }
   }

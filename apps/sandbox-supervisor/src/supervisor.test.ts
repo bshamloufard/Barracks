@@ -21,6 +21,8 @@ function createSupervisor(): Supervisor {
       threadId: "thread-1",
       supervisorToken: "token-1",
       supervisorStateDirectory,
+      workspaceDirectory: undefined,
+      gitCredentialSocketPath: path.join(supervisorStateDirectory, "git-credential.sock"),
       logLevel: "info",
       agentHarness: { kind: "fake" },
     },

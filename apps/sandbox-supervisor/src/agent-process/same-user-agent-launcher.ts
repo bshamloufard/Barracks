@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import type {
+  AgentCommandRequest,
   AgentLaunchRequest,
   AgentProcessLauncher,
+  AgentProcessStdio,
   LaunchedAgentProcess,
 } from "./agent-process-launcher.js";
 import { listDescendantProcessIds } from "./list-descendant-process-ids.js";
@@ -26,6 +28,14 @@ export class SameUserAgentLauncher implements AgentProcessLauncher {
       child,
       signalAgentProcesses: (signal) => signalProcessTree(child.pid, signal),
     };
+  }
+
+  launchCommand(request: AgentCommandRequest): AgentProcessStdio {
+    return spawn(request.executable, [...request.arguments], {
+      cwd: request.workingDirectory,
+      env: request.environment,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
   }
 }
 

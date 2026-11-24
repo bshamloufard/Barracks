@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { threadIdSchema } from "@barrack/protocol";
 import { z } from "zod";
@@ -20,8 +21,16 @@ const sharedVariablesSchema = z.object({
   BARRACK_THREAD_ID: threadIdSchema,
   BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
   BARRACK_SUPERVISOR_STATE_DIRECTORY: absoluteDirectorySchema,
+  BARRACK_WORKSPACE_DIRECTORY: absoluteDirectorySchema.optional(),
+  BARRACK_GIT_CREDENTIAL_SOCKET: absoluteDirectorySchema.optional(),
   BARRACK_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
+
+/**
+ * Linux limits a Unix socket's path to 107 bytes; a path near that is moved
+ * to the temporary directory, which only happens for deep development paths.
+ */
+const maximumSocketPathLength = 100;
 
 const piVariablesSchema = sharedVariablesSchema.extend({
   BARRACK_AGENT_HARNESS: z.literal("pi").default("pi"),
@@ -60,6 +69,14 @@ type SharedConfiguration = {
    * should be able to write to it.
    */
   supervisorStateDirectory: string;
+  /** Where the agent works and the thread's repository is cloned; none for a fake agent without one. */
+  workspaceDirectory: string | undefined;
+  /**
+   * The Unix socket Git's credential helper asks the supervisor on. It must
+   * be somewhere the agent can reach and no one outside the sandbox can; the
+   * sandbox image sets one.
+   */
+  gitCredentialSocketPath: string;
   logLevel: LogLevel;
 };
 
@@ -106,6 +123,13 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
     threadId: variables.BARRACK_THREAD_ID,
     supervisorToken: variables.BARRACK_SUPERVISOR_TOKEN,
     supervisorStateDirectory: variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
+    workspaceDirectory: variables.BARRACK_WORKSPACE_DIRECTORY,
+    gitCredentialSocketPath:
+      variables.BARRACK_GIT_CREDENTIAL_SOCKET ??
+      defaultCredentialSocketPath(
+        variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
+        variables.BARRACK_THREAD_ID,
+      ),
     logLevel: variables.BARRACK_LOG_LEVEL,
     agentHarness:
       variables.BARRACK_AGENT_HARNESS === "fake"
@@ -120,6 +144,14 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
               variables.BARRACK_AGENT_SHARES_SUPERVISOR_USER === "development-only",
           },
   };
+}
+
+/** Beside the supervisor's state, unless that path is too long for a socket. */
+function defaultCredentialSocketPath(supervisorStateDirectory: string, threadId: string): string {
+  const besideState = path.join(supervisorStateDirectory, "git-credential.sock");
+  return besideState.length <= maximumSocketPathLength
+    ? besideState
+    : path.join(tmpdir(), `barrack-git-credential-${threadId}.sock`);
 }
 
 /** Names each variable and what is wrong with it, without ever echoing a value. */

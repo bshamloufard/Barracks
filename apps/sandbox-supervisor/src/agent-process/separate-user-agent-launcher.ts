@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import type {
+  AgentCommandRequest,
   AgentLaunchRequest,
   AgentProcessLauncher,
+  AgentProcessStdio,
   LaunchedAgentProcess,
 } from "./agent-process-launcher.js";
 import { buildRunAsAgentArguments, runAsAgent } from "./run-as-agent.js";
@@ -48,6 +50,15 @@ export class SeparateUserAgentLauncher implements AgentProcessLauncher {
       stdio: ["pipe", "pipe", "pipe"],
     });
     return { child, signalAgentProcesses: (signal) => this.#signalEveryAgentProcess(signal) };
+  }
+
+  launchCommand(request: AgentCommandRequest): AgentProcessStdio {
+    const command = [request.executable, ...request.arguments];
+    return spawn(this.#runAsAgentPath, buildRunAsAgentArguments(this.#account, command), {
+      cwd: request.workingDirectory,
+      env: { ...request.environment, ...this.#describeUser() },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
   }
 
   /** `setpriv` leaves the environment alone, so these would still name the supervisor's user. */

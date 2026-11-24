@@ -26,6 +26,7 @@ function launcherOfUnresponsivePi(): AgentProcessLauncher {
   return {
     description: "a stand-in for a hung Pi",
     launch: (request) => launcher.launch({ ...request, scriptPath: unresponsivePiPath }),
+    launchCommand: (request) => launcher.launchCommand(request),
   };
 }
 

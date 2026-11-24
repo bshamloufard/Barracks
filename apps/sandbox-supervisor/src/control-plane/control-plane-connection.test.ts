@@ -53,6 +53,7 @@ async function connect(
     readUserMessagesDeliveredThrough: () => userMessagesDeliveredThrough,
     logger: createSilentLogger(),
     onAgentRequest: (request) => agentRequests.push(request),
+    onWorkspaceMessage: () => undefined,
     onFatalError: (error) => fatalErrors.push(error),
     timing: { ...fastTiming, ...options.timing },
   });

@@ -6,6 +6,8 @@ import {
   maximumAgentEventFrameLength,
   type StreamFragment,
   streamFragmentSchema,
+  type WorkspaceEvent,
+  workspaceEventSchema,
 } from "@barrack/protocol";
 import { z } from "zod";
 import type { AgentHarness, AgentHarnessObserver } from "./agent-harness.js";
@@ -15,11 +17,15 @@ import {
   type AgentRequest,
   type ConnectionTiming,
   ControlPlaneConnection,
+  type WorkspaceMessage,
 } from "./control-plane/control-plane-connection.js";
 import { createAgentHarness } from "./create-agent-harness.js";
 import { DeliveredUserMessages } from "./delivery/delivered-user-messages.js";
 import { fitAgentEventInFrame, measureAgentEventFrame } from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
+import type { CredentialAnswer } from "./workspace/git-credential-server.js";
+import { sendPublicationBundle } from "./workspace/publication-bundle.js";
+import { ThreadWorkspace } from "./workspace/thread-workspace.js";
 
 export type SupervisorSettings = {
   configuration: SupervisorConfiguration;
@@ -31,7 +37,11 @@ export type SupervisorSettings = {
   /** Something happened that the supervisor cannot recover from; it should exit. */
   onFatalError: (error: Error) => void;
   connectionTiming?: Partial<ConnectionTiming>;
+  /** How long a credential request waits for the control plane. */
+  credentialRequestTimeoutInMilliseconds?: number;
 };
+
+const defaultCredentialRequestTimeoutInMilliseconds = 30_000;
 
 /**
  * Joins the agent to the control plane: what the agent does is checked and
@@ -43,6 +53,10 @@ export class Supervisor {
   readonly #logger: Logger;
   readonly #connection: ControlPlaneConnection;
   readonly #harness: AgentHarness;
+  readonly #workspace: ThreadWorkspace;
+  readonly #credentialRequestTimeoutInMilliseconds: number;
+  /** Credential requests sent to the control plane, by request identifier. */
+  readonly #pendingCredentialRequests = new Map<string, (answer: CredentialAnswer) => void>();
   /** Read from disk when the supervisor starts. */
   #deliveredUserMessages: DeliveredUserMessages | undefined;
   /** Requests from the control plane, carried out one after another in the order they came. */
@@ -64,8 +78,22 @@ export class Supervisor {
         this.#deliveredUserMessages?.deliveredThroughSequence ?? 0,
       logger,
       onAgentRequest: (request) => this.#queueAgentRequest(request),
+      onWorkspaceMessage: (message) => this.#handleWorkspaceMessage(message),
       onFatalError: settings.onFatalError,
       ...(settings.connectionTiming === undefined ? {} : { timing: settings.connectionTiming }),
+    });
+    this.#credentialRequestTimeoutInMilliseconds =
+      settings.credentialRequestTimeoutInMilliseconds ??
+      defaultCredentialRequestTimeoutInMilliseconds;
+    this.#workspace = new ThreadWorkspace({
+      workspaceDirectory: configuration.workspaceDirectory,
+      supervisorStateDirectory: configuration.supervisorStateDirectory,
+      credentialSocketPath: configuration.gitCredentialSocketPath,
+      launcher: settings.agentProcessLauncher,
+      sourceEnvironment: settings.sourceEnvironment,
+      reportEvent: (event) => this.#sendWorkspaceEvent(event),
+      requestCredential: () => this.#requestCredential(),
+      logger,
     });
     this.#harness = createAgentHarness(configuration.agentHarness, this.#createObserver(), {
       threadId: configuration.threadId,
@@ -93,6 +121,7 @@ export class Supervisor {
   async stop(): Promise<void> {
     this.#logger.info("Stopping the supervisor");
     await this.#harness.stop();
+    await this.#workspace.stop();
     await this.#connection.close();
     this.#logger.info("Stopped the supervisor");
   }
@@ -146,6 +175,85 @@ export class Supervisor {
     this.#connection.sendAgentEvent(fittedEvent);
   }
 
+  /** Workspace events are small and fixed in shape, so they need no shrinking. */
+  #sendWorkspaceEvent(event: WorkspaceEvent): void {
+    const validation = workspaceEventSchema.safeParse(event);
+    if (!validation.success) {
+      this.#logger.error(
+        { eventType: event.type, reason: z.prettifyError(validation.error) },
+        "Not sending a workspace event that breaks the protocol",
+      );
+      return;
+    }
+    this.#connection.sendAgentEvent(event);
+  }
+
+  /**
+   * Asks the control plane for the thread's repository credentials. It
+   * never throws: a refusal says why, for Git to show.
+   */
+  #requestCredential(): Promise<CredentialAnswer> {
+    const requestId = randomUUID();
+    const { promise, resolve } = Promise.withResolvers<CredentialAnswer>();
+    const timer = setTimeout(() => {
+      this.#pendingCredentialRequests.delete(requestId);
+      resolve({ isGranted: false, reason: "the control plane did not answer in time" });
+    }, this.#credentialRequestTimeoutInMilliseconds);
+    this.#pendingCredentialRequests.set(requestId, (answer) => {
+      clearTimeout(timer);
+      this.#pendingCredentialRequests.delete(requestId);
+      resolve(answer);
+    });
+    const isSent = this.#connection.sendWorkspaceMessage({
+      type: "repository_credential_request",
+      requestId,
+    });
+    if (!isSent) {
+      this.#pendingCredentialRequests.get(requestId)?.({
+        isGranted: false,
+        reason: "the sandbox is not connected to the control plane right now",
+      });
+    }
+    return promise;
+  }
+
+  #handleWorkspaceMessage(message: WorkspaceMessage): void {
+    if (message.type === "repository_credential") {
+      const { outcome } = message;
+      this.#pendingCredentialRequests.get(message.requestId)?.(
+        outcome.isGranted
+          ? {
+              isGranted: true,
+              credential: { username: outcome.username, password: outcome.password },
+            }
+          : { isGranted: false, reason: outcome.reason },
+      );
+      return;
+    }
+    this.#logger.info(
+      { publicationId: message.publicationId },
+      "Asked for the work branch's bundle",
+    );
+    sendPublicationBundle(message, {
+      workspace: this.#workspace,
+      supervisorStateDirectory: this.#configuration.supervisorStateDirectory,
+      controlPlaneHttpUrl: this.#configuration.controlPlaneUrl.replace(/^ws/, "http"),
+      supervisorToken: this.#configuration.supervisorToken,
+      logger: this.#logger,
+    }).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : "The bundle could not be made.";
+      this.#logger.warn(
+        { publicationId: message.publicationId, reason },
+        "Could not send the bundle",
+      );
+      this.#connection.sendWorkspaceMessage({
+        type: "publication_bundle_failed",
+        publicationId: message.publicationId,
+        reason,
+      });
+    });
+  }
+
   /** A fragment that would fail the checks is dropped: the completed message that follows is the record. */
   #sendStreamFragment(fragment: StreamFragment): void {
     const validation = streamFragmentSchema.safeParse(fragment);
@@ -185,6 +293,9 @@ export class Supervisor {
       case "deliver_user_message":
         await this.#handOverUserMessage(request);
         return;
+      case "prepare_workspace":
+        await this.#workspace.prepare(request);
+        return;
       case "interrupt_agent":
         this.#logger.info("Received an interrupt");
         this.#harness.interrupt().catch((error: unknown) => {
@@ -208,6 +319,17 @@ export class Supervisor {
     if (deliveredUserMessages.includes(sequence)) {
       this.#logger.info({ sequence, messageId }, "Ignored a user message the agent already has");
       this.#connection.acknowledgeUserMessages(deliveredUserMessages.deliveredThroughSequence);
+      return;
+    }
+    if (!(await this.#workspace.isReadyForMessages())) {
+      // The clone failed, and the user was told so in its event; the
+      // message is acknowledged without reaching an agent with no repository.
+      this.#logger.warn(
+        { sequence, messageId },
+        "Withheld a user message from an agent without its repository",
+      );
+      await deliveredUserMessages.noteHandingOver(sequence);
+      this.#connection.acknowledgeUserMessages(sequence);
       return;
     }
     this.#logger.info({ sequence, messageId }, "Handing a user message to the agent");

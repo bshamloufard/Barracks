@@ -20,6 +20,8 @@ describe("readConfiguration", () => {
         threadId: "thread-1",
         supervisorToken: "secret-token-value",
         supervisorStateDirectory: "/var/lib/barrack/supervisor",
+        workspaceDirectory: undefined,
+        gitCredentialSocketPath: "/var/lib/barrack/supervisor/git-credential.sock",
         logLevel: "info",
         agentHarness: { kind: "fake" },
       },
@@ -119,8 +121,8 @@ describe("readConfiguration", () => {
     expect(result).toEqual({
       ok: false,
       problems: [
-        "BARRACK_MODEL: is required",
         "BARRACK_WORKSPACE_DIRECTORY: is required",
+        "BARRACK_MODEL: is required",
         "BARRACK_STATE_DIRECTORY: is required",
       ],
     });
