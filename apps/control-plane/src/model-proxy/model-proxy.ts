@@ -4,6 +4,7 @@ import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
 import {
   describeAnswerUsage,
+  mayReasonUnseen,
   type RequestedAnswer,
   resolveMaximumOutputTokens,
 } from "./answer-usage.js";
@@ -394,6 +395,7 @@ export class ModelProxy {
         body.model,
         body.maximumOutputTokens,
       ),
+      mayReasonUnseen: mayReasonUnseen(target.providerId, body.model, body.reasoningRequest),
     };
     response.shouldKeepAlive = true;
     const startedAt = Date.now();

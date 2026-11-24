@@ -1,7 +1,12 @@
-import { findLargestMaxOutputTokens, findModelLimits } from "@barrack/model-catalogue";
+import {
+  findCatalogueProvider,
+  findLargestMaxOutputTokens,
+  findModelLimits,
+} from "@barrack/model-catalogue";
 import { maximumModelIdLength, maximumTokensPerAnswer } from "@barrack/protocol";
 import type { AnswerUsage } from "../model-usage/model-usage-store.js";
 import type { ScannedJsonBody } from "./json-body-scanner.js";
+import type { ReasoningRequest } from "./reasoning-request.js";
 import type { RelayOutcome } from "./relay-request.js";
 import type { MeteredUsage } from "./usage-meter.js";
 
@@ -13,6 +18,8 @@ export type RequestedAnswer = {
   estimatedInputTokens: number;
   /** The most output the answer may hold (`resolveMaximumOutputTokens`). */
   maximumOutputTokens: number;
+  /** Whether the model may reason before any output is seen (`mayReasonUnseen`). */
+  mayReasonUnseen: boolean;
 };
 
 /** Roughly what a token is worth in bytes of text, for English and code alike. */
@@ -77,6 +84,30 @@ export function resolveMaximumOutputTokens(
 }
 
 /**
+ * Whether the model may generate reasoning that a streamed answer does not
+ * show: when the request asks for it; when it says neither way, for a model
+ * that reasons unless told not to, which is every model the catalogue says
+ * reasons, and any it does not list, but none of Anthropic's, which reason
+ * only when asked (https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking).
+ */
+export function mayReasonUnseen(
+  providerId: string,
+  model: string,
+  reasoningRequest: ReasoningRequest,
+): boolean {
+  if (reasoningRequest !== "unstated") {
+    return reasoningRequest === "on";
+  }
+  if (providerId === "anthropic") {
+    return false;
+  }
+  const listed = findCatalogueProvider(providerId)?.models.find(
+    (candidate) => candidate.modelId === model,
+  );
+  return listed?.reasoning ?? true;
+}
+
+/**
  * What to count for one relayed request:
  * - the provider's own figures when it gave them (`measured`);
  * - for a request the provider received whole but whose answer never began
@@ -86,9 +117,13 @@ export function resolveMaximumOutputTokens(
  *   has probably billed it in full by then;
  * - for an answer that began but ended without the provider's figures, an
  *   estimate too: the input as the provider reported it or as the body
- *   suggests, and the output from what was seen generated, or, for a
- *   non-streamed answer, which arrives whole once generated, the most the
- *   request allowed.
+ *   suggests, and the output as the larger of what was seen generated and
+ *   what could have been generated unseen. That is the most the request
+ *   allowed for a non-streamed answer, which arrives whole once generated,
+ *   and for a streamed one whose model may have reasoned without showing
+ *   it, or showed reasoning begin; otherwise it is what was seen. A user
+ *   who stops a thread mid-answer on a model that reasons is therefore
+ *   counted high.
  * Without these an agent could hang up before every answer ended and never
  * be counted. A request the provider refused, or never received whole,
  * counts nothing. Estimates err high, by design.
@@ -141,10 +176,11 @@ function estimateOutput(usage: MeteredUsage, requested: RequestedAnswer): number
     usage.outputTokens ?? 0,
     Math.ceil(usage.generatedCharacters / bytesPerToken),
   );
-  if (requested.isStreamed) {
-    return seenGenerated;
-  }
-  return Math.max(seenGenerated, requested.maximumOutputTokens);
+  const mayHaveGeneratedUnseen =
+    !requested.isStreamed || requested.mayReasonUnseen || usage.sawReasoning;
+  return mayHaveGeneratedUnseen
+    ? Math.max(seenGenerated, requested.maximumOutputTokens)
+    : seenGenerated;
 }
 
 function boundedModelId(modelId: string): string {

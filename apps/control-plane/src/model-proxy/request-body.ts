@@ -3,6 +3,12 @@ import { maximumModelIdLength } from "@barrack/protocol";
 import { estimateInputTokens } from "./answer-usage.js";
 import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
 import { type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
+import {
+  type ReasoningFields,
+  type ReasoningRequest,
+  readReasoningRequest,
+  reasoningFields,
+} from "./reasoning-request.js";
 import { readTopLevelMembers } from "./request-body-members.js";
 
 /**
@@ -41,6 +47,8 @@ export type RelayedRequestBody = {
   maximumOutputTokens: number | undefined;
   /** The input the relayed body suggests, in tokens, for an answer cut short before the provider says. */
   estimatedInputTokens: number;
+  /** Whether it asks the model to reason first, tells it not to, or says neither. */
+  reasoningRequest: ReasoningRequest;
 };
 
 export type BodyInspection =
@@ -59,6 +67,7 @@ const readKeys = new Set([
   "max_tokens",
   "max_output_tokens",
   "max_completion_tokens",
+  ...reasoningFields,
 ]);
 
 /**
@@ -112,26 +121,28 @@ export function inspectRequestBody(
       isStreamed,
       maximumOutputTokens: readMaximumOutputTokens(format, fields),
       estimatedInputTokens: estimateInputTokens(bytes.length, scanned),
+      reasoningRequest: readReasoningRequest(fields),
     },
   };
 }
 
 /** The fields the proxy reads, of a body that may hold anything else too. */
-type RequestFields = Partial<
-  Record<
-    | "model"
-    | "stream"
-    | "stream_options"
-    | "background"
-    | "background_options"
-    | "deferred"
-    | "fallbacks"
-    | "max_tokens"
-    | "max_output_tokens"
-    | "max_completion_tokens",
-    unknown
-  >
->;
+type RequestFields = ReasoningFields &
+  Partial<
+    Record<
+      | "model"
+      | "stream"
+      | "stream_options"
+      | "background"
+      | "background_options"
+      | "deferred"
+      | "fallbacks"
+      | "max_tokens"
+      | "max_output_tokens"
+      | "max_completion_tokens",
+      unknown
+    >
+  >;
 
 /**
  * A streamed Chat Completions answer reports its usage only when asked
