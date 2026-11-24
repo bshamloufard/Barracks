@@ -177,6 +177,28 @@ async function waitUntil(
   }
 }
 
+/**
+ * Clicks into the test page's text box on the viewer, and waits until the
+ * page has received the click. Typing at once is not enough: the click and
+ * the keys reach the sandbox's X server in order, but Firefox does not
+ * always hand them to the page in that order (mouse input passes through
+ * its asynchronous pan and zoom first). On a busy machine the page was seen
+ * to receive a key pressed straight after the click before the click
+ * itself, so the key reached no text box and was lost.
+ */
+async function clickIntoTextBox(
+  page: BrowserPage,
+  pages: DesktopTestPages,
+  textBox: { pageX: number; pageY: number },
+): Promise<void> {
+  const clickCountBefore = pages.textBoxClickCount();
+  await page.mouse.click(textBox.pageX, textBox.pageY);
+  await waitUntil(
+    "the page has received the click into its text box",
+    () => pages.textBoxClickCount() > clickCountBefore,
+  );
+}
+
 function computerResults(client: TestClient): ToolExecutionFinishedEvent[] {
   return client
     .threadEvents()
@@ -306,7 +328,7 @@ if (unavailableReason !== undefined) {
       if (textBox === undefined) {
         throw new Error("The viewer does not show the page's text box.");
       }
-      await laptopPage.mouse.click(textBox.pageX, textBox.pageY);
+      await clickIntoTextBox(laptopPage, pages, textBox);
       await laptopPage.keyboard.type("typed by the user", { delay: 30 });
       await waitUntil(
         "the page receives what the user typed",
@@ -345,7 +367,7 @@ if (unavailableReason !== undefined) {
       await laptopPage.getByRole("button", { name: "Take control" }).click();
       await waitForDesktopStatus(laptopPage, "You have control");
       await waitForDesktopStatus(phonePage, "Watching. Another of your windows has control");
-      await laptopPage.mouse.click(textBox.pageX, textBox.pageY);
+      await clickIntoTextBox(laptopPage, pages, textBox);
       const intruder = await RawDesktopViewer.open(
         controlPlane.webSocketBaseUrl,
         threadId,

@@ -3,7 +3,7 @@ import { prepareAgentProcessLauncher } from "./agent-process/prepare-agent-proce
 import { SameUserAgentLauncher } from "./agent-process/same-user-agent-launcher.js";
 import { type AgentHarnessConfiguration, readConfiguration } from "./configuration.js";
 import { createLogger } from "./logger.js";
-import { getPiDirectories } from "./pi/pi-agent-harness.js";
+import { getPiDirectories } from "./pi/pi-installation.js";
 import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
 import { readSupervisorSecrets } from "./supervisor-secrets.js";

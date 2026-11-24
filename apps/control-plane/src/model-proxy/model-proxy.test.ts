@@ -6,6 +6,7 @@ import {
 import {
   buildResumeThreadApiPath,
   buildStopThreadApiPath,
+  buildThreadModelApiPath,
   ownUsageCapApiPath,
 } from "@barrack/protocol";
 import { FakeSandboxProvider } from "@barrack/sandbox-providers";
@@ -351,6 +352,34 @@ describe("the model proxy", () => {
     expect(withNew.status).toBe(200);
     expect(withOld.status).toBe(403);
     await withNew.body?.cancel();
+  });
+
+  it("lets a run finish on the provider the thread switched from, and refuses that provider once the run is over", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    await controlPlane.saveModelCredential("openai", keys.adasOpenAi, adaToken);
+    const { thread, supervisor, access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    supervisor.sendAgentEvent({ type: "agent_run_started" });
+    await supervisor.waitUntilRecorded(1);
+
+    const switched = await controlPlane.sendJson(
+      "PUT",
+      buildThreadModelApiPath(thread.threadId),
+      { model: "openai/a-model" },
+      adaToken,
+    );
+    await waitForProxyAccess(supervisor, "openai");
+    const duringTheRun = await callModelProxy(controlPlane, access, anthropic, "Carry on");
+    await readWholeAnswer(duringTheRun);
+    supervisor.sendAgentEvent({ type: "agent_run_settled", wasInterrupted: false });
+    await supervisor.waitUntilRecorded(2);
+    const afterTheRun = await callModelProxy(controlPlane, access, anthropic, "One more");
+
+    expect(switched.status).toBe(200);
+    expect(duringTheRun.status).toBe(200);
+    expect(afterTheRun.status).toBe(403);
+    expect(modelServer.receivedCredentials).toEqual([keys.adasAnthropic]);
   });
 
   it("uses a replaced key from the next request, and refuses once it is removed, saying so", async () => {

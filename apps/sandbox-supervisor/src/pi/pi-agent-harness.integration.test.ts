@@ -14,7 +14,8 @@ import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
 import { pause, waitUntil } from "../test-support/wait-until.js";
-import { getPiDirectories, PiAgentHarness } from "./pi-agent-harness.js";
+import { PiAgentHarness } from "./pi-agent-harness.js";
+import { getPiDirectories } from "./pi-installation.js";
 
 /**
  * Runs the real Pi, pinned in package.json, against a mock model on

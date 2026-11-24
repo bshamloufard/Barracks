@@ -8,15 +8,18 @@ import { desktopTestPageColours } from "@barrack/mock-model-server";
  *
  * - `/start`: a large green link to `/next`.
  * - `/next`: a large blue button that turns the page yellow and reports
- *   the click, and a large magenta text box that reports what is typed in it.
+ *   the click, and a large magenta text box that reports each click into it
+ *   and what is typed in it.
  */
 export type DesktopTestPages = {
   /** As the sandbox reaches them, through the Docker host's name. */
   startUrl: string;
   /** Every request's method and path, in order. */
   requests: string[];
-  /** What the text box held when it last reported. */
+  /** What the text box held in its newest report. */
   typedText(): string;
+  /** How many clicks the text box has received. */
+  textBoxClickCount(): number;
   close(): Promise<void>;
 };
 
@@ -40,7 +43,14 @@ const nextPage = page(
     fetch("/clicked", { method: "POST" });
   });
   const typing = document.getElementById("typing");
-  typing.addEventListener("input", () => fetch("/typed", { method: "POST", body: typing.value }));
+  typing.addEventListener("click", () => fetch("/text-box-clicked", { method: "POST" }));
+  // Numbered, since one report can overtake another on its way.
+  let reportNumber = 0;
+  typing.addEventListener("input", () => {
+    reportNumber += 1;
+    const headers = { "x-report-number": String(reportNumber) };
+    fetch("/typed", { method: "POST", headers, body: typing.value });
+  });
 </script>`,
 );
 
@@ -55,12 +65,21 @@ function page(title: string, body: string): string {
 export async function startDesktopTestPages(host: string): Promise<DesktopTestPages> {
   const requests: string[] = [];
   let typedText = "";
+  let newestTypedReport = 0;
+  let textBoxClickCount = 0;
   const server: Server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url}`);
     if (request.method === "POST") {
       void readBody(request).then((body) => {
+        if (request.url === "/text-box-clicked") {
+          textBoxClickCount += 1;
+        }
         if (request.url === "/typed") {
-          typedText = body;
+          const reportNumber = Number(request.headers["x-report-number"]);
+          if (reportNumber > newestTypedReport) {
+            newestTypedReport = reportNumber;
+            typedText = body;
+          }
         }
         response.writeHead(204).end();
       });
@@ -83,6 +102,7 @@ export async function startDesktopTestPages(host: string): Promise<DesktopTestPa
     startUrl: `http://host.docker.internal:${address.port}/start`,
     requests,
     typedText: () => typedText,
+    textBoxClickCount: () => textBoxClickCount,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

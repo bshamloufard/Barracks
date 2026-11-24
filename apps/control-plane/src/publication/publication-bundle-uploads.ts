@@ -168,7 +168,10 @@ export class PublicationBundleUploads {
 
 /**
  * Passes bytes through until there are more than the limit, then fails the
- * stream, which ends the upload: nothing more is read from the sandbox.
+ * stream, which ends the upload: nothing more is read from the sandbox. The
+ * supervisor's `DiscardPastSizeLimit` keeps reading and discards instead,
+ * because what it reads is its own Git, which would wait for ever with its
+ * output unread; an untrusted sandbox's upload is not worth reading further.
  */
 class FailPastSizeLimit extends Transform {
   readonly #maximumSizeInBytes: number;

@@ -5,7 +5,11 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FakeGithub, type FakeRepository } from "@barrack/fake-github";
-import type { WorkspaceEvent, WorkspaceRepository } from "@barrack/protocol";
+import {
+  type WorkspaceEvent,
+  type WorkspaceRepository,
+  workspaceEventSchema,
+} from "@barrack/protocol";
 import { pino } from "pino";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type {
@@ -273,6 +277,35 @@ describe("the agent's workspace", () => {
     expect(events.at(-1)).toMatchObject({ type: "repository_cloned", baseBranch });
     expect(await workspace.isReadyForMessages()).toBe(true);
     await workspace.stop();
+  });
+
+  it("fails the clone, saying why, when the repository's default branch is not a name Barrack can use", async () => {
+    const unusableDefault = await github.createRepository({
+      owner: "octo",
+      name: "unusable-default",
+      isPrivate: false,
+      defaultBranch: "hidden\u0085control",
+    });
+    const sandbox = await makeSandbox("unusable-default");
+    const workspace = createWorkspace(sandbox);
+
+    await workspace.prepare({
+      type: "prepare_workspace",
+      repository: describeRepository(unusableDefault, "none"),
+      agentHasWorkedBefore: false,
+    });
+
+    // The supervisor sends only events the protocol accepts; any other would never reach the user.
+    for (const event of events) {
+      expect(workspaceEventSchema.safeParse(event).success, event.type).toBe(true);
+    }
+    expect(events.at(-1)).toEqual({
+      type: "repository_clone_failed",
+      errorMessage: expect.stringContaining(
+        'its default branch, "hidden\\u0085control", is not a branch name Barrack can use. Start a thread that names a base branch instead.',
+      ),
+    });
+    expect(await workspace.isReadyForMessages()).toBe(false);
   });
 
   it("reports a repository that does not exist", async () => {
