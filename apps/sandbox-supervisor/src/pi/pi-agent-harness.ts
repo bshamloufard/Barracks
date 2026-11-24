@@ -17,6 +17,7 @@ import {
 import { type PiExit, PiProcess } from "./pi-process.js";
 import { type PiEvent, type PiExtensionUiRequest, parsePiState } from "./pi-records.js";
 import { PiCommandRejectedError, PiOutputEndedError } from "./pi-rpc-client.js";
+import { SerialCommandQueue } from "./serial-command-queue.js";
 
 export type PiAgentHarnessSettings = {
   threadId: string;
@@ -58,16 +59,22 @@ export function getPiDirectories(stateDirectory: string) {
  * Runs the Pi coding agent as a child process in its RPC mode. Pi is started
  * eagerly, started again on the next user message if it exits unexpectedly,
  * and given the same session each time so the conversation carries on.
+ *
+ * Starting Pi, delivering a message, interrupting and stopping all take
+ * turns in one queue, so each finishes before the next begins. Otherwise a
+ * message sent just after an interrupt could reach Pi between `clear_queue`
+ * and `abort`; Pi would queue it as steering, `abort` would leave it queued,
+ * and it would be answered out of order at the end of some later run.
  */
 export class PiAgentHarness implements AgentHarness {
   readonly #observer: AgentHarnessObserver;
   readonly #settings: PiAgentHarnessSettings;
   readonly #logger: Logger;
   readonly #mintIdentifier: () => string;
-  readonly #pendingUserMessages: UserMessage[] = [];
+  readonly #commands = new SerialCommandQueue();
+  /** Messages waiting their turn in the queue; an interrupt drops them. */
+  readonly #undeliveredUserMessages = new Set<UserMessage>();
   #piProcess: PiProcess | undefined;
-  #launching: Promise<PiProcess | undefined> | undefined;
-  #delivering: Promise<void> | undefined;
   #translationState: TranslationState = initialTranslationState;
   #sessionFile: string | undefined;
   #isStopped = false;
@@ -80,7 +87,7 @@ export class PiAgentHarness implements AgentHarness {
   }
 
   async start(): Promise<void> {
-    await this.#ensureRunning();
+    await this.#commands.run(() => this.#ensureRunning());
   }
 
   deliverUserMessage(message: UserMessage): void {
@@ -88,25 +95,35 @@ export class PiAgentHarness implements AgentHarness {
       this.#logger.warn({ messageId: message.messageId }, "Ignoring a user message after stopping");
       return;
     }
-    this.#pendingUserMessages.push(message);
-    this.#delivering ??= this.#deliverPendingMessages()
+    this.#undeliveredUserMessages.add(message);
+    this.#commands
+      .run(() => this.#deliverUnlessDropped(message))
       .catch((error: unknown) => {
-        this.#logger.error({ err: error }, "Delivering user messages to Pi failed");
-      })
-      .finally(() => {
-        this.#delivering = undefined;
+        this.#logger.error(
+          { err: error, messageId: message.messageId },
+          "Delivering a user message to Pi failed",
+        );
       });
+  }
+
+  interrupt(): Promise<void> {
+    this.#dropUndeliveredUserMessages("the agent was interrupted");
+    return this.#commands.run(() => this.#interruptPi());
+  }
+
+  stop(): Promise<void> {
+    this.#isStopped = true;
+    this.#dropUndeliveredUserMessages("the supervisor is stopping");
+    return this.#commands.run(async () => this.#piProcess?.stop());
   }
 
   /**
    * Clears Pi's queue before aborting, because `abort` alone leaves queued
    * messages in place and Pi would answer them at the end of the next run.
+   * Pi answers `abort` only once the agent is idle.
    * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md
    */
-  async interrupt(): Promise<void> {
-    this.#dropPendingUserMessages("the agent was interrupted");
-    // A prompt already on its way must reach Pi's queue before it is cleared.
-    await this.#delivering;
+  async #interruptPi(): Promise<void> {
     const piProcess = this.#piProcess;
     if (piProcess === undefined || piProcess.hasExited) {
       this.#logger.info("Nothing to interrupt: Pi is not running");
@@ -121,18 +138,9 @@ export class PiAgentHarness implements AgentHarness {
     }
   }
 
-  async stop(): Promise<void> {
-    this.#isStopped = true;
-    this.#dropPendingUserMessages("the supervisor is stopping");
-    await this.#launching;
-    await this.#piProcess?.stop();
-  }
-
-  async #deliverPendingMessages(): Promise<void> {
-    let message = this.#pendingUserMessages.shift();
-    while (message !== undefined) {
+  async #deliverUnlessDropped(message: UserMessage): Promise<void> {
+    if (this.#undeliveredUserMessages.delete(message)) {
       await this.#deliver(message);
-      message = this.#pendingUserMessages.shift();
     }
   }
 
@@ -202,14 +210,12 @@ export class PiAgentHarness implements AgentHarness {
     }
   }
 
-  #ensureRunning(): Promise<PiProcess | undefined> {
+  /** Only ever runs in the command queue, so two launches cannot overlap. */
+  async #ensureRunning(): Promise<PiProcess | undefined> {
     if (this.#piProcess !== undefined && !this.#piProcess.hasExited) {
-      return Promise.resolve(this.#piProcess);
+      return this.#piProcess;
     }
-    this.#launching ??= this.#launch().finally(() => {
-      this.#launching = undefined;
-    });
-    return this.#launching;
+    return this.#launch();
   }
 
   async #launch(): Promise<PiProcess | undefined> {
@@ -346,11 +352,11 @@ export class PiAgentHarness implements AgentHarness {
     this.#observer.onAgentProcessEnded({ wasExpected: false, description: exit.description });
   }
 
-  #dropPendingUserMessages(reason: string): void {
-    const droppedMessages = this.#pendingUserMessages.splice(0);
-    for (const message of droppedMessages) {
+  #dropUndeliveredUserMessages(reason: string): void {
+    for (const message of this.#undeliveredUserMessages) {
       this.#logger.info({ messageId: message.messageId, reason }, "Dropped a user message");
     }
+    this.#undeliveredUserMessages.clear();
   }
 
   #emitEvent(event: AgentEvent): void {

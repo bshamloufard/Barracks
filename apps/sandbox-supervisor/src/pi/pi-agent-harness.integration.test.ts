@@ -196,6 +196,67 @@ describe("PiAgentHarness with the real Pi", () => {
     ]);
   });
 
+  it("answers a message sent right after an interrupt in a new run, once the interrupted one settles", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.slowReply}`,
+    });
+    await waitUntil(
+      () => observer.outputTypes.includes("fragment"),
+      "the reply starts",
+      piTimeoutInMilliseconds,
+    );
+
+    const interrupted = harness.interrupt();
+    harness.deliverUserMessage({ messageId: "user-2", text: "Say hello" });
+    await interrupted;
+    await waitUntil(hasEnded(2), "the second run settles", piTimeoutInMilliseconds);
+
+    expect(observer.eventTypes).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+    ]);
+    expect(observer.events[1]).toMatchObject({ endReason: "interrupted" });
+    expect(observer.events[2]).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+    expect(observer.events[4]).toMatchObject({
+      endReason: "completed",
+      content: [{ type: "text", text: "Hello there." }],
+    });
+  });
+
+  it("drops messages still waiting to reach Pi when interrupted", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const harness = await startHarness();
+    harness.deliverUserMessage({
+      messageId: "user-1",
+      text: `Please ${mockModelTriggers.slowReply}`,
+    });
+    await waitUntil(
+      () => observer.outputTypes.includes("fragment"),
+      "the reply starts",
+      piTimeoutInMilliseconds,
+    );
+
+    harness.deliverUserMessage({ messageId: "user-2", text: "Say hello" });
+    await harness.interrupt();
+    await pause(300);
+
+    expect(observer.eventTypes).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+    ]);
+    expect(modelServer.receivedConversations).toHaveLength(1);
+  });
+
   it("records no error when a failed model request succeeds on Pi's retry", {
     timeout: piTimeoutInMilliseconds,
   }, async () => {
