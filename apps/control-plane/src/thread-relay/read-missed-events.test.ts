@@ -3,14 +3,23 @@ import { pino } from "pino";
 import { describe, expect, it } from "vitest";
 import { toolExecutionStarted } from "../test-support/example-agent-events.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
-import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type { ThreadEventPage } from "../thread-event-log/thread-event-log.js";
 import { findMissedRange, readMissedEvents, replayPageSize } from "./read-missed-events.js";
 
 const threadId = "thread-1";
 const silentLogger = pino({ level: "silent" });
 
-async function logHoldingEvents(count: number): Promise<InMemoryThreadEventLog> {
-  const log = new InMemoryThreadEventLog();
+/** A log that leaves sequence 3 out of every page it reads, as a broken log might. */
+class LogMissingSequenceThree extends InMemoryThreadEventLog {
+  override async readEvents(id: string, page: ThreadEventPage): Promise<RecordedThreadEvent[]> {
+    return (await super.readEvents(id, page)).filter((event) => event.sequence !== 3);
+  }
+}
+
+async function logHoldingEvents(
+  count: number,
+  log = new InMemoryThreadEventLog(),
+): Promise<InMemoryThreadEventLog> {
   for (let index = 1; index <= count; index += 1) {
     await log.append(threadId, toolExecutionStarted(`call-${index}`));
   }
@@ -67,13 +76,7 @@ describe("reading the events a client missed", () => {
   });
 
   it("fails rather than skip a sequence the log did not return", async () => {
-    const holdingLog = await logHoldingEvents(5);
-    const logMissingSequenceThree: ThreadEventLog = {
-      append: (id, event) => holdingLog.append(id, event),
-      readNewestSequence: (id) => holdingLog.readNewestSequence(id),
-      readEvents: async (id, page) =>
-        (await holdingLog.readEvents(id, page)).filter((event) => event.sequence !== 3),
-    };
+    const logMissingSequenceThree = await logHoldingEvents(5, new LogMissingSequenceThree());
 
     await expect(
       collect(

@@ -1,4 +1,4 @@
-import { buildSupervisorEndpointPath, closeCodes } from "@barrack/protocol";
+import { buildSupervisorEndpointPath, closeCodes, protocolVersion } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TestControlPlane, type TestThread } from "../test-support/test-control-plane.js";
 import { attemptUpgrade } from "../test-support/test-socket.js";
@@ -66,7 +66,10 @@ describe("the supervisor endpoint", () => {
   });
 
   it("refuses a supervisor that speaks another protocol version with HTTP 400", async () => {
-    const url = supervisorUrl().replace("protocolVersion=1", "protocolVersion=999");
+    const url = supervisorUrl().replace(
+      `protocolVersion=${protocolVersion}`,
+      "protocolVersion=999",
+    );
 
     const outcome = await attemptUpgrade(url, bearer(thread.supervisorToken));
 
@@ -100,7 +103,9 @@ describe("the supervisor endpoint", () => {
         (message) => message.type === "interrupt_agent",
       ),
     ).toEqual({ type: "interrupt_agent" });
-    expect(olderSupervisor.inbox.messages).toEqual([]);
+    expect(olderSupervisor.inbox.messages.map((message) => message.type)).toEqual([
+      "supervisor_welcome",
+    ]);
   });
 
   it("closes a supervisor that sends an invalid message", async () => {

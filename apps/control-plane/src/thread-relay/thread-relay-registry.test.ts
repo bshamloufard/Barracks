@@ -50,6 +50,7 @@ describe("the thread relay registry", () => {
     const registry = createRegistry();
     const supervisor = new FakeSupervisorConnection();
     const relay = registry.attachSupervisor(threadId, supervisor);
+    relay.receiveFromSupervisor(supervisor, supervisor.hello());
     await allPendingWorkSettled();
 
     relay.detachSupervisor(supervisor);
@@ -60,10 +61,9 @@ describe("the thread relay registry", () => {
 
     expect(clientRelay).toBe(relay);
     expect(laterRelay).toBe(relay);
-    expect(client.inbox.messages.at(-1)).toEqual({
-      type: "supervisor_connection_status",
-      isSupervisorConnected: false,
-    });
+    expect(
+      client.inbox.messages.findLast((message) => message.type === "supervisor_connection_status"),
+    ).toEqual({ type: "supervisor_connection_status", isSupervisorConnected: false });
   });
 
   it("does not let a dropped relay remove the relay that replaced it", async () => {
@@ -87,7 +87,8 @@ describe("the thread relay registry", () => {
     const registry = createRegistry();
     const supervisor = new FakeSupervisorConnection();
     const relay = registry.attachSupervisor(threadId, supervisor);
-    relay.receiveFromSupervisor(supervisor, { type: "agent_event", event: agentRunStarted });
+    relay.receiveFromSupervisor(supervisor, supervisor.hello());
+    relay.receiveFromSupervisor(supervisor, supervisor.numbered(agentRunStarted));
     relay.detachSupervisor(supervisor);
     await allPendingWorkSettled();
 
