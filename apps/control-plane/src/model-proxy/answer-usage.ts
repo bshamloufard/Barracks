@@ -2,6 +2,15 @@ import { maximumModelIdLength, maximumTokensPerAnswer } from "@barrack/protocol"
 import type { AnswerUsage } from "../model-usage/model-usage-store.js";
 import type { RelayOutcome } from "./relay-request.js";
 
+/** What the request asked for, as the proxy read it. */
+export type RequestedAnswer = {
+  model: string;
+  /** The size of the request's body as the agent sent it. */
+  requestBytes: number;
+  maximumOutputTokens: number | undefined;
+  isStreamed: boolean;
+};
+
 /** Roughly what a token is worth in characters, for English and code alike. */
 const charactersPerToken = 4;
 
@@ -16,6 +25,7 @@ const charactersPerToken = 4;
  */
 export function describeAnswerUsage(
   outcome: RelayOutcome,
+  requested: RequestedAnswer,
 ): Omit<AnswerUsage, "ownerUserId" | "threadId" | "providerId" | "at"> | undefined {
   const { usage, upstreamStatus } = outcome;
   if (usage === undefined || upstreamStatus === undefined || upstreamStatus >= 300) {
@@ -36,7 +46,9 @@ export function describeAnswerUsage(
   return {
     modelId,
     source: "estimated",
-    inputTokens: bounded(usage.inputTokens ?? Math.ceil(outcome.requestBytes / charactersPerToken)),
+    inputTokens: bounded(
+      usage.inputTokens ?? Math.ceil(requested.requestBytes / charactersPerToken),
+    ),
     outputTokens: bounded(Math.max(usage.outputTokens ?? 0, estimatedOutput)),
     cacheReadTokens: bounded(usage.cacheReadTokens),
     cacheWriteTokens: bounded(usage.cacheWriteTokens),

@@ -14,6 +14,7 @@ import {
   waitForProxyAccess,
 } from "../test-support/model-proxy-peers.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
+import type { ModelProxyLimits } from "./model-proxy-limits.js";
 import { redactedSecretMarker } from "./secret-redaction.js";
 
 /**
@@ -48,8 +49,14 @@ async function startUpstream(handler: UpstreamHandler): Promise<string> {
 }
 
 /** A control plane relaying to the stand-in, and a thread on Anthropic with its token. */
-async function startThreadRelayingTo(upstreamOrigin: string): Promise<ProxyAccess> {
-  const started = await TestControlPlane.start({ modelProxyUpstreamOrigin: upstreamOrigin });
+async function startThreadRelayingTo(
+  upstreamOrigin: string,
+  modelProxyLimits: Partial<ModelProxyLimits> = {},
+): Promise<ProxyAccess> {
+  const started = await TestControlPlane.start({
+    modelProxyUpstreamOrigin: upstreamOrigin,
+    modelProxyLimits,
+  });
   controlPlane = started;
   await started.saveModelCredential("anthropic", ownersKey);
   const thread = await started.createThread(developmentAccessToken, "anthropic/a-model");
@@ -98,11 +105,13 @@ describe("the model proxy as a streaming path", () => {
     expect(answer.length).toBe(chunk.length * chunkCount);
   });
 
-  it("streams the agent's upload to the provider as it arrives", async () => {
+  it("reads the agent's upload whole, then sends the provider exactly the JSON it checked", async () => {
+    let receivedBody = "";
     let firstBytesArrivedAt: number | undefined;
     const upstreamOrigin = await startUpstream((request, response) => {
-      request.once("data", () => {
-        firstBytesArrivedAt = Date.now();
+      request.on("data", (chunk: Buffer) => {
+        firstBytesArrivedAt ??= Date.now();
+        receivedBody += chunk.toString("utf8");
       });
       request.on("end", () => {
         response.writeHead(200, { "content-type": "application/json" });
@@ -114,10 +123,10 @@ describe("the model proxy as a streaming path", () => {
     const encoder = new TextEncoder();
     const slowUpload = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode('{"model":"m","messages":['));
-        await pause(800);
+        controller.enqueue(encoder.encode('{"model":"another-model","model":"a-model",'));
+        await pause(500);
         lastBytesSentAt = Date.now();
-        controller.enqueue(encoder.encode("]}"));
+        controller.enqueue(encoder.encode('"max_tokens":5,  "messages":[]}'));
         controller.close();
       },
     });
@@ -132,8 +141,50 @@ describe("the model proxy as a streaming path", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(firstBytesArrivedAt).toBeDefined();
-    expect(firstBytesArrivedAt ?? Number.POSITIVE_INFINITY).toBeLessThan(lastBytesSentAt);
+    expect(firstBytesArrivedAt ?? 0).toBeGreaterThanOrEqual(lastBytesSentAt);
+    expect(receivedBody).toBe('{"model":"a-model","max_tokens":5,"messages":[]}');
+  });
+
+  it.each([
+    ["is not JSON", "not json"],
+    ["is not an object", "[1]"],
+    ["names no model", '{"max_tokens":5,"messages":[]}'],
+  ])("refuses a body that %s, sending the provider nothing", async (_description, body) => {
+    let upstreamRequests = 0;
+    const upstreamOrigin = await startUpstream((_request, response) => {
+      upstreamRequests += 1;
+      response.end();
+    });
+    const access = await startThreadRelayingTo(upstreamOrigin);
+
+    const response = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "",
+      { body },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { type: "invalid_request_error" } });
+    expect(upstreamRequests).toBe(0);
+  });
+
+  it("refuses as busy a body that would take the instance past the request bytes it holds at once", async () => {
+    const upstreamOrigin = await startUpstream((_request, response) => response.end());
+    const access = await startThreadRelayingTo(upstreamOrigin, {
+      maximumRequestBytesHeldInTotal: 1_000,
+    });
+
+    const response = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "x".repeat(2_000),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
   });
 
   it("never returns the owner's key, in a header or the body, whatever the provider echoes", async () => {

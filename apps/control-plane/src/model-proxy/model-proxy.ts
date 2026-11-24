@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { type ModelProxyRequestTarget, parseModelProxyRequestTarget } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
-import { describeAnswerUsage } from "./answer-usage.js";
+import { describeAnswerUsage, type RequestedAnswer } from "./answer-usage.js";
 import type { ModelProxyAuthorization } from "./model-proxy-authorization.js";
 import {
   AuthenticationAllowance,
@@ -11,9 +11,32 @@ import {
 } from "./model-proxy-limits.js";
 import { ModelProxyTokens } from "./model-proxy-tokens.js";
 import { readPresentedToken } from "./proxy-headers.js";
-import { proxyRefusals, sendRefusal } from "./proxy-refusals.js";
+import { type ProxyRefusal, proxyRefusals, sendRefusal } from "./proxy-refusals.js";
 import { type RelayOutcome, relayRequest } from "./relay-request.js";
 import { findRelayedRoute, type RelayedRoute } from "./relayed-routes.js";
+import {
+  type BodyReading,
+  inspectRequestBody,
+  type RelayedRequestBody,
+  RequestBodyBudget,
+} from "./request-body.js";
+
+/** One request on its way through the proxy, and what it is relayed with. */
+type RelayedExchange = {
+  request: IncomingMessage;
+  response: ServerResponse;
+  target: ModelProxyRequestTarget;
+  route: RelayedRoute;
+  cancellation: AbortSignal;
+  logger: Logger;
+};
+
+/** Why a body was not read: too large is the agent's to fix; the rest are worth retrying. */
+const bodyReadingRefusals: Record<Exclude<BodyReading["kind"], "read">, ProxyRefusal> = {
+  too_large: proxyRefusals.requestTooLarge,
+  proxy_busy: proxyRefusals.proxyBusy,
+  agent_went_away: proxyRefusals.upstreamUnreachable,
+};
 
 export type ModelProxyOptions = {
   authorization: ModelProxyAuthorization;
@@ -45,6 +68,7 @@ export class ModelProxy {
   readonly #options: ModelProxyOptions;
   readonly #authentications: AuthenticationAllowance;
   readonly #admissions: ModelProxyAdmissions;
+  readonly #requestBodies: RequestBodyBudget;
   /** Each thread's requests in flight here, to end at once when the thread stops. */
   readonly #inFlight = new Map<string, Set<AbortController>>();
 
@@ -52,6 +76,7 @@ export class ModelProxy {
     this.#options = options;
     this.#authentications = new AuthenticationAllowance(options.limits);
     this.#admissions = new ModelProxyAdmissions(options.limits);
+    this.#requestBodies = new RequestBodyBudget(options.limits.maximumRequestBytesHeldInTotal);
   }
 
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -172,6 +197,56 @@ export class ModelProxy {
     cancellation: AbortSignal,
     logger: Logger,
   ): Promise<void> {
+    const reading = await this.#readBody(request, response);
+    if (reading.kind !== "read") {
+      sendRefusal(response, route.format, bodyReadingRefusals[reading.kind]);
+      return;
+    }
+    try {
+      const inspection = inspectRequestBody(route.format, reading.bytes);
+      if (inspection.kind === "refused") {
+        logger.warn({ reason: inspection.reason }, "Refused a model request's body");
+        sendRefusal(response, route.format, inspection.refusal);
+        return;
+      }
+      const requested: RequestedAnswer = {
+        model: inspection.body.model,
+        requestBytes: reading.bytes.length,
+        maximumOutputTokens: inspection.body.maximumOutputTokens,
+        isStreamed: inspection.body.isStreamed,
+      };
+      await this.#decideAndRelay(
+        { request, response, target, route, cancellation, logger },
+        inspection.body,
+        requested,
+      );
+    } finally {
+      reading.release();
+    }
+  }
+
+  /**
+   * Reads the whole body, so it can be checked before anything reaches the
+   * provider; an agent that goes silent while sending it is cut off after
+   * the idle limit.
+   */
+  async #readBody(request: IncomingMessage, response: ServerResponse): Promise<BodyReading> {
+    const cutOff = () => request.destroy();
+    response.setTimeout(this.#options.limits.idleTimeoutInMilliseconds);
+    response.once("timeout", cutOff);
+    try {
+      return await this.#requestBodies.read(request, this.#options.limits.maximumRequestBytes);
+    } finally {
+      response.removeListener("timeout", cutOff);
+    }
+  }
+
+  async #decideAndRelay(
+    relayed: RelayedExchange,
+    body: RelayedRequestBody,
+    requested: RequestedAnswer,
+  ): Promise<void> {
+    const { request, response, target, route, cancellation, logger } = relayed;
     let authorization: Awaited<ReturnType<ModelProxyAuthorization["decide"]>>;
     try {
       authorization = await this.#options.authorization.decide(target);
@@ -191,17 +266,18 @@ export class ModelProxy {
       request,
       response,
       route,
+      body: body.bytes,
       ownerKey: authorization.ownerKey,
       limits: this.#options.limits,
       cancellation,
     });
-    await this.#recordUsage(target, authorization.ownerUserId, outcome);
+    await this.#recordUsage(target, authorization.ownerUserId, outcome, requested);
     logger.info(
       {
         ownerUserId: authorization.ownerUserId,
         upstreamStatus: outcome.upstreamStatus ?? null,
         interruption: outcome.interruption ?? null,
-        requestBytes: outcome.requestBytes,
+        requestBytes: requested.requestBytes,
         responseBytes: outcome.responseBytes,
         durationInMilliseconds: Date.now() - startedAt,
       },
@@ -213,8 +289,9 @@ export class ModelProxy {
     target: ModelProxyRequestTarget,
     ownerUserId: string,
     outcome: RelayOutcome,
+    requested: RequestedAnswer,
   ): Promise<void> {
-    const answerUsage = describeAnswerUsage(outcome);
+    const answerUsage = describeAnswerUsage(outcome, requested);
     if (answerUsage === undefined) {
       return;
     }

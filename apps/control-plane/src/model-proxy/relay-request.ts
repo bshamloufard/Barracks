@@ -17,7 +17,8 @@ export type RelayOutcome = {
   upstreamStatus: number | undefined;
   /** Why the request ended early, if it did. */
   interruption: RelayInterruption | undefined;
-  requestBytes: number;
+  /** Whether the whole request reached the provider, which may then bill it whatever follows. */
+  wasRequestSent: boolean;
   responseBytes: number;
   /** What the answer said it used; undefined if there was no answer to read. */
   usage: MeteredUsage | undefined;
@@ -25,7 +26,6 @@ export type RelayOutcome = {
 
 export type RelayInterruption =
   | "agent_went_away"
-  | "request_too_large"
   | "response_too_large"
   | "timed_out"
   | "upstream_failed"
@@ -35,6 +35,8 @@ export type RelayRequestOptions = {
   request: IncomingMessage;
   response: ServerResponse;
   route: RelayedRoute;
+  /** The request's body, read whole and checked (see `request-body.ts`). */
+  body: Buffer;
   ownerKey: string;
   limits: ModelProxyLimits;
   /** Aborting it ends the request at once, wherever it is (the thread stopped, say). */
@@ -42,12 +44,12 @@ export type RelayRequestOptions = {
 };
 
 /**
- * Forwards one admitted request to the provider and streams the answer back.
+ * Forwards one admitted request, its body already read, to the provider and
+ * streams the answer back.
  *
- * Both directions go through Node's stream pipelines, so each side is read
- * only as fast as the other takes it: a slow provider slows the agent's
- * upload, and an agent that stops reading stops the provider being read
- * until the idle limit ends the request. Nothing is buffered beyond the
+ * The answer goes through Node's stream pipeline, so the provider is read
+ * only as fast as the agent takes it: an agent that stops reading stops the
+ * provider being read until the idle limit ends the request. Nothing is buffered beyond the
  * streams' own high-water marks. Node's client never follows a redirect,
  * and a redirect answer is refused rather than passed on, so a request
  * never leaves the provider's own address. Whichever side gives up first,
@@ -64,7 +66,6 @@ class RequestRelay {
   readonly #options: RelayRequestOptions;
   readonly #resolve: (outcome: RelayOutcome) => void;
   readonly #abortController = new AbortController();
-  readonly #requestBody: ByteCounter;
   #responseBody: ByteCounter | undefined;
   #upstreamStatus: number | undefined;
   #meter: UsageMeter | undefined;
@@ -77,15 +78,17 @@ class RequestRelay {
   constructor(options: RelayRequestOptions, resolve: (outcome: RelayOutcome) => void) {
     this.#options = options;
     this.#resolve = resolve;
-    this.#requestBody = new ByteCounter(options.limits.maximumRequestBytes);
   }
 
   start(): void {
-    const { request, response, route, ownerKey, limits, cancellation } = this.#options;
+    const { request, response, route, body, ownerKey, limits, cancellation } = this.#options;
     const client = route.upstreamUrl.protocol === "https:" ? https : http;
     const upstreamRequest = client.request(route.upstreamUrl, {
       method: "POST",
-      headers: buildUpstreamHeaders(route.format, request.headers, ownerKey),
+      headers: {
+        ...buildUpstreamHeaders(route.format, request.headers, ownerKey),
+        "content-length": body.length,
+      },
       signal: this.#abortController.signal,
     });
     upstreamRequest.setTimeout(limits.idleTimeoutInMilliseconds, () =>
@@ -111,16 +114,9 @@ class RequestRelay {
     });
     upstreamRequest.on("response", (upstreamResponse) => this.#relayAnswer(upstreamResponse));
     upstreamRequest.on("error", () => this.#interrupt("upstream_failed"));
-    pipeline(request, this.#requestBody, upstreamRequest).then(
-      () => {
-        this.#isRequestSent = true;
-      },
-      (error: unknown) => {
-        this.#interrupt(
-          error instanceof ByteLimitExceededError ? "request_too_large" : "agent_went_away",
-        );
-      },
-    );
+    upstreamRequest.end(body, () => {
+      this.#isRequestSent = true;
+    });
   }
 
   #relayAnswer(upstreamResponse: IncomingMessage): void {
@@ -184,7 +180,7 @@ class RequestRelay {
     this.#resolve({
       upstreamStatus: this.#upstreamStatus,
       interruption: this.#interruption,
-      requestBytes: this.#requestBody.count,
+      wasRequestSent: this.#isRequestSent,
       responseBytes: this.#responseBody?.count ?? 0,
       usage: this.#meter?.finish(),
     });
@@ -218,8 +214,6 @@ function createDecompression(
 
 function refusalFor(interruption: RelayInterruption): ProxyRefusal {
   switch (interruption) {
-    case "request_too_large":
-      return proxyRefusals.requestTooLarge;
     case "timed_out":
       return proxyRefusals.upstreamTooSlow;
     case "cancelled":

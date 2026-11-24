@@ -26,6 +26,11 @@ function meterOf(
   return meter.finish();
 }
 
+/** A streamed request of `requestBytes`, as the proxy read it. */
+function streamedRequest(requestBytes: number) {
+  return { model: "requested-model", requestBytes, maximumOutputTokens: 4_096, isStreamed: true };
+}
+
 const anthropicStart = {
   type: "message_start",
   message: {
@@ -151,13 +156,16 @@ describe("reading usage from an answer", () => {
         },
       ])}data: {"type":"content_block_del`,
     );
-    const counted = describeAnswerUsage({
-      upstreamStatus: 200,
-      interruption: "agent_went_away",
-      requestBytes: 4_000,
-      responseBytes: 2_000,
-      usage,
-    });
+    const counted = describeAnswerUsage(
+      {
+        upstreamStatus: 200,
+        interruption: "agent_went_away",
+        wasRequestSent: true,
+        responseBytes: 2_000,
+        usage,
+      },
+      streamedRequest(4_000),
+    );
 
     expect(usage.isFinal).toBe(false);
     expect(counted).toEqual({
@@ -177,13 +185,16 @@ describe("reading usage from an answer", () => {
     );
 
     expect(
-      describeAnswerUsage({
-        upstreamStatus: 200,
-        interruption: "timed_out",
-        requestBytes: 4_000,
-        responseBytes: 500,
-        usage,
-      }),
+      describeAnswerUsage(
+        {
+          upstreamStatus: 200,
+          interruption: "timed_out",
+          wasRequestSent: true,
+          responseBytes: 500,
+          usage,
+        },
+        streamedRequest(4_000),
+      ),
     ).toMatchObject({
       source: "estimated",
       inputTokens: 1_000,
@@ -201,13 +212,16 @@ describe("reading usage from an answer", () => {
     );
 
     expect(
-      describeAnswerUsage({
-        upstreamStatus: 401,
-        interruption: undefined,
-        requestBytes: 100,
-        responseBytes: 30,
-        usage,
-      }),
+      describeAnswerUsage(
+        {
+          upstreamStatus: 401,
+          interruption: undefined,
+          wasRequestSent: true,
+          responseBytes: 30,
+          usage,
+        },
+        streamedRequest(100),
+      ),
     ).toBeUndefined();
   });
 

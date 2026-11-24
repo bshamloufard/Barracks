@@ -24,6 +24,8 @@ export type ModelProxyLimits = {
   requestsPerSecondPerThread: number;
   /** The largest request body relayed: Anthropic's own limit for a Messages request is 32 MB. */
   maximumRequestBytes: number;
+  /** Request bodies held by this instance at once, each read whole before it is relayed. */
+  maximumRequestBytesHeldInTotal: number;
   /** The largest answer relayed, decompressed. */
   maximumResponseBytes: number;
   /** How long the provider may take to start answering. */
@@ -43,6 +45,7 @@ export const defaultModelProxyLimits: ModelProxyLimits = {
   requestBurstPerThread: 20,
   requestsPerSecondPerThread: 2,
   maximumRequestBytes: 32 * 1024 * 1024,
+  maximumRequestBytesHeldInTotal: 512 * 1024 * 1024,
   maximumResponseBytes: 64 * 1024 * 1024,
   firstByteTimeoutInMilliseconds: 5 * 60_000,
   idleTimeoutInMilliseconds: 5 * 60_000,

@@ -48,6 +48,18 @@ export const proxyRefusals = {
     message:
       "This Barrack installation does not admit the thread's owner (or cannot confirm it still does until they sign in again), so their key is not used.",
   },
+  invalidRequestBody: {
+    status: 400,
+    errorType: "invalid_request_error",
+    message:
+      "Barrack's model proxy relays only a request whose body is a JSON object naming a model.",
+  },
+  detachedGenerationRefused: {
+    status: 400,
+    errorType: "invalid_request_error",
+    message:
+      "Barrack's model proxy does not relay background or deferred requests: what the provider generated after answering could not be counted towards the usage cap.",
+  },
   requestTooLarge: {
     status: 413,
     errorType: "request_too_large",
