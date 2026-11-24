@@ -70,11 +70,12 @@ export async function connectGithub(
 export async function createThreadOnRepository(
   controlPlane: ApiAccess,
   repository: ThreadRepositoryRequest,
+  model: string | undefined = undefined,
 ): Promise<ThreadSummary> {
   const response = await fetch(`${controlPlane.httpBaseUrl}${threadsApiPath}`, {
     method: "POST",
     headers: headers(controlPlane),
-    body: JSON.stringify({ repository }),
+    body: JSON.stringify(model === undefined ? { repository } : { repository, model }),
   });
   if (response.status !== 201) {
     throw new Error(`Creating a thread answered ${response.status}: ${await response.text()}`);

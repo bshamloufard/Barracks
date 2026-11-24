@@ -22,7 +22,7 @@ import {
   publishThread,
 } from "./support/repositories-api.js";
 import { TestClient } from "./support/test-client.js";
-import { stopThread, waitUntilSandboxIs } from "./support/threads-api.js";
+import { saveModelCredential, stopThread, waitUntilSandboxIs } from "./support/threads-api.js";
 
 /**
  * Milestone 3's Git test: a thread on a private repository served by the
@@ -46,12 +46,15 @@ const dockerTestTimeoutInMilliseconds = 300_000;
 const unavailableReason = describeWhyDockerTestCannotRun();
 const piAgentDirectory = "/var/lib/barrack/state/pi/agent";
 
+/** The test user's own key for the mock provider, as added in Settings. */
+const mockModelKey = "mock-key-of-the-test-user";
+
 function describeMockModel(modelServer: MockModelServer): string {
   const model = { id: "mock-1", name: "Mock 1", contextWindow: 100_000, maxTokens: 4_096 };
   const baseUrl = `http://host.docker.internal:${modelServer.port}/v1`;
   return JSON.stringify({
     providers: {
-      mock: { baseUrl, api: "openai-completions", apiKey: "not-a-real-key", models: [model] },
+      mock: { baseUrl, api: "openai-completions", models: [model] },
     },
   });
 }
@@ -109,9 +112,10 @@ if (unavailableReason !== undefined) {
       controlPlane = await startControlPlane({
         host: hostAddress,
         sandboxes: { kind: "docker" },
-        agent: { harness: "pi", model: "mock/mock-1" },
+        agent: { harness: "pi" },
         environment: github.controlPlaneEnvironment(),
       });
+      await saveModelCredential(controlPlane, "mock", mockModelKey);
     }, dockerTestTimeoutInMilliseconds);
 
     // Runs whether or not the test passed, so no container is left behind.
@@ -131,10 +135,14 @@ if (unavailableReason !== undefined) {
 
     it("clones, commits as the user, cannot push, is published with one pull request, and carries on after a stop", async () => {
       await connectGithub(controlPlane, github, "octocat");
-      const thread = await createThreadOnRepository(controlPlane, {
-        url: repository.cloneUrl,
-        access: "github_app",
-      });
+      const thread = await createThreadOnRepository(
+        controlPlane,
+        {
+          url: repository.cloneUrl,
+          access: "github_app",
+        },
+        "mock/mock-1",
+      );
       threadId = thread.threadId;
       const workBranch = workBranchFor(thread.threadId);
       await waitUntilSandboxIs(controlPlane, thread.threadId, "running");

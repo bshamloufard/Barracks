@@ -22,6 +22,7 @@ import {
   deleteThread,
   requestCreation,
   resumeThread,
+  saveModelCredential,
   stopThread,
   waitUntilSandboxIs,
   waitUntilThreadIsGone,
@@ -76,13 +77,16 @@ function supervisorIs(isConnected: boolean) {
   };
 }
 
+/** The test user's own key for the mock provider, as added in Settings. */
+const mockModelKey = "mock-key-of-the-test-user";
+
 /** Points Pi's `mock` provider at the mock model, which the sandbox reaches on the host. */
 function describeMockModel(modelServer: MockModelServer): string {
   const model = { id: "mock-1", name: "Mock 1", contextWindow: 100_000, maxTokens: 4_096 };
   const baseUrl = `http://host.docker.internal:${modelServer.port}/v1`;
   return JSON.stringify({
     providers: {
-      mock: { baseUrl, api: "openai-completions", apiKey: "not-a-real-key", models: [model] },
+      mock: { baseUrl, api: "openai-completions", models: [model] },
     },
   });
 }
@@ -130,9 +134,10 @@ if (unavailableReason !== undefined) {
       controlPlane = await startControlPlane({
         host: hostAddress,
         sandboxes: { kind: "docker" },
-        agent: { harness: "pi", model: "mock/mock-1" },
+        agent: { harness: "pi" },
         environment: { BARRACK_RUNNING_SANDBOXES_PER_USER: "3" },
       });
+      await saveModelCredential(controlPlane, "mock", mockModelKey);
     }, dockerTestTimeoutInMilliseconds);
 
     // Runs whether or not the tests passed, so no container is left behind.
@@ -151,7 +156,7 @@ if (unavailableReason !== undefined) {
 
     /** A thread whose sandbox runs Pi, configured for the mock model, with a client watching. */
     async function startThreadOnPi() {
-      const { threadId } = await createThread(controlPlane);
+      const { threadId } = await createThread(controlPlane, "mock/mock-1");
       threadIds.push(threadId);
       await waitUntilSandboxIs(controlPlane, threadId, "running");
       const sandboxId = findSandboxIdOf(threadId);

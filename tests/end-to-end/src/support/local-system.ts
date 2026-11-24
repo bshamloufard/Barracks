@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readdir, readlink, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -39,11 +40,18 @@ export type SandboxChoice =
 
 /**
  * What every sandbox's supervisor runs: the scripted fake agent, or the real
- * Pi with `model`, which must be one the sandbox's Pi is configured to
- * reach (such as the mock model). Pi is kept offline (`PI_OFFLINE`), since
- * a test has no business reaching the internet.
+ * Pi, on each thread's own model, which must be one the sandbox's Pi is
+ * configured to reach (such as the mock model). Pi is kept offline
+ * (`PI_OFFLINE`), since a test has no business reaching the internet.
  */
-export type AgentChoice = { harness: "fake" } | { harness: "pi"; model: string };
+export type AgentChoice = { harness: "fake" } | { harness: "pi" };
+
+/**
+ * What users' model keys are sealed under in every control plane of this
+ * test run, so one started again in place of another, on the same
+ * database, can still open them.
+ */
+const modelCredentialKey = randomBytes(32).toString("base64");
 
 export type ControlPlaneOptions = {
   sandboxes: SandboxChoice;
@@ -67,6 +75,12 @@ export type RunningControlPlane = {
   httpBaseUrl: string;
   /** A signed-in test user's access token, which every request and client connection carries. */
   accessToken: string;
+  /**
+   * Signs in a second test user and returns their access token; for tests
+   * of what one user can do to another's. Development mode has one user
+   * only, so this is refused on loopback.
+   */
+  signInSecondUser(): Promise<string>;
   process: ServiceProcess;
   /** Where its local-process sandboxes are; undefined for Docker. */
   sandboxesDirectory: string | undefined;
@@ -103,6 +117,7 @@ export async function startControlPlane(
     BARRACK_CONTROL_PLANE_HOST: host,
     BARRACK_CONTROL_PLANE_PORT: String(port),
     BARRACK_ALLOWED_CLIENT_ORIGINS: testClientOrigin,
+    BARRACK_MODEL_CREDENTIAL_KEY: modelCredentialKey,
     ...authentication.variables,
     ...agentVariables(options.agent ?? { harness: "fake" }),
     ...sandboxes.variables,
@@ -119,6 +134,7 @@ export async function startControlPlane(
     webSocketBaseUrl: `ws://${host}:${port}`,
     httpBaseUrl,
     accessToken: await authentication.signIn(httpBaseUrl),
+    signInSecondUser: authentication.signInSecondUser,
     process: controlPlane,
     sandboxesDirectory: sandboxes.sandboxesDirectory,
     async stop() {
@@ -136,16 +152,23 @@ type TestAuthentication = {
   variables: NodeJS.ProcessEnv;
   /** Signs the test user in, once the control plane at `httpBaseUrl` is listening. */
   signIn: (httpBaseUrl: string) => Promise<string>;
+  signInSecondUser: () => Promise<string>;
   stop: () => Promise<void>;
 };
 
 const testUser = { userId: "5e1f0c3a-6b7d-4c2e-9f8a-0d1b2c3d4e5f", email: "tester@example.com" };
+const secondTestUser = {
+  userId: "7a2b9c4d-1e3f-4a5b-8c6d-9e0f1a2b3c4d",
+  email: "second-tester@example.com",
+};
 
 async function authenticationFor(host: string): Promise<TestAuthentication> {
   if (host === "127.0.0.1") {
     return {
       variables: { BARRACK_AUTHENTICATION: "development-single-user" },
       signIn: readDevelopmentAccessToken,
+      signInSecondUser: () =>
+        Promise.reject(new Error("Development mode has one user; listen beyond loopback for two.")),
       stop: async () => undefined,
     };
   }
@@ -155,9 +178,10 @@ async function authenticationFor(host: string): Promise<TestAuthentication> {
       BARRACK_AUTHENTICATION: "supabase",
       BARRACK_SUPABASE_URL: issuer.supabaseUrl,
       BARRACK_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_end_to_end_test",
-      BARRACK_ALLOWED_USER_EMAILS: testUser.email,
+      BARRACK_ALLOWED_USER_EMAILS: `${testUser.email},${secondTestUser.email}`,
     },
     signIn: () => issuer.mintAccessToken(testUser),
+    signInSecondUser: () => issuer.mintAccessToken(secondTestUser),
     stop: () => issuer.close(),
   };
 }
@@ -186,7 +210,7 @@ function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {
   if (agent.harness === "fake") {
     return { BARRACK_AGENT_HARNESS: "fake" };
   }
-  return { BARRACK_AGENT_HARNESS: "pi", BARRACK_MODEL: agent.model, PI_OFFLINE: "1" };
+  return { BARRACK_AGENT_HARNESS: "pi", PI_OFFLINE: "1" };
 }
 
 type SandboxSetUp = {

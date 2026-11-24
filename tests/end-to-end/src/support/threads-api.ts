@@ -1,9 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   apiErrorResponseSchema,
+  buildModelCredentialApiPath,
   buildResumeThreadApiPath,
   buildStopThreadApiPath,
   buildThreadApiPath,
+  buildThreadModelApiPath,
   type ThreadSandbox,
   type ThreadSummary,
   threadResponseSchema,
@@ -27,9 +29,15 @@ export type ApiAnswer =
 const sandboxWaitTimeoutInMilliseconds = 90_000;
 const pollIntervalInMilliseconds = 100;
 
-/** Creates a thread as a browser on an allowed origin would, failing unless it is created. */
-export async function createThread(controlPlane: ApiAccess): Promise<ThreadSummary> {
-  const answer = await requestCreation(controlPlane);
+/**
+ * Creates a thread as a browser on an allowed origin would, failing unless
+ * it is created; on `model` if given, which needs the user's key for it.
+ */
+export async function createThread(
+  controlPlane: ApiAccess,
+  model: string | undefined = undefined,
+): Promise<ThreadSummary> {
+  const answer = await requestCreation(controlPlane, model);
   if (!("thread" in answer)) {
     throw new Error(`Creating a thread answered ${answer.status}: ${answer.message}`);
   }
@@ -37,8 +45,43 @@ export async function createThread(controlPlane: ApiAccess): Promise<ThreadSumma
 }
 
 /** Asks for a new thread and returns whatever the control plane answered. */
-export function requestCreation(controlPlane: ApiAccess): Promise<ApiAnswer> {
-  return send(controlPlane, "POST", threadsApiPath);
+export function requestCreation(
+  controlPlane: ApiAccess,
+  model: string | undefined = undefined,
+): Promise<ApiAnswer> {
+  return send(controlPlane, "POST", threadsApiPath, model === undefined ? {} : { model });
+}
+
+/** Switches the thread's model, failing unless it was switched. */
+export async function changeThreadModel(
+  controlPlane: ApiAccess,
+  threadId: string,
+  model: string,
+): Promise<ThreadSummary> {
+  const answer = await send(controlPlane, "PUT", buildThreadModelApiPath(threadId), { model });
+  if (!("thread" in answer)) {
+    throw new Error(`Switching the model answered ${answer.status}: ${answer.message}`);
+  }
+  return answer.thread;
+}
+
+/** Adds or replaces the user's key for the provider, as Settings does, failing unless saved. */
+export async function saveModelCredential(
+  controlPlane: ApiAccess,
+  providerId: string,
+  secret: string,
+): Promise<void> {
+  const response = await fetch(
+    `${controlPlane.httpBaseUrl}${buildModelCredentialApiPath(providerId)}`,
+    {
+      method: "PUT",
+      headers: jsonHeaders(controlPlane),
+      body: JSON.stringify({ secret, settings: {} }),
+    },
+  );
+  if (response.status !== 200) {
+    throw new Error(`Saving a key answered ${response.status}: ${await response.text()}`);
+  }
 }
 
 export function stopThread(controlPlane: ApiAccess, threadId: string): Promise<ApiAnswer> {
@@ -115,25 +158,30 @@ export async function waitUntilSandboxIs(
   );
 }
 
+function jsonHeaders(controlPlane: ApiAccess): Record<string, string> {
+  return {
+    Origin: testClientOrigin,
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${controlPlane.accessToken}`,
+  };
+}
+
 async function send(
   controlPlane: ApiAccess,
-  method: "POST" | "DELETE",
+  method: "POST" | "PUT" | "DELETE",
   path: string,
+  body: object = {},
 ): Promise<ApiAnswer> {
   const response = await fetch(`${controlPlane.httpBaseUrl}${path}`, {
     method,
-    headers: {
-      Origin: testClientOrigin,
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${controlPlane.accessToken}`,
-    },
-    body: method === "POST" ? "{}" : null,
+    headers: jsonHeaders(controlPlane),
+    body: method === "DELETE" ? null : JSON.stringify(body),
   });
-  const body: unknown = await response.json();
-  const thread = threadResponseSchema.safeParse(body);
+  const answer: unknown = await response.json();
+  const thread = threadResponseSchema.safeParse(answer);
   if (thread.success) {
     return { status: response.status, thread: thread.data.thread };
   }
-  const { error } = apiErrorResponseSchema.parse(body);
+  const { error } = apiErrorResponseSchema.parse(answer);
   return { status: response.status, errorCode: error.code, message: error.message };
 }
