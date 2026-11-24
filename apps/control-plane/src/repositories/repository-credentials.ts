@@ -33,6 +33,15 @@ export const defaultCredentialRequestLimits: CredentialRequestLimits = {
  */
 const minimumRemainingLifetimeInMilliseconds = 15 * 60_000;
 
+/**
+ * After GitHub refuses to mint a token for a thread (the App was removed
+ * from the repository, say), it is not asked again for that thread for
+ * this long: a sandbox asking at its rate limit would otherwise spend the
+ * installation's GitHub API allowance, shared by all its users, on
+ * refusals.
+ */
+const refusedMintBackoffInMilliseconds = 60_000;
+
 /** GitHub's documented user name for an installation token over HTTPS. */
 const installationTokenUserName = "x-access-token";
 
@@ -47,7 +56,8 @@ export type RepositoryCredentialsOptions = {
 };
 
 type CachedToken = { token: string; expiresAt: Date };
-type Allowance = { remaining: number; refilledAt: number };
+/** `isRefusing` notes that the last request was refused, so a flood is logged once, not per request. */
+type Allowance = { remaining: number; refilledAt: number; isRefusing: boolean };
 
 /**
  * Answers a sandbox's requests for credentials to read its thread's
@@ -70,6 +80,8 @@ export class RepositoryCredentials {
   readonly #cachedTokens = new Map<string, CachedToken>();
   readonly #mintsUnderWay = new Map<string, Promise<CachedToken>>();
   readonly #allowances = new Map<string, Allowance>();
+  /** When GitHub may next be asked to mint for a thread whose last mint it refused. */
+  readonly #mintRefusedUntil = new Map<string, number>();
 
   constructor(options: RepositoryCredentialsOptions) {
     this.#options = options;
@@ -78,7 +90,6 @@ export class RepositoryCredentials {
 
   async issue(threadId: string): Promise<CredentialOutcome> {
     if (!this.#takeAllowance(threadId)) {
-      this.#options.logger.warn({ threadId }, "Refused a credential request over the rate limit");
       return refuse(
         "This sandbox asked for repository credentials too often; wait a moment and try again.",
       );
@@ -115,6 +126,7 @@ export class RepositoryCredentials {
   forgetThread(threadId: string): void {
     this.#cachedTokens.delete(threadId);
     this.#allowances.delete(threadId);
+    this.#mintRefusedUntil.delete(threadId);
   }
 
   async #checkOwnerLink(threadId: string, repositoryId: number): Promise<string | undefined> {
@@ -148,6 +160,9 @@ export class RepositoryCredentials {
     if (underWay !== undefined) {
       return underWay;
     }
+    if (now < (this.#mintRefusedUntil.get(threadId) ?? 0)) {
+      throw new Error("GitHub refused the last mint for this thread a moment ago.");
+    }
     const mint = this.#mint(threadId, installationId, repositoryId).finally(() =>
       this.#mintsUnderWay.delete(threadId),
     );
@@ -164,9 +179,19 @@ export class RepositoryCredentials {
     if (api === undefined) {
       throw new Error("There is no GitHub App to mint a token with.");
     }
-    const token = await api.createInstallationToken(installationId, repositoryId, {
-      contents: "read",
-    });
+    let token: CachedToken;
+    try {
+      token = await api.createInstallationToken(installationId, repositoryId, {
+        contents: "read",
+      });
+    } catch (error) {
+      this.#mintRefusedUntil.set(
+        threadId,
+        this.#options.clock().getTime() + refusedMintBackoffInMilliseconds,
+      );
+      throw error;
+    }
+    this.#mintRefusedUntil.delete(threadId);
     this.#cachedTokens.set(threadId, token);
     this.#options.logger.info(
       { threadId, expiresAt: token.expiresAt.toISOString() },
@@ -178,16 +203,26 @@ export class RepositoryCredentials {
   #takeAllowance(threadId: string): boolean {
     const now = this.#options.clock().getTime();
     const { burst, refillIntervalInMilliseconds } = this.#limits;
-    const allowance = this.#allowances.get(threadId) ?? { remaining: burst, refilledAt: now };
+    const allowance = this.#allowances.get(threadId) ?? {
+      remaining: burst,
+      refilledAt: now,
+      isRefusing: false,
+    };
     const refills = Math.floor((now - allowance.refilledAt) / refillIntervalInMilliseconds);
     const remaining = Math.min(burst, allowance.remaining + refills);
     const refilledAt =
       remaining === burst ? now : allowance.refilledAt + refills * refillIntervalInMilliseconds;
     if (remaining === 0) {
-      this.#allowances.set(threadId, { remaining, refilledAt });
+      if (!allowance.isRefusing) {
+        this.#options.logger.warn(
+          { threadId },
+          "Refusing credential requests over the rate limit until it refills",
+        );
+      }
+      this.#allowances.set(threadId, { remaining, refilledAt, isRefusing: true });
       return false;
     }
-    this.#allowances.set(threadId, { remaining: remaining - 1, refilledAt });
+    this.#allowances.set(threadId, { remaining: remaining - 1, refilledAt, isRefusing: false });
     return true;
   }
 }

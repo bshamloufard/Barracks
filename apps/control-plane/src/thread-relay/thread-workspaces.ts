@@ -27,6 +27,9 @@ export interface ThreadWorkspaces {
     message: SupervisorWorkspaceMessage,
     reply: (message: ControlPlaneWorkspaceMessage) => boolean,
   ): void;
+
+  /** Lets go of anything kept for a thread that has been deleted. */
+  forgetThread(threadId: string): void;
 }
 
 /** For relays built without repositories: every workspace stays empty. */
@@ -45,6 +48,7 @@ export const emptyThreadWorkspaces: ThreadWorkspaces = {
       });
     }
   },
+  forgetThread: () => {},
 };
 
 const workspaceMessageTypes: ReadonlySet<string> = new Set<SupervisorWorkspaceMessage["type"]>([

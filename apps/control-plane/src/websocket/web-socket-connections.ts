@@ -17,6 +17,17 @@ import type { ClientConnection, SupervisorConnection } from "../thread-relay/con
  */
 const slowClientSendBufferLimitInBytes = 4 * maximumFrameLength;
 
+/**
+ * How many bytes may wait in a supervisor's send buffer. The control plane
+ * answers what a supervisor sends (acknowledgements, credential answers),
+ * so a sandbox that sends without reading would otherwise make it hold
+ * every answer in memory; past this the supervisor is disconnected, and
+ * reconnects if it is honest. What an honest one is sent at once is far
+ * less: its welcome and workspace, and the user messages waiting for it,
+ * of which this holds over a hundred and fifty of the longest allowed.
+ */
+const supervisorSendBufferLimitInBytes = 4 * maximumFrameLength;
+
 export class WebSocketClientConnection implements ClientConnection {
   readonly #socket: WebSocket;
   readonly #logger: Logger;
@@ -116,6 +127,17 @@ export class WebSocketSupervisorConnection implements SupervisorConnection {
       this.#logger.warn(
         { messageType: message.type },
         "Could not send a message to the supervisor because its connection is closing",
+      );
+      return false;
+    }
+    if (this.#socket.bufferedAmount > supervisorSendBufferLimitInBytes) {
+      this.#logger.warn(
+        { bufferedBytes: this.#socket.bufferedAmount, messageType: message.type },
+        "Disconnecting a supervisor that is not reading what it is sent",
+      );
+      this.#socket.close(
+        standardCloseCodes.tryAgainLater,
+        "Not reading what the control plane sends; reconnect",
       );
       return false;
     }

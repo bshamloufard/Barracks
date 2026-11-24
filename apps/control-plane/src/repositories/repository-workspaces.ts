@@ -74,6 +74,10 @@ export class RepositoryWorkspaces implements ThreadWorkspaces {
     }
   }
 
+  forgetThread(threadId: string): void {
+    this.#options.credentials.forgetThread(threadId);
+  }
+
   async #answerCredentialRequest(
     threadId: string,
     requestId: string,

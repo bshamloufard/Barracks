@@ -587,6 +587,16 @@ export class ThreadRelay {
     }
   }
 
+  /**
+   * Not queued, so not counted in the backlog; what a supervisor can make
+   * the control plane hold through these is bounded elsewhere. A bundle
+   * failure settles at most one waiting publication, at once. Credential
+   * requests past a per-thread rate are refused without awaiting anything
+   * (`RepositoryCredentials`), GitHub is asked at most once at a time per
+   * thread and not again for a minute after refusing, and the answers
+   * wait in the supervisor's send buffer, which is bounded too
+   * (`WebSocketSupervisorConnection`).
+   */
   #forwardWorkspaceRequest(
     connection: SupervisorConnection,
     message: SupervisorWorkspaceMessage,

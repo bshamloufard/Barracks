@@ -82,6 +82,7 @@ export class ThreadRelayRegistry implements ThreadRuns {
 
   /** With no relay for the thread, nothing of it can be on its way into the log here. */
   forgetDeletedThread(threadId: string): Promise<void> {
+    this.#options.workspaces?.forgetThread(threadId);
     const relay = this.#relaysByThreadId.get(threadId);
     if (relay === undefined) {
       return this.#options.threadEventLog.deleteHistory(threadId);

@@ -193,4 +193,29 @@ describe("repository credentials for a sandbox", () => {
       github.addToInstallation(installationId, firstRepository);
     }
   });
+
+  it("do not ask GitHub again for a minute once it refused, however often the sandbox asks", async () => {
+    const service = credentials();
+    github.removeFromInstallation(installationId, firstRepository);
+    const mintsAskedFor = () =>
+      github.requests.filter((request) => request.path.endsWith("/access_tokens")).length;
+    try {
+      await service.issue("thread-a");
+      const afterFirstRefusal = mintsAskedFor();
+      const meanwhile = await Promise.all(
+        Array.from({ length: 10 }, () => service.issue("thread-a")),
+      );
+      const whileBackingOff = mintsAskedFor();
+      github.addToInstallation(installationId, firstRepository);
+      now = new Date(now.getTime() + 60_000);
+      const afterBackoff = await service.issue("thread-a");
+
+      expect(meanwhile.every((answer) => !answer.isGranted)).toBe(true);
+      expect(afterFirstRefusal).toBeGreaterThan(0);
+      expect(whileBackingOff).toBe(afterFirstRefusal);
+      expect(afterBackoff.isGranted).toBe(true);
+    } finally {
+      github.addToInstallation(installationId, firstRepository);
+    }
+  });
 });

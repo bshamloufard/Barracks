@@ -8,7 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { standardCloseCodes } from "../standard-close-codes.js";
 import { MessageInbox } from "../test-support/message-inbox.js";
-import { WebSocketClientConnection } from "./web-socket-connections.js";
+import {
+  WebSocketClientConnection,
+  WebSocketSupervisorConnection,
+} from "./web-socket-connections.js";
 
 /**
  * The relay never hands a client connection a message too large for a
@@ -31,7 +34,7 @@ afterEach(async () => {
   await new Promise((resolve) => server?.close(resolve));
 });
 
-async function connectPair(): Promise<ConnectedPair> {
+async function connectSockets(): Promise<{ serverSocket: WebSocket; clientSocket: WebSocket }> {
   const listeningServer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   server = listeningServer;
   await new Promise((resolve) => listeningServer.once("listening", resolve));
@@ -44,6 +47,11 @@ async function connectPair(): Promise<ConnectedPair> {
     listeningServer.once("connection", resolve),
   );
   const clientSocket = new WebSocket(`ws://127.0.0.1:${port}`, { maxPayload: 0 });
+  return { serverSocket: await serverSocket, clientSocket };
+}
+
+async function connectPair(): Promise<ConnectedPair> {
+  const { serverSocket, clientSocket } = await connectSockets();
   const inbox = new MessageInbox<ControlPlaneToClientMessage>();
   clientSocket.on("message", (frame) => {
     const parsed = parseControlPlaneToClientMessage(String(frame));
@@ -53,7 +61,7 @@ async function connectPair(): Promise<ConnectedPair> {
     inbox.add(parsed.value);
   });
   const closed = new Promise<number>((resolve) => clientSocket.once("close", resolve));
-  const connection = new WebSocketClientConnection(await serverSocket, pino({ level: "silent" }));
+  const connection = new WebSocketClientConnection(serverSocket, pino({ level: "silent" }));
   return { connection, inbox, closed };
 }
 
@@ -108,5 +116,29 @@ describe("a client's WebSocket connection", () => {
     await connection.sendAndWaitUntilWritten(recordedEvent);
 
     expect(await closed).toBe(standardCloseCodes.internalError);
+  });
+});
+
+describe("a supervisor's WebSocket connection", () => {
+  it("disconnects a supervisor that stops reading, rather than hold what it is sent", async () => {
+    const { serverSocket, clientSocket } = await connectSockets();
+    await new Promise((resolve) => clientSocket.once("open", resolve));
+    clientSocket.pause();
+    const connection = new WebSocketSupervisorConnection(serverSocket, pino({ level: "silent" }));
+    const longMessage = {
+      type: "deliver_user_message",
+      sequence: 1,
+      messageId: "message-0000000001",
+      text: "x".repeat(100_000),
+    } as const;
+
+    let sentCount = 0;
+    while (connection.send(longMessage) && sentCount < 10_000) {
+      sentCount += 1;
+    }
+
+    expect(sentCount).toBeLessThan(10_000);
+    expect(serverSocket.bufferedAmount).toBeLessThan(5 * maximumFrameLength);
+    expect(serverSocket.readyState).toBe(WebSocket.CLOSING);
   });
 });
