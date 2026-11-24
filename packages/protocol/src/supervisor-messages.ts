@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { agentEventSchema } from "./agent-events.js";
+import {
+  controlPlaneDesktopMessageSchema,
+  supervisorDesktopMessageSchema,
+} from "./desktop-messages.js";
 import { identifierSchema } from "./identifier.js";
 import { interruptAgentMessageSchema } from "./interrupt-agent-message.js";
 import { configureModelAccessSchema } from "./model-access.js";
@@ -67,6 +71,12 @@ import {
  * `configure_model_access` (in `model-access.ts`) tells the supervisor the
  * thread's model and its owner's credential for it, before any user
  * message, and again whenever either changes.
+ *
+ * The desktop's messages (`desktop-messages.ts`) travel here too, unnumbered
+ * like the workspace's: after the welcome the control plane says who holds
+ * the desktop's input (`desktop_control`) and the supervisor whether it has
+ * a desktop (`desktop_availability`); and each viewer's stream is asked for
+ * here (`open_desktop_stream`) but carried on a WebSocket of its own.
  */
 
 /**
@@ -114,6 +124,7 @@ export const supervisorToControlPlaneMessageSchema = z.discriminatedUnion("type"
   streamFragmentMessageSchema,
   userMessagesDeliveredSchema,
   ...supervisorWorkspaceMessageSchema.options,
+  ...supervisorDesktopMessageSchema.options,
 ]);
 
 /**
@@ -154,6 +165,7 @@ export const controlPlaneToSupervisorMessageSchema = z.discriminatedUnion("type"
   interruptAgentMessageSchema,
   configureModelAccessSchema,
   ...controlPlaneWorkspaceMessageSchema.options,
+  ...controlPlaneDesktopMessageSchema.options,
 ]);
 
 export type SupervisorEvent = z.infer<typeof supervisorEventSchema>;

@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     threadEventLog: storage.threadEventLog,
     threadStore: storage.threadStore,
     relays: threadServices.relays,
+    desktops: threadServices.desktops,
     sandboxLifecycle: threadServices.sandboxLifecycle,
     repositoryServices,
     modelAccess: {

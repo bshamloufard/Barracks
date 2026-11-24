@@ -61,6 +61,18 @@ export const closeCodes = {
    * keep displacing each other.
    */
   supersededByNewerSupervisor: 4409,
+  /**
+   * A desktop viewer cannot be shown the desktop now; the
+   * `desktop_unavailable` message sent just before says why, and whether
+   * trying again can help.
+   */
+  desktopUnavailable: 4410,
+  /**
+   * The sandbox's end of a desktop stream ended: the sandbox is stopping, or
+   * its desktop is restarting. The viewer may connect again, which tells it
+   * whether the desktop is back.
+   */
+  desktopStreamEnded: 4411,
 } as const;
 
 export type CloseCode = (typeof closeCodes)[keyof typeof closeCodes];

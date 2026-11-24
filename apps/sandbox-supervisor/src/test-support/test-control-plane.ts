@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import {
   type ControlPlaneToSupervisorMessage,
   parseSupervisorToControlPlaneMessage,
+  type SupervisorDesktopMessage,
   type SupervisorHello,
 } from "@barrack/protocol";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -29,8 +30,10 @@ export type TestControlPlane = {
   connections: WebSocket[];
   /** The hello each connection opened with, in order. */
   hellos: SupervisorHello[];
-  /** Every frame after the hellos, in order. */
+  /** Every frame after the hellos, in order, but the desktop's reports. */
   receivedFrames: string[];
+  /** The desktop's reports (`desktop-messages.ts`), kept apart since they come on every welcome. */
+  desktopMessages: SupervisorDesktopMessage[];
   /** While set, upgrade requests are answered with this HTTP status instead. */
   refuseUpgradesWith(statusCode: number | undefined, body?: string): void;
   /** What the next welcomes say was recorded of the supervisor's events. */
@@ -48,6 +51,7 @@ export async function startTestControlPlane(
   const connections: WebSocket[] = [];
   const hellos: SupervisorHello[] = [];
   const receivedFrames: string[] = [];
+  const desktopMessages: SupervisorDesktopMessage[] = [];
   let refusal: { statusCode: number; body: string } | undefined;
   let lastRecordedEventNumberForWelcome = 0;
   const webSocketServer = new WebSocketServer({ noServer: true, autoPong: answersPings });
@@ -68,6 +72,10 @@ export async function startTestControlPlane(
           lastRecordedEventNumber: lastRecordedEventNumberForWelcome,
         }),
       );
+      return;
+    }
+    if (message.type === "desktop_availability" || message.type === "desktop_stream_failed") {
+      desktopMessages.push(message);
       return;
     }
     receivedFrames.push(frame);
@@ -106,6 +114,7 @@ export async function startTestControlPlane(
     connections,
     hellos,
     receivedFrames,
+    desktopMessages,
     refuseUpgradesWith: (statusCode, body = "") => {
       refusal = statusCode === undefined ? undefined : { statusCode, body };
     },

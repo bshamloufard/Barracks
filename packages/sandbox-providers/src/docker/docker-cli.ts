@@ -62,6 +62,11 @@ export function createDockerCommandRunner(dockerExecutable: string): DockerComma
           reject(toDockerCommandFailure(error, standardError.trim()));
         },
       );
+      // A command that reads no input may have exited before it is written,
+      // and the write then fails with EPIPE; the command's own outcome,
+      // reported above, is what counts, so that failure is ignored rather
+      // than left to crash the process.
+      child.stdin?.on("error", () => {});
       child.stdin?.end(options.standardInput ?? "");
     });
 }

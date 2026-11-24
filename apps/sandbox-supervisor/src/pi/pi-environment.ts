@@ -1,3 +1,5 @@
+import type { DesktopConfiguration } from "../configuration.js";
+
 /**
  * Pi's tools run with whatever environment Pi has, and the model can read
  * all of it, so Pi gets an environment built from an allowlist rather than a
@@ -45,6 +47,7 @@ const piSettingPrefix = "PI_";
 export function buildPiEnvironment(
   sourceEnvironment: NodeJS.ProcessEnv,
   agentDirectory: string,
+  desktop?: DesktopConfiguration,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(sourceEnvironment)) {
@@ -54,12 +57,32 @@ export function buildPiEnvironment(
   }
   return {
     ...environment,
+    ...describeDesktop(desktop),
     // Pi keeps credentials, settings and custom models here, under the
     // supervisor's state directory rather than the user's home.
     PI_CODING_AGENT_DIR: agentDirectory,
     // No update checks or install telemetry from inside a sandbox.
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
+  };
+}
+
+/**
+ * The sandbox's desktop, set from the supervisor's configuration rather than
+ * copied from its environment, so that Pi gets a display only where the
+ * sandbox has one of its own: on a developer's machine, `DISPLAY` would be
+ * the developer's screen. The computer tool reads the rest
+ * (`computer-use/computer-use-settings.ts`), and every program the agent
+ * starts, such as its browser, finds the display.
+ */
+function describeDesktop(desktop: DesktopConfiguration | undefined): NodeJS.ProcessEnv {
+  if (desktop === undefined) {
+    return {};
+  }
+  return {
+    DISPLAY: desktop.display,
+    BARRACK_DESKTOP_VNC_PORT: String(desktop.vncPort),
+    BARRACK_DESKTOP_CONTROL_FILE: desktop.controlFile,
   };
 }
 

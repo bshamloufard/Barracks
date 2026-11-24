@@ -29,5 +29,9 @@
  *   `prepare_workspace` and whenever the thread's model or its owner's key
  *   changes, in place of a model and keys in the sandbox's environment; and
  *   `errorKind` on errored assistant messages.
+ * - 5: the live desktop: the desktop viewer and desktop stream endpoints,
+ *   `open_desktop_stream`, `desktop_control`, `desktop_availability` and
+ *   `desktop_stream_failed` between control plane and supervisor, and
+ *   `desktop_control_status` to clients (see `desktop-messages.ts`).
  */
-export const protocolVersion = 4;
+export const protocolVersion = 5;

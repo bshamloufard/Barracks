@@ -94,8 +94,9 @@ async function recordedEventTypes(threadEventLog: ControllableThreadEventLog): P
   return recordedEvents.map((recordedEvent) => recordedEvent.event.type);
 }
 
-function isDeliveryStatus(message: ControlPlaneToClientMessage): boolean {
-  return message.type === "user_message_delivery_status";
+/** The last of the statuses a client is sent once its replay is over. */
+function isDesktopControlStatus(message: ControlPlaneToClientMessage): boolean {
+  return message.type === "desktop_control_status";
 }
 
 function isSupervisorStatus(isSupervisorConnected: boolean) {
@@ -108,12 +109,13 @@ describe("a client connecting to a thread", () => {
   it("is announced an empty replay and then told the supervisor and delivery statuses when the thread has no history", async () => {
     const client = await controlPlane.connectClient(threadId);
 
-    await client.inbox.waitUntil("three messages arrived", (messages) => messages.length === 3);
+    await client.inbox.waitUntil("four messages arrived", (messages) => messages.length === 4);
 
     expect(client.inbox.messages).toEqual([
       { type: "replay_announcement", firstSequence: 1, lastSequence: 0 },
       { type: "supervisor_connection_status", isSupervisorConnected: false },
       { type: "user_message_delivery_status", deliveredThroughSequence: 0 },
+      { type: "desktop_control_status", controllingViewerId: null },
     ]);
   });
 
@@ -123,7 +125,7 @@ describe("a client connecting to a thread", () => {
     await recordAgentEvents(supervisor, observer, 1, 5);
 
     const client = await controlPlane.connectClient(threadId, 2);
-    await client.inbox.waitFor("the delivery status", isDeliveryStatus);
+    await client.inbox.waitFor("the end of the replay's statuses", isDesktopControlStatus);
 
     expect(client.inbox.messages[0]).toEqual({
       type: "replay_announcement",
@@ -137,6 +139,7 @@ describe("a client connecting to a thread", () => {
       "thread_event",
       "supervisor_connection_status",
       "user_message_delivery_status",
+      "desktop_control_status",
     ]);
     expect(sequencesOf(client)).toEqual([3, 4, 5]);
   });
@@ -189,7 +192,7 @@ describe("a client connecting to a thread", () => {
     readGates.beforeReading.release();
     readGates.afterReading.release();
     const client = await connecting;
-    await client.inbox.waitFor("a fragment", (message) => message.type === "stream_fragment");
+    await client.inbox.waitFor("the end of the replay's statuses", isDesktopControlStatus);
 
     expect(client.inbox.messages.slice(3)).toEqual([
       { type: "supervisor_connection_status", isSupervisorConnected: false },
@@ -204,6 +207,7 @@ describe("a client connecting to a thread", () => {
           appendedText: "Hello",
         },
       },
+      { type: "desktop_control_status", controllingViewerId: null },
     ]);
   });
 
@@ -273,6 +277,7 @@ describe("a client connecting to a thread", () => {
       "replay_announcement",
       "supervisor_connection_status",
       "user_message_delivery_status",
+      "desktop_control_status",
       "supervisor_connection_status",
       "supervisor_connection_status",
     ]);
@@ -541,10 +546,7 @@ describe("stream fragments from the supervisor", () => {
     );
 
     const joiner = await controlPlane.connectClient(threadId);
-    await joiner.inbox.waitUntil(
-      "two fragments arrived",
-      (messages) => messages.filter((message) => message.type === "stream_fragment").length === 2,
-    );
+    await joiner.inbox.waitFor("the end of the replay's statuses", isDesktopControlStatus);
 
     expect(messageTypesOf(joiner)).toEqual([
       "replay_announcement",
@@ -553,8 +555,9 @@ describe("stream fragments from the supervisor", () => {
       "user_message_delivery_status",
       "stream_fragment",
       "stream_fragment",
+      "desktop_control_status",
     ]);
-    expect(joiner.inbox.messages.slice(4)).toEqual([
+    expect(joiner.inbox.messages.slice(4, 6)).toEqual([
       {
         type: "stream_fragment",
         fragment: {
@@ -597,7 +600,7 @@ describe("stream fragments from the supervisor", () => {
       await observer.waitForSequence(2);
 
       const joiner = await controlPlane.connectClient(threadId);
-      await joiner.inbox.waitFor("the delivery status", isDeliveryStatus);
+      await joiner.inbox.waitFor("the end of the replay's statuses", isDesktopControlStatus);
 
       expect(messageTypesOf(joiner)).toEqual([
         "replay_announcement",
@@ -605,6 +608,7 @@ describe("stream fragments from the supervisor", () => {
         "thread_event",
         "supervisor_connection_status",
         "user_message_delivery_status",
+        "desktop_control_status",
       ]);
     },
   );
@@ -622,13 +626,14 @@ describe("stream fragments from the supervisor", () => {
     await observer.waitForSequence(1);
 
     const joiner = await controlPlane.connectClient(threadId);
-    await joiner.inbox.waitFor("the delivery status", isDeliveryStatus);
+    await joiner.inbox.waitFor("the end of the replay's statuses", isDesktopControlStatus);
 
     expect(messageTypesOf(joiner)).toEqual([
       "replay_announcement",
       "thread_event",
       "supervisor_connection_status",
       "user_message_delivery_status",
+      "desktop_control_status",
     ]);
   });
 });

@@ -5,12 +5,11 @@ import {
   parseClientToControlPlaneMessage,
 } from "@barrack/protocol";
 import type { WebSocket } from "ws";
-import type { AuthenticatedUser, AuthenticationRefusal } from "../authentication/authenticator.js";
+import type { AuthenticatedUser } from "../authentication/authenticator.js";
 import type { Logger } from "../logger.js";
-import { standardCloseCodes } from "../standard-close-codes.js";
-import { SerialTaskQueue } from "../thread-relay/serial-task-queue.js";
 import type { ThreadRelay } from "../thread-relay/thread-relay.js";
-import { ThreadAccess } from "../threads/thread-access.js";
+import type { ThreadAccess } from "../threads/thread-access.js";
+import { ConnectionAuthentication } from "./connection-authentication.js";
 import { keepConnectionAlive } from "./heartbeat.js";
 import { receiveMessages } from "./receive-messages.js";
 import {
@@ -34,23 +33,19 @@ type Phase =
   | { name: "authenticating" }
   | {
       name: "attached";
-      userId: string;
       relay: ThreadRelay;
       connection: WebSocketClientConnection;
     };
-
-/** setTimeout fires at once for longer delays, so a far-off expiry is reached in steps. */
-const longestTimerDelayInMilliseconds = 2 ** 31 - 1;
 
 /**
  * One client's connection to one thread, from the upgrade until it closes.
  * It is the only way a client reaches a thread's relay: it attaches only
  * after the client's access token is verified and `ThreadAccess.check`
- * confirms the user owns the thread, so the replay announcement is the first
- * thing an authenticated client receives and an unauthenticated one receives
- * nothing at all. While attached, every newer token must be for the same
- * user, and when the newest expires without a replacement the connection is
- * closed with `accessTokenExpired`.
+ * confirms the user owns the thread (`ConnectionAuthentication`), so the
+ * replay announcement is the first thing an authenticated client receives
+ * and an unauthenticated one receives nothing at all. While attached, every
+ * newer token must be for the same user, and when the newest expires
+ * without a replacement the connection is closed with `accessTokenExpired`.
  */
 export class ClientSession {
   readonly #webSocket: WebSocket;
@@ -58,11 +53,9 @@ export class ClientSession {
   readonly #dependencies: UpgradeDependencies;
   readonly #logger: Logger;
   readonly #byteLimit: UnauthenticatedByteLimit;
-  /** Later tokens are checked one at a time, so the newest one sent is the one that counts. */
-  readonly #reauthentications = new SerialTaskQueue();
+  readonly #authentication: ConnectionAuthentication;
   #phase: Phase = { name: "awaiting_authentication" };
   #authenticationDeadline: ReturnType<typeof setTimeout> | undefined;
-  #expiryTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     webSocket: WebSocket,
@@ -76,6 +69,12 @@ export class ClientSession {
     this.#dependencies = dependencies;
     this.#logger = logger;
     this.#byteLimit = byteLimit;
+    this.#authentication = new ConnectionAuthentication({
+      authenticator: dependencies.authenticator,
+      threadStore: dependencies.threadStore,
+      logger,
+      close: (closeCode, reason) => this.#close(closeCode, reason),
+    });
   }
 
   start(): void {
@@ -120,41 +119,20 @@ export class ClientSession {
       return;
     }
     if (message.type === "authenticate") {
-      void this.#reauthentications.enqueue(() =>
-        this.#reauthenticate(phase.userId, message.accessToken),
-      );
+      this.#authentication.acceptRefreshedToken(message.accessToken);
       return;
     }
     phase.relay.receiveFromClient(phase.connection, message);
   }
 
   async #authenticateAndAttach(accessToken: string): Promise<void> {
-    const outcome = await this.#dependencies.authenticator.authenticate(accessToken);
-    if (!outcome.ok) {
-      this.#refuse(outcome.refusal);
-      return;
+    const owner = await this.#authentication.authenticateOwner(
+      accessToken,
+      this.#endpoint.threadId,
+    );
+    if (owner !== undefined) {
+      this.#attach(owner.access, owner.user);
     }
-    let access: ThreadAccess | undefined;
-    try {
-      access = await ThreadAccess.check(
-        this.#dependencies.threadStore,
-        outcome.user.userId,
-        this.#endpoint.threadId,
-      );
-    } catch (error) {
-      this.#logger.error({ err: error }, "Could not look up the thread a client asked for");
-      this.#close(standardCloseCodes.tryAgainLater, "Could not look up the thread; try again");
-      return;
-    }
-    if (access === undefined) {
-      this.#logger.warn(
-        { userId: outcome.user.userId },
-        "Refused a client a thread that does not exist or is not its user's",
-      );
-      this.#close(closeCodes.threadNotFound, "There is no such thread");
-      return;
-    }
-    this.#attach(access, outcome.user);
   }
 
   #attach(access: ThreadAccess, user: AuthenticatedUser): void {
@@ -168,60 +146,9 @@ export class ClientSession {
       connection,
       this.#endpoint.lastSeenSequence,
     );
-    this.#phase = { name: "attached", userId: user.userId, relay, connection };
+    this.#phase = { name: "attached", relay, connection };
     this.#byteLimit.lift();
     this.#logger.info({ userId: user.userId }, "Client authenticated and attached");
-    this.#closeWhenExpired(user.validUntil);
-  }
-
-  async #reauthenticate(userId: string, accessToken: string): Promise<void> {
-    const outcome = await this.#dependencies.authenticator.authenticate(accessToken);
-    if (!outcome.ok) {
-      this.#refuse(outcome.refusal);
-      return;
-    }
-    if (outcome.user.userId !== userId) {
-      this.#logger.warn(
-        { userId, newUserId: outcome.user.userId },
-        "Closing a client that sent a token for a different user",
-      );
-      this.#close(closeCodes.notAuthenticated, "A token for a different user");
-      return;
-    }
-    this.#closeWhenExpired(outcome.user.validUntil);
-  }
-
-  #closeWhenExpired(validUntil: Date | undefined): void {
-    clearTimeout(this.#expiryTimer);
-    if (validUntil === undefined) {
-      return;
-    }
-    const remainingMilliseconds = validUntil.getTime() - Date.now();
-    if (remainingMilliseconds <= 0) {
-      this.#close(closeCodes.accessTokenExpired, "The access token expired");
-      return;
-    }
-    this.#expiryTimer = setTimeout(
-      () => this.#closeWhenExpired(validUntil),
-      Math.min(remainingMilliseconds, longestTimerDelayInMilliseconds),
-    );
-  }
-
-  #refuse(refusal: AuthenticationRefusal): void {
-    switch (refusal) {
-      case "not_authenticated":
-        this.#close(closeCodes.notAuthenticated, "The access token is not valid");
-        return;
-      case "access_token_expired":
-        this.#close(closeCodes.accessTokenExpired, "The access token expired");
-        return;
-      case "not_allowed":
-        this.#close(closeCodes.userNotAllowed, "Not allowed on this installation");
-        return;
-      case "unavailable":
-        this.#close(standardCloseCodes.tryAgainLater, "Could not check the token; try again");
-        return;
-    }
   }
 
   /** Close reasons must fit in 123 bytes, so they stay short. */
@@ -232,7 +159,7 @@ export class ClientSession {
 
   #handleClose(closeCode: number, reason: Buffer): void {
     clearTimeout(this.#authenticationDeadline);
-    clearTimeout(this.#expiryTimer);
+    this.#authentication.dispose();
     this.#logger.info({ closeCode, reason: reason.toString() }, "Client disconnected");
     if (this.#phase.name === "attached") {
       this.#phase.relay.detachClient(this.#phase.connection);

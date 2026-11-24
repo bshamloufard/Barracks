@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { planDesktopReply, type ScriptedReply } from "./desktop-scripts.js";
+
+export { desktopTestPageColours, desktopTriggers } from "./desktop-scripts.js";
 
 /**
  * A stand-in for an OpenAI-compatible model, so tests can run the real Pi
@@ -26,6 +29,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * - containing `REPLY_SLOWLY`: a long reply, one word every 100 ms, so a test
  *   can act while the agent is busy;
  * - anything else: "Hello there.".
+ * The agent's computer tool has scripts of its own (`desktop-scripts.ts`).
  * A tool result gets the reply "Done.".
  *
  * Every request's credential (its `Authorization: Bearer` value) is
@@ -166,10 +170,13 @@ async function answerRequest(
     };
     response.write(`data: ${JSON.stringify(chunk)}\n\n`);
   };
-  await writeReply(body.messages.at(-1), {
-    writeChunk,
-    hasClientLeft: () => response.destroyed,
-  });
+  const replyWriter = { writeChunk, hasClientLeft: () => response.destroyed };
+  const desktopReply = planDesktopReply(body.messages);
+  if (desktopReply === undefined) {
+    await writeReply(body.messages.at(-1), replyWriter);
+  } else {
+    await writeScriptedReply(desktopReply, replyWriter, body.messages.length);
+  }
   response.end("data: [DONE]\n\n");
 }
 
@@ -268,18 +275,48 @@ async function writeTextReply(
 }
 
 function writeBashCall(writeChunk: ChunkWriter, command: string): void {
-  writeChunk({ role: "assistant", content: "Running it." }, null);
+  writeToolCall(writeChunk, {
+    text: "Running it.",
+    toolName: "bash",
+    toolArguments: { command },
+    toolCallId: "call_1",
+  });
+}
+
+function writeToolCall(
+  writeChunk: ChunkWriter,
+  call: { text: string; toolName: string; toolArguments: object; toolCallId: string },
+): void {
+  writeChunk({ role: "assistant", content: call.text }, null);
   writeChunk(
     {
       tool_calls: [
-        { index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "" } },
+        {
+          index: 0,
+          id: call.toolCallId,
+          type: "function",
+          function: { name: call.toolName, arguments: "" },
+        },
       ],
     },
     null,
   );
-  const commandArguments = JSON.stringify({ command });
-  writeChunk({ tool_calls: [{ index: 0, function: { arguments: commandArguments } }] }, null);
+  const toolArguments = JSON.stringify(call.toolArguments);
+  writeChunk({ tool_calls: [{ index: 0, function: { arguments: toolArguments } }] }, null);
   writeChunk({}, "tool_calls");
+}
+
+/** A step of a desktop script; each tool call is named after its place in the conversation. */
+async function writeScriptedReply(
+  reply: ScriptedReply,
+  replyWriter: ReplyWriter,
+  conversationLength: number,
+): Promise<void> {
+  if (reply.kind === "text") {
+    await writeTextReply(replyWriter, [reply.text], 0);
+    return;
+  }
+  writeToolCall(replyWriter.writeChunk, { ...reply, toolCallId: `call_${conversationLength}` });
 }
 
 function readBearerCredential(request: IncomingMessage): string | undefined {

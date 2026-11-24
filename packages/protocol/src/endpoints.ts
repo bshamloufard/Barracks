@@ -1,16 +1,17 @@
+import { desktopStreamIdSchema } from "./desktop-messages.js";
 import { threadIdSchema } from "./identifier.js";
 import type { ParseResult } from "./parse-result.js";
 import { protocolVersion } from "./protocol-version.js";
 
 /**
- * The URLs that supervisors and clients open WebSockets on. Who is connecting
+ * The URLs that supervisors, clients and desktop viewers open WebSockets on. Who is connecting
  * and to which thread is settled once, in the upgrade request, so messages
  * never need to repeat it. Builders return a path with its query string, to
  * be resolved against the control plane's base URL; parsers accept the
  * request target of an incoming upgrade request (Node's `request.url`).
  *
- * Both URLs carry the protocol version so the control plane can refuse a peer
- * that speaks a different one before accepting the connection.
+ * Every URL carries the protocol version so the control plane can refuse a
+ * peer that speaks a different one before accepting the connection.
  */
 
 export const protocolVersionQueryParameter = "protocolVersion";
@@ -25,8 +26,15 @@ export type SupervisorEndpointParameters = { threadId: string };
  */
 export type ClientEndpointParameters = { threadId: string; lastSeenSequence: number };
 
+export type DesktopViewerEndpointParameters = { threadId: string };
+
+/** A desktop stream the control plane asked the thread's supervisor to open. */
+export type DesktopStreamEndpointParameters = { threadId: string; streamId: string };
+
 const supervisorEndpointName = "supervisor";
 const clientEndpointName = "client";
+const desktopViewerEndpointName = "desktop";
+const desktopStreamsEndpointName = "desktop-streams";
 
 export function buildSupervisorEndpointPath(parameters: SupervisorEndpointParameters): string {
   return buildThreadEndpointPath(
@@ -41,6 +49,28 @@ export function buildClientEndpointPath(parameters: ClientEndpointParameters): s
     [lastSeenSequenceQueryParameter]: String(parameters.lastSeenSequence),
   });
   return buildThreadEndpointPath(parameters.threadId, clientEndpointName, query);
+}
+
+/** Where a viewer opens a thread's desktop; see `desktop-messages.ts`. */
+export function buildDesktopViewerEndpointPath(
+  parameters: DesktopViewerEndpointParameters,
+): string {
+  return buildThreadEndpointPath(
+    parameters.threadId,
+    desktopViewerEndpointName,
+    new URLSearchParams(),
+  );
+}
+
+/** Where a supervisor opens the desktop stream it was asked for; see `desktop-messages.ts`. */
+export function buildDesktopStreamEndpointPath(
+  parameters: DesktopStreamEndpointParameters,
+): string {
+  return buildThreadEndpointPath(
+    parameters.threadId,
+    `${desktopStreamsEndpointName}/${parameters.streamId}`,
+    new URLSearchParams(),
+  );
 }
 
 export function parseSupervisorEndpointPath(
@@ -70,6 +100,43 @@ export function parseClientEndpointPath(
     ok: true,
     value: { threadId: endpoint.value.threadId, lastSeenSequence: lastSeenSequence.value },
   };
+}
+
+export function parseDesktopViewerEndpointPath(
+  requestTarget: string,
+): ParseResult<DesktopViewerEndpointParameters> {
+  const endpoint = parseThreadEndpoint(requestTarget, desktopViewerEndpointName);
+  if (!endpoint.ok) {
+    return endpoint;
+  }
+  return { ok: true, value: { threadId: endpoint.value.threadId } };
+}
+
+/**
+ * The stream identifier is the path's last segment, so the endpoint's name
+ * is the one before it; anything not shaped like a minted identifier is
+ * refused here, before any lookup.
+ */
+export function parseDesktopStreamEndpointPath(
+  requestTarget: string,
+): ParseResult<DesktopStreamEndpointParameters> {
+  const url = URL.parse(requestTarget, "http://placeholder.invalid");
+  const segments = url?.pathname.split("/") ?? [];
+  const streamId = segments.pop() ?? "";
+  if (url === null || !desktopStreamIdSchema.safeParse(streamId).success) {
+    return {
+      ok: false,
+      errorMessage: `Request target "${requestTarget}" does not name a desktop stream.`,
+    };
+  }
+  const endpoint = parseThreadEndpoint(
+    `${segments.join("/")}${url.search}`,
+    desktopStreamsEndpointName,
+  );
+  if (!endpoint.ok) {
+    return endpoint;
+  }
+  return { ok: true, value: { threadId: endpoint.value.threadId, streamId } };
 }
 
 function buildThreadEndpointPath(

@@ -149,6 +149,11 @@ export type ThreadState = {
    * Until it has, a sandbox that exists may still be starting its supervisor.
    */
   hasSeenSupervisorConnected: boolean;
+  /**
+   * Which of the thread's desktop viewers holds the desktop's control, or
+   * null while the agent does; a viewer on this page compares it with its own.
+   */
+  desktopControllingViewerId: string | null;
   connection: ConnectionState;
   /** The user's messages not yet confirmed recorded, oldest first. */
   unconfirmedUserMessages: UnconfirmedUserMessage[];
@@ -180,6 +185,7 @@ export const initialThreadState: ThreadState = {
   isSupervisorConnected: false,
   userMessagesDeliveredThroughSequence: undefined,
   hasSeenSupervisorConnected: false,
+  desktopControllingViewerId: null,
   connection: { name: "connecting" },
   unconfirmedUserMessages: [],
   rejectionReason: undefined,
@@ -260,6 +266,8 @@ export function applyControlPlaneMessage(
         ...markNotSent(state, (unconfirmed) => unconfirmed.messageId === message.messageId),
         rejectionReason: message.reason,
       };
+    case "desktop_control_status":
+      return { ...state, desktopControllingViewerId: message.controllingViewerId };
   }
 }
 

@@ -16,6 +16,21 @@ This builds `barrack-sandbox:dev` from [`Dockerfile`](Dockerfile), with the repo
 - The lockfile is fetched in a layer of its own, so editing the supervisor rebuilds in seconds; only a lockfile change fetches packages again.
 - The sandbox itself is Ubuntu 24.04, the distribution coding tools and agents most often expect. The build stage runs on the official Node image.
 - `NODE_IMAGE` and `BASE_IMAGE` build arguments replace the two base images, for example with a mirror.
+- Firefox comes from Mozilla's APT repository (`packages.mozilla.org`), checked against Mozilla's signing key kept here in [`packages.mozilla.org.asc`](packages.mozilla.org.asc) (fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`, as [Mozilla's installation page](https://support.mozilla.org/kb/install-firefox-linux) gives it), and only Firefox is taken from there. That repository keeps current versions only, so each build gets the Firefox of its day. Where the build cannot reach it, hand it an unpacked official Firefox for Linux (the `firefox` directory of Mozilla's tarball for the image's architecture) instead:
+
+  ```sh
+  pnpm sandbox-image:build --build-arg FIREFOX_SOURCE=build-context --build-context firefox=/path/to/firefox
+  ```
+
+The image is large: about 1.8 GB unpacked, most of it the desktop (Mesa and LLVM, which Ubuntu's X servers depend on) and Firefox. See the [decision log](../docs/decisions.md) for why the desktop is always part of it.
+
+## The desktop
+
+`barrack-desktop` runs the sandbox's graphical desktop in the foreground, as whoever runs it, until its standard input closes: TigerVNC's `Xvnc` (X server and VNC server in one process) on display `:1` at 1280×800, serving VNC on `127.0.0.1:5900` only and without a password, every viewer shared, viewers unable to resize it, at most 15 updates a second; and the Openbox window manager. It clears the X server's lock and socket a stopped sandbox left in `/tmp`, whose process number may now belong to a living process. The supervisor runs it as the agent (`BARRACK_DESKTOP_COMMAND`, which the image sets with `DISPLAY=:1`) whenever the sandbox runs, and starts it again whenever it ends. Nothing outside the sandbox reaches the VNC server: the supervisor opens a stream to it only when the control plane asks (see the [architecture](../docs/architecture.md#the-live-desktop)).
+
+The agent may start Firefox (`firefox URL &`) and use its computer tool. Firefox's enterprise policy, [`firefox-policies.json`](firefox-policies.json) in `/etc/firefox/policies`, turns off updates, telemetry, studies and first-run pages, and accepts Mozilla's terms of use on the users' behalf (`SkipTermsOfUse`; remove it to have each sandbox's first Firefox window ask instead). Its content processes keep Firefox's own seccomp sandbox in a container without user namespaces.
+
+The supervisor writes who holds the desktop's input, `agent` or `user`, to `/run/barrack-desktop/control` (`BARRACK_DESKTOP_CONTROL_FILE`), a directory the agent may read and not write. **Anything typed into the desktop, passwords included, is readable by the agent**, which shares the X server's user and the browser profile.
 
 ### For Daytona
 

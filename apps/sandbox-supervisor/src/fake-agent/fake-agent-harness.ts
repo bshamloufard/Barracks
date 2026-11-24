@@ -4,13 +4,16 @@ import type {
   AssistantContentBlock,
   AssistantMessageEndReason,
   ModelAccessErrorKind,
+  ToolArguments,
 } from "@barrack/protocol";
 import type {
+  AgentDesktop,
   AgentHarness,
   AgentHarnessObserver,
   ModelAccess,
   UserMessage,
 } from "../agent-harness.js";
+import { noDesktopRefusal, userHoldsDesktopRefusal } from "../desktop/computer-tool-refusals.js";
 import { describeMissingModelAccess } from "../missing-model-access.js";
 
 /**
@@ -21,6 +24,10 @@ import { describeMissingModelAccess } from "../missing-model-access.js";
  * the message change the script, so a person driving the web page can try
  * every path:
  * - `[tool]` makes it call a tool before replying.
+ * - `[desktop]` makes it click the middle of the desktop with its computer
+ *   tool before replying, which, like the real agent's, refuses while the
+ *   user holds the desktop's control, and says when there is no desktop.
+ *   It only pretends: nothing is clicked.
  * - `[fail]` makes it fail as if its process had crashed.
  * - `[model]` makes it say which model it runs on.
  * - `[quota]` makes it fail as a model provider out of quota would.
@@ -35,6 +42,7 @@ import { describeMissingModelAccess } from "../missing-model-access.js";
  */
 export const fakeAgentTriggers = {
   toolExecution: "[tool]",
+  computerUse: "[desktop]",
   failure: "[fail]",
   model: "[model]",
   quotaExhausted: "[quota]",
@@ -44,14 +52,29 @@ export type FakeAgentOptions = {
   /** Pause before each step, so a viewer can watch the reply appear. */
   stepDelayInMilliseconds: number;
   mintIdentifier: () => string;
+  /** The sandbox's desktop, if it has one. */
+  desktop: AgentDesktop | undefined;
 };
 
 const defaultOptions: FakeAgentOptions = {
   stepDelayInMilliseconds: 60,
   mintIdentifier: randomUUID,
+  desktop: undefined,
 };
 
+/** Where the fake agent pretends to click: the middle of a 1280x800 desktop. */
+const pretendClickCoordinate = [640, 400] as const;
+
 type MessageOutcome = "answered" | "interrupted" | "failed";
+
+type FakeToolResult = { text: string; isError: boolean };
+
+type FakeToolCall = {
+  toolName: string;
+  toolArguments: ToolArguments;
+  /** Decides the result once the tool has run its course. */
+  carryOut: () => FakeToolResult;
+};
 
 export class FakeAgentHarness implements AgentHarness {
   readonly #observer: AgentHarnessObserver;
@@ -168,8 +191,9 @@ export class FakeAgentHarness implements AgentHarness {
     if (message.text.includes(fakeAgentTriggers.failure)) {
       return (await this.#waitForNextStep(abortSignal)) ? "failed" : "interrupted";
     }
-    if (message.text.includes(fakeAgentTriggers.toolExecution)) {
-      const toolOutcome = await this.#runTool(message, abortSignal);
+    const toolCall = this.#chooseToolCall(message);
+    if (toolCall !== undefined) {
+      const toolOutcome = await this.#runTool(toolCall, abortSignal);
       if (toolOutcome !== "answered") {
         return toolOutcome;
       }
@@ -177,10 +201,40 @@ export class FakeAgentHarness implements AgentHarness {
     return this.#streamAssistantMessage(`You said: "${message.text}"`, [], abortSignal);
   }
 
-  async #runTool(message: UserMessage, abortSignal: AbortSignal): Promise<MessageOutcome> {
+  #chooseToolCall(message: UserMessage): FakeToolCall | undefined {
+    if (message.text.includes(fakeAgentTriggers.computerUse)) {
+      return {
+        toolName: "computer",
+        toolArguments: { action: "left_click", coordinate: [...pretendClickCoordinate] },
+        carryOut: () => this.#pretendToClick(),
+      };
+    }
+    if (message.text.includes(fakeAgentTriggers.toolExecution)) {
+      return {
+        toolName: "echo",
+        toolArguments: { text: message.text },
+        carryOut: () => ({ text: message.text, isError: false }),
+      };
+    }
+    return undefined;
+  }
+
+  /** Answers as the real computer tool would, deciding when the click would happen. */
+  #pretendToClick(): FakeToolResult {
+    const { desktop } = this.#options;
+    if (desktop === undefined) {
+      return { text: noDesktopRefusal, isError: true };
+    }
+    if (desktop.readControlHolder() === "user") {
+      return { text: userHoldsDesktopRefusal, isError: true };
+    }
+    const [x, y] = pretendClickCoordinate;
+    return { text: `Clicked the left button at (${x}, ${y}).`, isError: false };
+  }
+
+  async #runTool(toolCall: FakeToolCall, abortSignal: AbortSignal): Promise<MessageOutcome> {
     const toolCallId = this.#options.mintIdentifier();
-    const toolName = "echo";
-    const toolArguments = { text: message.text };
+    const { toolName, toolArguments } = toolCall;
     const requestOutcome = await this.#streamAssistantMessage(
       "Let me run a tool first.",
       [{ type: "tool_call", toolCallId, toolName, arguments: toolArguments }],
@@ -196,16 +250,18 @@ export class FakeAgentHarness implements AgentHarness {
       arguments: toolArguments,
     });
     const hasFinished = await this.#waitForNextStep(abortSignal);
-    const outputText = hasFinished ? message.text : "The tool was interrupted.";
+    const result = hasFinished
+      ? toolCall.carryOut()
+      : { text: "The tool was interrupted.", isError: true };
     this.#emitEvent({
       type: "tool_execution_finished",
       toolCallId,
       toolName,
-      isError: !hasFinished,
+      isError: result.isError,
       output: {
-        text: outputText,
+        text: result.text,
         isTruncated: false,
-        originalSizeInBytes: Buffer.byteLength(outputText),
+        originalSizeInBytes: Buffer.byteLength(result.text),
       },
     });
     return hasFinished ? "answered" : "interrupted";

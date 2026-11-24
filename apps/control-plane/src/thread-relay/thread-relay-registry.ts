@@ -1,4 +1,5 @@
-import type { ControlPlaneWorkspaceMessage } from "@barrack/protocol";
+import type { ControlPlaneDesktopMessage, ControlPlaneWorkspaceMessage } from "@barrack/protocol";
+import type { DesktopSupervisorChannel } from "../desktop/thread-desktops.js";
 import type { Logger } from "../logger.js";
 import type { ThreadRuns } from "../sandbox-lifecycle/thread-runs.js";
 import type {
@@ -9,6 +10,7 @@ import type {
 import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import type { ThreadActivity } from "./thread-activity.js";
+import type { ThreadDesktopState } from "./thread-desktop-state.js";
 import type { ThreadModelAccess } from "./thread-model-access.js";
 import { ThreadRelay } from "./thread-relay.js";
 import type { ThreadWorkspaces } from "./thread-workspaces.js";
@@ -23,6 +25,7 @@ export type ThreadRelayRegistryOptions = {
   threadActivity: ThreadActivity;
   workspaces?: ThreadWorkspaces;
   modelAccess?: ThreadModelAccess;
+  desktops?: ThreadDesktopState;
   logger: Logger;
 };
 
@@ -44,7 +47,7 @@ export type ThreadRelayRegistryOptions = {
  * It is also how the sandbox lifecycle reaches a thread's run (`ThreadRuns`),
  * so that what the lifecycle records is in sequence with everything else.
  */
-export class ThreadRelayRegistry implements ThreadRuns {
+export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel {
   readonly #options: ThreadRelayRegistryOptions;
   readonly #relaysByThreadId = new Map<string, ThreadRelay>();
   readonly #endingListeners: ThreadEndingListener[] = [];
@@ -126,6 +129,21 @@ export class ThreadRelayRegistry implements ThreadRuns {
     return this.#relaysByThreadId.get(threadId)?.sendWorkspaceMessage(message) ?? false;
   }
 
+  /** Sends to the thread's attached supervisor; false if none is attached here. */
+  sendDesktopMessage(threadId: string, message: ControlPlaneDesktopMessage): boolean {
+    return this.#relaysByThreadId.get(threadId)?.sendDesktopMessage(message) ?? false;
+  }
+
+  /** A thread with no relay here has no clients here to tell. */
+  broadcastDesktopControlStatus(threadId: string): void {
+    this.#relaysByThreadId.get(threadId)?.broadcastDesktopControlStatus();
+  }
+
+  /** Whether the thread's supervisor is attached to this control plane, welcomed. */
+  isSupervisorAttached(threadId: string): boolean {
+    return this.#relaysByThreadId.get(threadId)?.isSupervisorAttached ?? false;
+  }
+
   /** A relay is made for this if nobody is connected, and dropped again once it is done. */
   recordPublicationOutcome(
     threadId: string,
@@ -155,6 +173,7 @@ export class ThreadRelayRegistry implements ThreadRuns {
       ...(this.#options.modelAccess === undefined
         ? {}
         : { modelAccess: this.#options.modelAccess }),
+      ...(this.#options.desktops === undefined ? {} : { desktops: this.#options.desktops }),
       logger,
       whenUnused: () => this.#drop(relay, logger),
     });

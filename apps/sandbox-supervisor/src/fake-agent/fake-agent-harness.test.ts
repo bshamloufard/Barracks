@@ -1,5 +1,10 @@
-import { agentEventSchema, streamFragmentSchema } from "@barrack/protocol";
+import {
+  agentEventSchema,
+  type DesktopControlHolder,
+  streamFragmentSchema,
+} from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
+import { noDesktopRefusal, userHoldsDesktopRefusal } from "../desktop/computer-tool-refusals.js";
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { pause, waitUntil } from "../test-support/wait-until.js";
 import { FakeAgentHarness, fakeAgentTriggers } from "./fake-agent-harness.js";
@@ -78,6 +83,62 @@ describe("FakeAgentHarness", () => {
       content: [{ type: "text" }, { type: "tool_call", toolCallId: "fake-1", toolName: "echo" }],
     });
     expect(observer.events[3]).toMatchObject({ toolCallId: "fake-1", isError: false });
+  });
+
+  it("uses its computer tool on the desktop, and stands back while the user holds it", async () => {
+    let holder: DesktopControlHolder = "agent";
+    const observer = new RecordingObserver();
+    const harness = new FakeAgentHarness(observer, {
+      stepDelayInMilliseconds: 1,
+      desktop: {
+        configuration: {
+          command: "/usr/local/bin/barrack-desktop",
+          display: ":1",
+          vncPort: 5900,
+          controlFile: "/run/barrack-desktop/control",
+        },
+        readControlHolder: () => holder,
+      },
+    });
+    const finishedComputerTools = () =>
+      observer.events.filter((event) => event.type === "tool_execution_finished");
+
+    harness.deliverUserMessage({ messageId: "user-1", text: fakeAgentTriggers.computerUse });
+    await waitUntil(hasSettled(observer), "the first run settles");
+    holder = "user";
+    harness.deliverUserMessage({ messageId: "user-2", text: fakeAgentTriggers.computerUse });
+    await waitUntil(hasSettled(observer, 2), "the second run settles");
+
+    expect(observer.events.find((event) => event.type === "tool_execution_started")).toEqual({
+      type: "tool_execution_started",
+      toolCallId: expect.any(String),
+      toolName: "computer",
+      arguments: { action: "left_click", coordinate: [640, 400] },
+    });
+    expect(finishedComputerTools()).toEqual([
+      expect.objectContaining({
+        isError: false,
+        output: expect.objectContaining({ text: "Clicked the left button at (640, 400)." }),
+      }),
+      expect.objectContaining({
+        isError: true,
+        output: expect.objectContaining({ text: userHoldsDesktopRefusal }),
+      }),
+    ]);
+  });
+
+  it("says there is no desktop when its sandbox has none", async () => {
+    const { observer, harness } = createHarness();
+
+    harness.deliverUserMessage({ messageId: "user-1", text: fakeAgentTriggers.computerUse });
+    await waitUntil(hasSettled(observer), "the run settles");
+
+    expect(observer.events.find((event) => event.type === "tool_execution_finished")).toMatchObject(
+      {
+        isError: true,
+        output: { text: noDesktopRefusal },
+      },
+    );
   });
 
   it("answers messages that arrive while it is busy within the same run", async () => {

@@ -1,4 +1,5 @@
 import type { SandboxProvider } from "@barrack/sandbox-providers";
+import { ThreadDesktops } from "../desktop/thread-desktops.js";
 import type { Logger } from "../logger.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
 import type { ThreadModelAccess } from "../thread-relay/thread-model-access.js";
@@ -39,6 +40,7 @@ export type ThreadServicesOptions = {
 /** What runs threads: their relays, their sandboxes' lifecycle, and the sweeps that keep both true. */
 export type ThreadServices = {
   relays: ThreadRelayRegistry;
+  desktops: ThreadDesktops;
   sandboxLifecycle: SandboxLifecycle;
   operations: SandboxOperations;
   reconciler: SandboxReconciler;
@@ -47,17 +49,20 @@ export type ThreadServices = {
 };
 
 /**
- * Builds the thread relays and the sandbox lifecycle, which need each other:
- * a relay asks the lifecycle before it records a message (which may wake a
- * sandbox), and the lifecycle asks the relays to interrupt and close runs
- * when it stops one. The relays are given the lifecycle through a function
- * called only once both exist.
+ * Builds the thread relays, the desktops and the sandbox lifecycle, which
+ * need each other: a relay asks the lifecycle before it records a message
+ * (which may wake a sandbox), and the lifecycle asks the relays to
+ * interrupt and close runs when it stops one; the desktops reach
+ * supervisors and clients through the relays, which ask the desktops who
+ * holds each one. Each is given the other through a function called only
+ * once both exist.
  */
 export function assembleThreadServices(options: ThreadServicesOptions): ThreadServices {
   const { threadStore, threadEventLog, sandboxProvider, settings, logger } = options;
   const clock = options.clock ?? (() => new Date());
   const timing = { ...deriveLifecycleTiming(settings), ...options.timing };
   const lifecycleOf = (): SandboxLifecycle => sandboxLifecycle;
+  const desktops = new ThreadDesktops({ channel: () => relays, logger });
   const relays = new ThreadRelayRegistry({
     threadEventLog,
     threadActivity: {
@@ -66,6 +71,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     },
     ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
     ...(options.modelAccess === undefined ? {} : { modelAccess: options.modelAccess }),
+    desktops,
     logger,
   });
   const operations = new SandboxOperations({
@@ -110,5 +116,5 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     intervalInMilliseconds: settings.checkIntervalInMilliseconds,
     logger,
   });
-  return { relays, sandboxLifecycle, operations, reconciler, idleShutdown, sweeps };
+  return { relays, desktops, sandboxLifecycle, operations, reconciler, idleShutdown, sweeps };
 }

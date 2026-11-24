@@ -249,6 +249,7 @@ export class TestControlPlane {
       threadEventLog,
       threadStore,
       relays: threadServices.relays,
+      desktops: threadServices.desktops,
       sandboxLifecycle: threadServices.sandboxLifecycle,
       repositoryServices,
       modelAccess: {

@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { forbiddenHostExplanation, isAddressedToLoopback } from "../loopback-host.js";
 import { acceptClientUpgrade } from "./client-endpoint.js";
+import { acceptDesktopStreamUpgrade, acceptDesktopViewerUpgrade } from "./desktop-endpoints.js";
 import { rejectUpgrade } from "./reject-upgrade.js";
 import { acceptSupervisorUpgrade } from "./supervisor-endpoint.js";
 import type { UpgradeDependencies } from "./upgrade-dependencies.js";
@@ -23,7 +24,7 @@ export function createUpgradeRouter(
         "A connection failed while upgrading to a WebSocket",
       ),
     );
-    // Both endpoints, the supervisor's included: in development mode the
+    // Every endpoint, the supervisor's included: in development mode the
     // control plane listens only on loopback, so its sandboxes reach it there.
     if (dependencies.acceptOnlyLoopbackHosts && !isAddressedToLoopback(request.headers.host)) {
       dependencies.logger.warn("Refused a WebSocket upgrade not addressed to loopback");
@@ -37,6 +38,14 @@ export function createUpgradeRouter(
     }
     if (pathname.endsWith("/client")) {
       void acceptClientUpgrade(request, socket, head, dependencies);
+      return;
+    }
+    if (pathname.endsWith("/desktop")) {
+      acceptDesktopViewerUpgrade(request, socket, head, dependencies);
+      return;
+    }
+    if (/\/desktop-streams\/[^/]*$/.test(pathname)) {
+      void acceptDesktopStreamUpgrade(request, socket, head, dependencies);
       return;
     }
     dependencies.logger.warn({ pathname }, "Refused a WebSocket upgrade for an unknown path");

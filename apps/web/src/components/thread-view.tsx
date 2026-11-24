@@ -5,6 +5,7 @@ import { threadNameOf } from "../presentation/describe-sandbox";
 import { useThread } from "../use-thread";
 import { AccountBar } from "./account-bar";
 import { Conversation } from "./conversation";
+import { DesktopPanel } from "./desktop-panel";
 import { MessageComposer } from "./message-composer";
 import { RepositoryPanel } from "./repository-panel";
 import { SandboxControls } from "./sandbox-controls";
@@ -74,6 +75,16 @@ export function ThreadView({ threadId }: { threadId: string }) {
           <RepositoryPanel thread={record.thread} repository={record.thread.repository} />
         )}
       </header>
+      {record.name === "found" && (
+        <DesktopPanel
+          thread={record.thread}
+          controllingViewerId={state.desktopControllingViewerId}
+          isWaking={
+            state.lifecycleRequest.name === "sending" && state.lifecycleRequest.action === "resume"
+          }
+          onWake={controls.resumeThread}
+        />
+      )}
       <main>
         <Conversation
           entries={state.entries}

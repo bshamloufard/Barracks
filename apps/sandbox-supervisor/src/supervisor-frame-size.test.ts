@@ -47,6 +47,7 @@ beforeEach(async () => {
       workspaceDirectory: undefined,
       gitCredentialSocketPath: path.join(supervisorStateDirectory, "git-credential.sock"),
       logLevel: "info",
+      desktop: undefined,
       agentHarness: { kind: "fake" },
     },
     sourceEnvironment: {},

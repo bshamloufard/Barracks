@@ -39,4 +39,21 @@ describe("buildPiEnvironment", () => {
 
     expect(environment).toMatchObject({ PI_CODING_AGENT_DIR: "/state/pi/agent" });
   });
+
+  it("names the sandbox's own display, and how to reach its desktop, only when it has one", () => {
+    const developerMachine = { ...sourceEnvironment, DISPLAY: ":0" };
+    const desktop = {
+      command: "/usr/local/bin/barrack-desktop",
+      display: ":1",
+      vncPort: 5900,
+      controlFile: "/run/barrack-desktop/control",
+    };
+
+    expect(buildPiEnvironment(developerMachine, "/state/pi/agent")).not.toHaveProperty("DISPLAY");
+    expect(buildPiEnvironment(developerMachine, "/state/pi/agent", desktop)).toMatchObject({
+      DISPLAY: ":1",
+      BARRACK_DESKTOP_VNC_PORT: "5900",
+      BARRACK_DESKTOP_CONTROL_FILE: "/run/barrack-desktop/control",
+    });
+  });
 });

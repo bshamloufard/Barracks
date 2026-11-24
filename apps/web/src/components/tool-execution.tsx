@@ -1,4 +1,4 @@
-import { describeDuration, summarizeToolArguments } from "../presentation/describe-tool-execution";
+import { describeDuration, summarizeToolCall } from "../presentation/describe-tool-execution";
 import type { ToolExecutionEntry, ToolExecutionOutcome } from "../thread-state/thread-state";
 
 const statusLabels: Record<ToolExecutionOutcome["status"], string> = {
@@ -15,7 +15,7 @@ export function ToolExecution({ entry }: { entry: ToolExecutionEntry }) {
       <summary>
         <span className="tool-status">{statusLabels[outcome.status]}</span>
         <span className="tool-name">{entry.toolName}</span>
-        <span className="tool-arguments">{summarizeToolArguments(entry.arguments)}</span>
+        <span className="tool-arguments">{summarizeToolCall(entry.toolName, entry.arguments)}</span>
       </summary>
       {outcome.status === "running" ? (
         <p className="quiet-note">Still running…</p>

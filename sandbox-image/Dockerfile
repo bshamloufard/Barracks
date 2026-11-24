@@ -1,11 +1,18 @@
 # The computer a thread runs on: Node, Git, the sandbox supervisor and the
-# pinned Pi agent, with the supervisor as the default command. Build it from
-# the repository root (`pnpm sandbox-image:build`); see README.md.
+# pinned Pi agent, a graphical desktop with Firefox, and the supervisor as
+# the default command. Build it from the repository root
+# (`pnpm sandbox-image:build`); see README.md.
 
 # Both base images are pinned by digest, so a rebuild gets the same bytes.
 # The Node image supplies the exact Node version the repository requires.
 ARG NODE_IMAGE=node:22.23.5-trixie-slim@sha256:fbd104a10cdcca7ab9fb59c10eaabbadde592dd8b3bd297038236aec621437ea
 ARG BASE_IMAGE=ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# Where Firefox comes from: `mozilla-apt`, Mozilla's APT repository (the
+# default), or `build-context`, an unpacked official Firefox build for
+# Linux handed to the build as the named context `firefox`
+# (`--build-context firefox=<directory>`), for builds that cannot reach
+# packages.mozilla.org. See README.md.
+ARG FIREFOX_SOURCE=mozilla-apt
 
 # --- Build the supervisor and gather its production dependencies ----------
 FROM ${NODE_IMAGE} AS supervisor-build
@@ -34,8 +41,8 @@ RUN pnpm install --offline --frozen-lockfile --filter "@barrack/sandbox-supervis
 
 FROM ${NODE_IMAGE} AS node-runtime
 
-# --- The sandbox -----------------------------------------------------------
-FROM ${BASE_IMAGE}
+# --- The sandbox, before its browser --------------------------------------
+FROM ${BASE_IMAGE} AS sandbox-base
 
 # Two users, so that the agent cannot read the supervisor's secrets. The
 # supervisor's token lives only in its environment, which /proc shows to its
@@ -71,6 +78,59 @@ RUN apt-get update \
 COPY --from=node-runtime /usr/local/bin/ /usr/local/bin/
 COPY --from=node-runtime /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 
+# The desktop (see barrack-desktop): TigerVNC's Xvnc, X server and VNC
+# server in one process; Openbox, which gives a clicked window the keyboard
+# and needs no session bus; xdotool, through which the agent's computer tool
+# uses the mouse and keyboard; and two font families for web pages. Each X
+# server and VNC server Ubuntu packages pulls in Mesa and LLVM, most of this
+# layer's size. X clients find the server through /tmp/.X11-unix, which only
+# root may create.
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      tigervnc-standalone-server openbox xdotool fonts-dejavu-core fonts-liberation \
+ && rm -rf /var/lib/apt/lists/* \
+ && install -d -m 1777 /tmp/.X11-unix
+COPY --chmod=0755 sandbox-image/barrack-desktop /usr/local/bin/
+# Firefox reads this enterprise policy wherever it is installed: no terms of
+# use dialog (accepted on the users' behalf; see docs/decisions.md), no
+# updates (the image brings them), no telemetry, studies or first-run pages.
+COPY sandbox-image/firefox-policies.json /etc/firefox/policies/policies.json
+
+# --- Firefox, from Mozilla's APT repository ---------------------------------
+FROM sandbox-base AS firefox-from-mozilla-apt
+# Mozilla's signing key is kept in the repository, so the build does not
+# trust whatever key a download returns; its fingerprint is
+# 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3, as Mozilla publishes it
+# (https://support.mozilla.org/kb/install-firefox-linux). Only Firefox is
+# taken from that repository, and never Ubuntu's Firefox, which is a
+# transitional package for the snap; Mozilla's own instructions pin every
+# package, which would let it replace any of Ubuntu's. The repository keeps
+# only current versions, so each build gets the Firefox of its day.
+COPY sandbox-image/packages.mozilla.org.asc /etc/apt/keyrings/packages.mozilla.org.asc
+RUN echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+      > /etc/apt/sources.list.d/mozilla.list \
+ && printf '%s\n' 'Package: firefox*' 'Pin: origin packages.mozilla.org' 'Pin-Priority: 1000' '' \
+      'Package: firefox*' 'Pin: release o=Ubuntu' 'Pin-Priority: -1' > /etc/apt/preferences.d/mozilla \
+ && apt-get update \
+ && apt-get install --yes --no-install-recommends firefox \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- Firefox, from a build handed to the build ------------------------------
+# For builds that cannot reach packages.mozilla.org: the named build context
+# `firefox` holds an unpacked official Firefox for Linux (the `firefox`
+# directory of Mozilla's tarball), and the libraries Mozilla's package
+# depends on come from Ubuntu.
+FROM sandbox-base AS firefox-from-build-context
+COPY --from=firefox / /usr/lib/firefox/
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      libgtk-3-0t64 libasound2t64 libx11-xcb1 libdbus-1-3 libxtst6 \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -s /usr/lib/firefox/firefox /usr/local/bin/firefox
+
+# --- The sandbox ------------------------------------------------------------
+FROM firefox-from-${FIREFOX_SOURCE} AS sandbox
+
 # The capability bounding set keeps SETUID and SETGID for run-as-agent, and
 # no-new-privileges cannot be set without disarming it, so any setuid or
 # setgid program would run with those two capabilities for whoever runs it,
@@ -94,6 +154,10 @@ RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
 # and open to the agent's group alone, so nothing else in the sandbox can
 # reach it. What it answers is read-only and short-lived, and assumed to be
 # the agent's.
+#
+# The supervisor writes who holds the desktop's input to a file in
+# /run/barrack-desktop, which the agent's computer tool reads and the agent
+# cannot change.
 RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
       /workspace /var/lib/barrack/state \
       /var/lib/barrack/state/pi /var/lib/barrack/state/pi/agent /var/lib/barrack/state/pi/sessions \
@@ -101,6 +165,7 @@ RUN install -d -o barrack-agent -g barrack-agent -m 0710 \
  && install -d -o barrack-supervisor -g barrack-supervisor -m 0750 \
       /run/barrack /var/log/barrack /var/lib/barrack/supervisor \
  && install -d -o barrack-supervisor -g barrack-agent -m 0750 /run/barrack-git \
+ && install -d -o barrack-supervisor -g barrack-supervisor -m 0755 /run/barrack-desktop \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /run/barrack/ensure-supervisor.lock \
  && install -o barrack-supervisor -g barrack-supervisor -m 0640 /dev/null /var/log/barrack/supervisor.log
 
@@ -117,7 +182,10 @@ ENV BARRACK_WORKSPACE_DIRECTORY=/workspace \
     BARRACK_SUPERVISOR_STATE_DIRECTORY=/var/lib/barrack/supervisor \
     BARRACK_GIT_HELPER_SOCKET=/run/barrack-git/credential.sock \
     BARRACK_SUPERVISOR_USER=barrack-supervisor \
-    BARRACK_AGENT_USER=barrack-agent
+    BARRACK_AGENT_USER=barrack-agent \
+    BARRACK_DESKTOP_COMMAND=/usr/local/bin/barrack-desktop \
+    BARRACK_DESKTOP_CONTROL_FILE=/run/barrack-desktop/control \
+    DISPLAY=:1
 
 USER barrack-supervisor
 WORKDIR /workspace

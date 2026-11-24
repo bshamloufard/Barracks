@@ -4,6 +4,8 @@ import { getRequestListener } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
+import { type DesktopFlowLimits, defaultDesktopFlowLimits } from "./desktop/desktop-splice.js";
+import type { ThreadDesktops } from "./desktop/thread-desktops.js";
 import { createHttpApp } from "./http/http-app.js";
 import type { ThreadModelAccessDependencies } from "./http/threads-routes.js";
 import type { Logger } from "./logger.js";
@@ -26,6 +28,13 @@ import { authorizeWithThreadTokens } from "./websocket/supervisor-authorization.
 const maximumPayloadInBytes = 3 * maximumFrameLength;
 
 /**
+ * A desktop frame is a piece of VNC data: what the supervisor read from the
+ * VNC server at once (at most 64 KiB), or one of a viewer's VNC messages,
+ * the largest a clipboard paste, which the viewer filter limits further.
+ */
+const maximumDesktopPayloadInBytes = 1024 * 1024;
+
+/**
  * Often enough to notice a vanished peer within a minute, and comfortably
  * inside the idle timeouts of the proxies that sit in front of hosted
  * services.
@@ -46,6 +55,7 @@ export type ControlPlaneServerOptions = {
   threadEventLog: ThreadEventLog;
   threadStore: ThreadStore;
   relays: ThreadRelayRegistry;
+  desktops: ThreadDesktops;
   sandboxLifecycle: SandboxLifecycle;
   repositoryServices: RepositoryServices;
   modelAccess: ThreadModelAccessDependencies;
@@ -56,6 +66,7 @@ export type ControlPlaneServerOptions = {
   logger: Logger;
   heartbeatIntervalInMilliseconds?: number;
   clientAuthenticationTimeoutInMilliseconds?: number;
+  desktopFlowLimits?: DesktopFlowLimits;
 };
 
 export type RunningControlPlaneServer = {
@@ -77,6 +88,12 @@ export async function startControlPlaneServer(
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: maximumPayloadInBytes,
+  });
+  const desktopWebSocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: maximumDesktopPayloadInBytes,
+    // VNC data is compressed already.
+    perMessageDeflate: false,
   });
   const authorizeSupervisor = authorizeWithThreadTokens(threadStore);
   const { repositoryServices } = options;
@@ -126,6 +143,13 @@ export async function startControlPlaneServer(
       acceptOnlyLoopbackHosts,
       heartbeatIntervalInMilliseconds:
         options.heartbeatIntervalInMilliseconds ?? defaultHeartbeatIntervalInMilliseconds,
+      desktop: {
+        webSocketServer: desktopWebSocketServer,
+        desktops: options.desktops,
+        recordUserDesktopInput: (threadId) =>
+          options.sandboxLifecycle.recordUserDesktopInput(threadId),
+        flowLimits: options.desktopFlowLimits ?? defaultDesktopFlowLimits,
+      },
       logger,
     }),
   );
@@ -133,7 +157,7 @@ export async function startControlPlaneServer(
   logger.info({ host: configuration.host, port }, "Control plane listening");
   return {
     port,
-    close: () => closeServer(httpServer, webSocketServer),
+    close: () => closeServer(httpServer, [webSocketServer, desktopWebSocketServer]),
   };
 }
 
@@ -152,13 +176,13 @@ function listen(httpServer: Server, host: string, port: number): Promise<number>
   });
 }
 
-function closeServer(httpServer: Server, webSocketServer: WebSocketServer): Promise<void> {
+function closeServer(httpServer: Server, webSocketServers: WebSocketServer[]): Promise<void> {
   // The server keeps counting upgraded sockets as its connections, so this
   // resolves only after every WebSocket below has finished closing.
   const closed = new Promise<void>((resolve, reject) => {
     httpServer.close((error) => (error === undefined ? resolve() : reject(error)));
   });
-  for (const socket of webSocketServer.clients) {
+  for (const socket of webSocketServers.flatMap((server) => [...server.clients])) {
     socket.close(standardCloseCodes.goingAway, "The control plane is shutting down");
   }
   return closed;
