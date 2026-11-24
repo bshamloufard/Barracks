@@ -8,29 +8,29 @@ This is the Milestone 1 build: history is kept in memory and lost when the proce
 
 ## How it is organised
 
-| Path                        | What it holds                                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`               | Reads configuration, starts the server, shuts down on SIGINT or SIGTERM.                                                  |
-| `src/configuration.ts`      | Environment variables, validated together at startup.                                                                     |
-| `src/control-plane-server.ts` | One HTTP server on one port: HTTP routes plus both WebSocket endpoints.                                                 |
-| `src/http-app.ts`           | `GET /health`, and the built web client when configured (Hono).                                                           |
-| `src/thread-event-log/`     | The `ThreadEventLog` interface, which assigns sequences, and its in-memory implementation.                                 |
-| `src/thread-relay/`         | `ThreadRelay`: per-thread ordering of recording, broadcasting, replay and in-progress text. No sockets in here.            |
-| `src/websocket/`            | Upgrade routing, supervisor authorisation, origin check, frame validation, heartbeats and slow-client handling (`ws`).    |
-| `src/test-support/`         | A fake supervisor, a test client, a pausable event log and the event log contract suite. Not part of the build.          |
+| Path                          | What it holds                                                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`                 | Reads configuration, starts the server, shuts down on SIGINT or SIGTERM.                                               |
+| `src/configuration.ts`        | Environment variables, validated together at startup.                                                                  |
+| `src/control-plane-server.ts` | One HTTP server on one port: HTTP routes plus both WebSocket endpoints.                                                |
+| `src/http-app.ts`             | `GET /health`, and the built web client when configured (Hono).                                                        |
+| `src/thread-event-log/`       | The `ThreadEventLog` interface, which assigns sequences, and its in-memory implementation.                             |
+| `src/thread-relay/`           | `ThreadRelay`: per-thread ordering of recording, broadcasting, replay and in-progress text. No sockets in here.        |
+| `src/websocket/`              | Upgrade routing, supervisor authorisation, origin check, frame validation, heartbeats and slow-client handling (`ws`). |
+| `src/test-support/`           | A fake supervisor, a test client, a pausable event log and the event log contract suite. Not part of the build.        |
 
 The endpoints and messages are defined in [`@barrack/protocol`](../../packages/protocol); see [docs/architecture.md](../../docs/architecture.md) for how they fit together.
 
 ## Configuration
 
-| Variable                         | Default                                                                 | Meaning                                                                                                     |
-| -------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `BARRACK_SUPERVISOR_TOKEN`       | none, required                                                          | Shared secret every supervisor sends as `Authorization: Bearer <token>`. At least 32 characters. Never logged. |
-| `BARRACK_CONTROL_PLANE_HOST`     | `127.0.0.1`                                                             | Interface to listen on.                                                                                     |
-| `BARRACK_CONTROL_PLANE_PORT`     | `8787`                                                                  | Port for HTTP and both WebSocket endpoints.                                                                 |
-| `BARRACK_ALLOWED_CLIENT_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to open the client endpoint.                     |
-| `BARRACK_WEB_CLIENT_DIRECTORY`   | unset                                                                   | Directory of the built web client (`apps/web/dist`). When set, the control plane serves it.                 |
-| `BARRACK_LOG_LEVEL`              | `info`                                                                  | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.                                             |
+| Variable                         | Default                                                                                   | Meaning                                                                                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `BARRACK_SUPERVISOR_TOKEN`       | none, required                                                                            | Shared secret every supervisor sends as `Authorization: Bearer <token>`. At least 32 characters. Never logged. |
+| `BARRACK_CONTROL_PLANE_HOST`     | `127.0.0.1`                                                                               | Interface to listen on.                                                                                        |
+| `BARRACK_CONTROL_PLANE_PORT`     | `8787`                                                                                    | Port for HTTP and both WebSocket endpoints.                                                                    |
+| `BARRACK_ALLOWED_CLIENT_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8787,http://127.0.0.1:8787` | Comma-separated browser origins allowed to open the client endpoint.                                           |
+| `BARRACK_WEB_CLIENT_DIRECTORY`   | unset                                                                                     | Directory of the built web client (`apps/web/dist`). When set, the control plane serves it.                    |
+| `BARRACK_LOG_LEVEL`              | `info`                                                                                    | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.                                                |
 
 If anything is wrong, the control plane refuses to start and lists every problem.
 
