@@ -1,3 +1,5 @@
+export type { DockerProviderSettings } from "./docker/docker-run-arguments.js";
+export { DockerSandboxProvider } from "./docker/docker-sandbox-provider.js";
 export {
   type FakeSandboxLaunch,
   type FakeSandboxOperation,

@@ -38,6 +38,7 @@ export type ContractTarget = {
 };
 
 const markerFilePath = "/workspace/contract-marker.txt";
+const realProviderTimeoutInMilliseconds = 120_000;
 
 export function describeSandboxProviderContract(target: ContractTarget): void {
   const title = `the ${target.providerName} sandbox provider`;
@@ -48,23 +49,24 @@ export function describeSandboxProviderContract(target: ContractTarget): void {
     return;
   }
 
-  describe(title, () => {
+  // Real providers create, stop and start real computers, which takes seconds.
+  describe(title, { timeout: realProviderTimeoutInMilliseconds }, () => {
     let subject: ContractSubject;
     const createdSandboxIds: string[] = [];
 
     beforeAll(async () => {
       subject = await target.setUp();
-    });
+    }, realProviderTimeoutInMilliseconds);
 
     // Destroying every sandbox a test made, whether or not it passed, leaves
     // nothing behind on the provider.
     afterEach(async () => {
       await Promise.all(createdSandboxIds.splice(0).map((id) => subject.provider.destroy(id)));
-    });
+    }, realProviderTimeoutInMilliseconds);
 
     afterAll(async () => {
       await subject?.dispose();
-    });
+    }, realProviderTimeoutInMilliseconds);
 
     async function createSandbox(): Promise<{ threadId: string; sandboxId: string }> {
       const threadId = `contract-${randomUUID()}`;
