@@ -8,6 +8,7 @@ import {
 } from "@barrack/mock-model-server";
 import { agentEventSchema } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher.js";
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
 import { pause, waitUntil } from "../test-support/wait-until.js";
@@ -79,6 +80,7 @@ async function startHarness(model = "mock/mock-1"): Promise<PiAgentHarness> {
     workspaceDirectory: path.join(temporaryDirectory, "workspace"),
     stateDirectory: path.join(temporaryDirectory, "state"),
     sourceEnvironment: { PATH, HOME: temporaryDirectory, PI_OFFLINE: "1" },
+    agentProcessLauncher: new SameUserAgentLauncher(),
     logger: createSilentLogger(),
     mintIdentifier: () => `minted-${++identifierCount}`,
   });

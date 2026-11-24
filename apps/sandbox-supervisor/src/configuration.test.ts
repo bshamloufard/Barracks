@@ -45,6 +45,41 @@ describe("readConfiguration", () => {
     });
   });
 
+  it("reads the user Pi should run as, and leaves it unset when not given", () => {
+    const piVariables = {
+      ...sharedVariables,
+      BARRACK_MODEL: "openai/example-model",
+      BARRACK_WORKSPACE_DIRECTORY: "/workspace",
+      BARRACK_STATE_DIRECTORY: "/var/barrack",
+    };
+
+    expect(
+      readConfiguration({ ...piVariables, BARRACK_AGENT_USER: "barrack-agent" }),
+    ).toMatchObject({
+      ok: true,
+      configuration: { agentHarness: { agentUserName: "barrack-agent" } },
+    });
+    expect(readConfiguration(piVariables)).toMatchObject({
+      ok: true,
+      configuration: { agentHarness: { agentUserName: undefined } },
+    });
+  });
+
+  it("rejects an agent user that cannot be a user name", () => {
+    const result = readConfiguration({
+      ...sharedVariables,
+      BARRACK_MODEL: "openai/example-model",
+      BARRACK_WORKSPACE_DIRECTORY: "/workspace",
+      BARRACK_STATE_DIRECTORY: "/var/barrack",
+      BARRACK_AGENT_USER: "--reuid=0",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: ["BARRACK_AGENT_USER: must be the name of an operating-system user"],
+    });
+  });
+
   it("lists every missing variable the Pi harness needs", () => {
     const result = readConfiguration({ ...sharedVariables, BARRACK_AGENT_HARNESS: "pi" });
 

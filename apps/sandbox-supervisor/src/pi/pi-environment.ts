@@ -4,13 +4,16 @@
  * copy of the supervisor's. The supervisor's control-plane token is left out.
  *
  * That keeps the token out of anything Pi prints or sends to the model by
- * accident; it does not keep it from a determined agent. Pi runs as the same
- * operating-system user as the supervisor, so a tool can read the token from
- * `/proc/<supervisor pid>/environ`. Deleting it from `process.env` would not
- * help: Linux reports the environment the process started with. Real
- * separation (the agent as a different user, a token per thread) comes with
- * the sandbox image; see "Known limitation: the supervisor and the agent
- * share an operating-system user" in docs/decisions.md.
+ * accident. Whether it also keeps it from a determined agent depends on the
+ * user Pi runs as (see src/agent-process). In the sandbox image Pi runs as a
+ * user of its own, and Linux shows a process's environment only to the
+ * process's own user. Run as the supervisor's user, as on a developer's
+ * machine, a tool can read the token from `/proc/<supervisor pid>/environ`;
+ * deleting it from `process.env` would not help, because Linux reports the
+ * environment the process started with.
+ *
+ * The variables that name the user (`HOME`, `USER`, `LOGNAME`, `SHELL`) are
+ * copied here and then set by the launcher to the user Pi actually runs as.
  */
 
 /** What ordinary command-line tools expect to find. */

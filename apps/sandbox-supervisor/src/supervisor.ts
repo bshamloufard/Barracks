@@ -6,6 +6,7 @@ import {
 } from "@barrack/protocol";
 import { z } from "zod";
 import type { AgentHarness, AgentHarnessObserver } from "./agent-harness.js";
+import type { AgentProcessLauncher } from "./agent-process/agent-process-launcher.js";
 import type { SupervisorConfiguration } from "./configuration.js";
 import {
   type ConnectionTiming,
@@ -23,6 +24,8 @@ export type SupervisorSettings = {
   configuration: SupervisorConfiguration;
   /** The supervisor's own environment; the agent's is built from an allowlist of it. */
   sourceEnvironment: NodeJS.ProcessEnv;
+  /** Decides which operating-system user the agent runs as. */
+  agentProcessLauncher: AgentProcessLauncher;
   logger: Logger;
   /** Something happened that the supervisor cannot recover from; it should exit. */
   onFatalError: (error: Error) => void;
@@ -54,6 +57,7 @@ export class Supervisor {
     this.#harness = createAgentHarness(configuration.agentHarness, this.#createObserver(), {
       threadId: configuration.threadId,
       sourceEnvironment: settings.sourceEnvironment,
+      agentProcessLauncher: settings.agentProcessLauncher,
       logger,
     });
   }

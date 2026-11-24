@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type AgentEvent, maximumErrorMessageLength } from "@barrack/protocol";
 import type { AgentHarness, AgentHarnessObserver, UserMessage } from "../agent-harness.js";
+import type { AgentProcessLauncher } from "../agent-process/agent-process-launcher.js";
 import type { Logger } from "../logger.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
@@ -28,6 +29,8 @@ export type PiAgentHarnessSettings = {
   stateDirectory: string;
   /** The supervisor's environment, from which Pi's is built. */
   sourceEnvironment: NodeJS.ProcessEnv;
+  /** Decides which operating-system user Pi runs as. */
+  agentProcessLauncher: AgentProcessLauncher;
   logger: Logger;
   mintIdentifier?: () => string;
 };
@@ -267,7 +270,13 @@ export class PiAgentHarness implements AgentHarness {
       this.#sessionFile !== undefined && existsSync(this.#sessionFile)
         ? this.#sessionFile
         : undefined;
-    this.#logger.info({ sessionFile: sessionFileToResume ?? null }, "Starting Pi");
+    this.#logger.info(
+      {
+        sessionFile: sessionFileToResume ?? null,
+        runsAs: this.#settings.agentProcessLauncher.description,
+      },
+      "Starting Pi",
+    );
     return new PiProcess(
       {
         entryPointPath: resolvePiEntryPointPath(),
@@ -277,6 +286,7 @@ export class PiAgentHarness implements AgentHarness {
         sessionFileToResume,
         model: this.#settings.model,
         environment: buildPiEnvironment(this.#settings.sourceEnvironment, agentDirectory),
+        launcher: this.#settings.agentProcessLauncher,
       },
       {
         onEvent: (event) => this.#handlePiEvent(event),

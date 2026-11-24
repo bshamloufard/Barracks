@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher.js";
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
 import { PiAgentHarness } from "./pi-agent-harness.js";
@@ -13,6 +14,7 @@ describe("PiAgentHarness", () => {
       // A directory cannot be created inside a character device.
       stateDirectory: "/dev/null/state",
       sourceEnvironment: {},
+      agentProcessLauncher: new SameUserAgentLauncher(),
       logger: createSilentLogger(),
     });
 

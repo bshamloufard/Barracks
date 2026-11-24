@@ -1,5 +1,9 @@
-import { type ChildProcessByStdio, spawn } from "node:child_process";
-import type { Readable, Writable } from "node:stream";
+import type { Readable } from "node:stream";
+import type {
+  AgentProcessLauncher,
+  AgentProcessStdio,
+  LaunchedAgentProcess,
+} from "../agent-process/agent-process-launcher.js";
 import type { Logger } from "../logger.js";
 import { LineSplitter } from "./line-splitter.js";
 import type { PiEvent, PiExtensionUiRequest } from "./pi-records.js";
@@ -16,6 +20,8 @@ export type PiLaunchSettings = {
   sessionFileToResume: string | undefined;
   model: string;
   environment: NodeJS.ProcessEnv;
+  /** Decides which operating-system user Pi runs as. */
+  launcher: AgentProcessLauncher;
 };
 
 export type PiExit = {
@@ -59,7 +65,6 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
       ? ["--session-dir", settings.sessionDirectory, "--session-id", settings.sessionId]
       : ["--session", settings.sessionFileToResume];
   return [
-    settings.entryPointPath,
     ...sessionArguments,
     "--model",
     settings.model,
@@ -71,7 +76,8 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
 
 export class PiProcess {
   readonly client: PiRpcClient;
-  readonly #child: ChildProcessByStdio<Writable, Readable, Readable>;
+  readonly #agentProcess: LaunchedAgentProcess;
+  readonly #child: AgentProcessStdio;
   readonly #logger: Logger;
   readonly #exited: Promise<void>;
   #recentDiagnostics = "";
@@ -80,11 +86,13 @@ export class PiProcess {
 
   constructor(settings: PiLaunchSettings, handlers: PiProcessHandlers, logger: Logger) {
     this.#logger = logger;
-    this.#child = spawn(process.execPath, buildPiArguments(settings), {
-      cwd: settings.workspaceDirectory,
-      env: settings.environment,
-      stdio: ["pipe", "pipe", "pipe"],
+    this.#agentProcess = settings.launcher.launch({
+      scriptPath: settings.entryPointPath,
+      scriptArguments: buildPiArguments(settings),
+      workingDirectory: settings.workspaceDirectory,
+      environment: settings.environment,
     });
+    this.#child = this.#agentProcess.child;
     this.client = new PiRpcClient({
       commandStream: this.#child.stdin,
       recordStream: this.#child.stdout,
@@ -105,7 +113,10 @@ export class PiProcess {
     return this.#recentDiagnostics;
   }
 
-  /** Closes Pi's input and waits for it to exit, escalating to signals if it does not. */
+  /**
+   * Closes Pi's input and waits for it to exit, escalating to signals sent to
+   * every process of the agent if it does not.
+   */
   async stop(): Promise<void> {
     if (this.#hasExited) {
       return;
@@ -115,13 +126,13 @@ export class PiProcess {
     if (await this.#waitForExit(gracefulExitTimeoutInMilliseconds)) {
       return;
     }
-    this.#logger.warn("Pi did not exit after its input closed; sending SIGTERM");
-    this.#child.kill("SIGTERM");
+    this.#logger.warn("Pi did not exit after its input closed; sending SIGTERM to the agent");
+    await this.#signalAgentProcesses("SIGTERM");
     if (await this.#waitForExit(terminatedExitTimeoutInMilliseconds)) {
       return;
     }
-    this.#logger.warn("Pi did not exit after SIGTERM; sending SIGKILL");
-    this.#child.kill("SIGKILL");
+    this.#logger.warn("Pi did not exit after SIGTERM; sending SIGKILL to the agent");
+    await this.#signalAgentProcesses("SIGKILL");
     await this.#exited;
   }
 
@@ -133,6 +144,14 @@ export class PiProcess {
         resolve(true);
       });
     });
+  }
+
+  async #signalAgentProcesses(signal: NodeJS.Signals): Promise<void> {
+    try {
+      await this.#agentProcess.signalAgentProcesses(signal);
+    } catch (error) {
+      this.#logger.error({ err: error, signal }, "Signalling the agent's processes failed");
+    }
   }
 
   /**
