@@ -107,6 +107,14 @@ export function describeThreadStoreContract(
     return outcome.thread;
   }
 
+  async function threadOrThrow(store: ThreadStore, threadId: string): Promise<ThreadRecord> {
+    const thread = await store.find(threadId);
+    if (thread === undefined) {
+      throw new Error(`There is no ${threadId}`);
+    }
+    return thread;
+  }
+
   async function threadIn(
     store: ThreadStore,
     state: SandboxState,
@@ -137,6 +145,7 @@ export function describeThreadStoreContract(
         version: 1,
         title: undefined,
         isWakeRequested: false,
+        awaitingSupervisorSince: startTime,
       });
       expect(await store.find("thread-a")).toEqual(created);
     });
@@ -409,11 +418,13 @@ export function describeThreadStoreContract(
         threadId: "thread-a",
         fromVersion: stopping.version,
         wakeLeaseExpiresAt: secondsAfterStart(70),
+        at: secondsAfterStart(70),
       });
       const stopped = await store.finishStopping({
         threadId: "thread-b",
         fromVersion: plainStop.version,
         wakeLeaseExpiresAt: secondsAfterStart(70),
+        at: secondsAfterStart(70),
       });
 
       expect(arrival).toMatchObject({ isWakeRequested: true, version: stopping.version });
@@ -457,9 +468,57 @@ export function describeThreadStoreContract(
         threadId: "thread-a",
         fromVersion: stopping.version - 1,
         wakeLeaseExpiresAt: startTime,
+        at: startTime,
       });
 
       expect(stale).toEqual({ kind: "conflict" });
+    });
+
+    it("has a sandbox await its supervisor from when it is asked for, and again from when it runs", async () => {
+      const store = await createEmptyStore();
+      const created = await createThread(store, "thread-a");
+
+      const running = await changeTo(store, created, "running", secondsAfterStart(30));
+      await store.recordSupervisorAttached("thread-a");
+      const attached = await store.find("thread-a");
+      const stopped = await changeTo(store, await threadOrThrow(store, "thread-a"), "stopped");
+      const starting = await changeTo(store, stopped, "starting", secondsAfterStart(90));
+
+      expect(created.awaitingSupervisorSince).toEqual(startTime);
+      expect(running.awaitingSupervisorSince).toEqual(secondsAfterStart(30));
+      expect(attached?.awaitingSupervisorSince).toBeUndefined();
+      expect(attached?.version).toBe(running.version);
+      expect(stopped.awaitingSupervisorSince).toBeUndefined();
+      expect(starting.awaitingSupervisorSince).toEqual(secondsAfterStart(90));
+    });
+
+    it("does not await a supervisor that attached before its sandbox was recorded running", async () => {
+      const store = await createEmptyStore();
+      const created = await createThread(store, "thread-a");
+
+      await store.recordSupervisorAttached("thread-a");
+      const running = await changeTo(store, created, "running", secondsAfterStart(30));
+
+      expect(running.awaitingSupervisorSince).toBeUndefined();
+    });
+
+    it("has a sandbox woken as it stops await its supervisor from then", async () => {
+      const store = await createEmptyStore();
+      const stopping = await threadIn(store, "stopping", "thread-a");
+      await store.recordSupervisorAttached("thread-a");
+      await store.recordUserMessageArrival("thread-a", { at: startTime, title: undefined });
+
+      const woken = await store.finishStopping({
+        threadId: "thread-a",
+        fromVersion: stopping.version,
+        wakeLeaseExpiresAt: secondsAfterStart(70),
+        at: secondsAfterStart(40),
+      });
+
+      expect(woken).toMatchObject({
+        kind: "changed",
+        thread: { awaitingSupervisorSince: secondsAfterStart(40) },
+      });
     });
   });
 

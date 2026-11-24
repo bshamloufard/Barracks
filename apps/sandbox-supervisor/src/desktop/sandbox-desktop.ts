@@ -1,4 +1,4 @@
-import type { DesktopAvailability } from "@barrack/protocol";
+import { type DesktopAvailability, maximumErrorMessageLength } from "@barrack/protocol";
 import type {
   AgentProcessLauncher,
   AgentProcessStdio,
@@ -18,6 +18,12 @@ export type DesktopTiming = {
   maximumRestartDelayInMilliseconds: number;
   /** A desktop that ran this long before ending is restarted after the first delay again. */
   stableRunInMilliseconds: number;
+  /**
+   * How many times in a row a desktop may end before it ran stably, before
+   * it is given up on and reported unavailable rather than restarted for
+   * ever while claiming to be starting.
+   */
+  maximumConsecutiveFailures: number;
   /** How long stopping waits for the desktop to end once asked. */
   stopTimeoutInMilliseconds: number;
 };
@@ -28,6 +34,7 @@ export const defaultDesktopTiming: DesktopTiming = {
   firstRestartDelayInMilliseconds: 1_000,
   maximumRestartDelayInMilliseconds: 30_000,
   stableRunInMilliseconds: 60_000,
+  maximumConsecutiveFailures: 5,
   stopTimeoutInMilliseconds: 5_000,
 };
 
@@ -185,6 +192,10 @@ export class SandboxDesktop {
     if (runTimeInMilliseconds >= this.#timing.stableRunInMilliseconds) {
       this.#restartAttempt = 0;
     }
+    if (this.#restartAttempt + 1 >= this.#timing.maximumConsecutiveFailures) {
+      this.#giveUp(description, recentOutput);
+      return;
+    }
     const delay = Math.min(
       this.#timing.firstRestartDelayInMilliseconds * 2 ** this.#restartAttempt,
       this.#timing.maximumRestartDelayInMilliseconds,
@@ -196,6 +207,24 @@ export class SandboxDesktop {
     );
     this.#report({ status: "starting", explanation: restartingExplanation });
     this.#restartTimer = setTimeout(() => this.#launch(configuration), delay);
+  }
+
+  /**
+   * A desktop that keeps ending at once (a broken image, a runtime that will
+   * not run Xvnc) would otherwise be restarted for ever, every thirty
+   * seconds, and shown as starting the whole time. It is reported
+   * unavailable instead, with its own last words, until the supervisor is
+   * started again, as resuming the thread does.
+   */
+  #giveUp(description: string, recentOutput: string): void {
+    const failures = this.#timing.maximumConsecutiveFailures;
+    this.#logger.error(
+      { description, recentOutput, failures },
+      "The desktop ended before running stably too many times in a row; giving up on it",
+    );
+    const lastWords = recentOutput.trim().split("\n").at(-1)?.trim() ?? "";
+    const explanation = `The sandbox's desktop stopped ${failures} times in a row soon after starting, so it is not started again until the sandbox restarts${lastWords === "" ? "" : `. It last said: ${lastWords}`}`;
+    this.#report({ status: "none", explanation: limitLength(explanation) });
   }
 
   /** The desktop's own messages are kept for diagnosis, not logged line by line. */
@@ -232,4 +261,10 @@ export class SandboxDesktop {
       this.#settings.onAvailabilityChanged(availability);
     }
   }
+}
+
+function limitLength(text: string): string {
+  return text.length <= maximumErrorMessageLength
+    ? text
+    : `${text.slice(0, maximumErrorMessageLength - 1)}…`;
 }

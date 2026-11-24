@@ -30,10 +30,12 @@ describe("reading a Daytona sandbox's state as Barrack's", () => {
   it("reads Daytona's error states as failed, with Daytona's reason", () => {
     expect(toSandboxStatus(sandboxIn("error", "runner lost"))).toEqual({
       state: "failed",
+      cause: "provider-fault",
       reason: "runner lost",
     });
     expect(toSandboxStatus(sandboxIn("build_failed"))).toEqual({
       state: "failed",
+      cause: "provider-fault",
       reason: "Daytona reports build_failed",
     });
   });
@@ -41,6 +43,7 @@ describe("reading a Daytona sandbox's state as Barrack's", () => {
   it("reads a state Barrack never asks for as failed, naming it", () => {
     expect(toSandboxStatus(sandboxIn("paused"))).toEqual({
       state: "failed",
+      cause: "provider-fault",
       reason: 'Daytona reports the unexpected state "paused"',
     });
     expect(toSandboxStatus(sandboxIn(undefined))).toMatchObject({ state: "failed" });

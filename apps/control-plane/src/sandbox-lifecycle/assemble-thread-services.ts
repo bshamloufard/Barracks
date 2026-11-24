@@ -68,6 +68,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     threadActivity: {
       admitUserMessage: (threadId, text) => lifecycleOf().admitUserMessage(threadId, text),
       recordAgentActivity: (threadId) => lifecycleOf().recordAgentActivity(threadId),
+      recordSupervisorAttached: (threadId) => lifecycleOf().recordSupervisorAttached(threadId),
     },
     ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
     ...(options.modelAccess === undefined ? {} : { modelAccess: options.modelAccess }),
@@ -100,6 +101,8 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     threadEventLog,
     threadRuns: relays,
     clock,
+    timing,
+    controlPlaneUrlForSandboxes: options.supervisorEnvironment.controlPlaneUrlForSandboxes,
     logger,
   });
   const idleShutdown = new IdleSandboxShutdown({

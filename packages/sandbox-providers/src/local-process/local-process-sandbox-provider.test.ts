@@ -146,6 +146,7 @@ describe("the local-process sandbox provider", () => {
     await vi.waitFor(async () =>
       expect(await provider.getStatus(sandboxId)).toEqual({
         state: "failed",
+        cause: "supervisor-exited",
         reason: "its supervisor exited by itself (exit code 3)",
       }),
     );

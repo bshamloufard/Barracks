@@ -55,6 +55,7 @@ export class InMemoryThreadStore implements ThreadStore {
       title: undefined,
       lastActivityAt: options.at,
       isWakeRequested: false,
+      awaitingSupervisorSince: options.at,
     };
     this.#threads.push(record);
     if (repository !== undefined) {
@@ -94,6 +95,9 @@ export class InMemoryThreadStore implements ThreadStore {
         : { state: "stopped", sandboxId, problem: undefined },
       version: current.version + 1,
       isWakeRequested: false,
+      awaitingSupervisorSince: current.isWakeRequested
+        ? request.at
+        : current.awaitingSupervisorSince,
     };
     return { kind: "changed", thread: this.#replace(changed) };
   }
@@ -127,6 +131,13 @@ export class InMemoryThreadStore implements ThreadStore {
     const current = this.#find(threadId);
     if (current !== undefined) {
       this.#replace({ ...current, lastActivityAt: at });
+    }
+  }
+
+  async recordSupervisorAttached(threadId: string): Promise<void> {
+    const current = this.#find(threadId);
+    if (current !== undefined) {
+      this.#replace({ ...current, awaitingSupervisorSince: undefined });
     }
   }
 

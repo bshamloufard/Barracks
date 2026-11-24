@@ -122,7 +122,11 @@ describe("the fake sandbox provider", () => {
     const stoppedStatus = await provider.getStatus(sandboxId);
     await provider.markMissing(sandboxId);
 
-    expect(failedStatus).toEqual({ state: "failed", reason: "the supervisor crashed" });
+    expect(failedStatus).toEqual({
+      state: "failed",
+      cause: "supervisor-exited",
+      reason: "the supervisor crashed",
+    });
     expect(stoppedStatus).toEqual({ state: "stopped" });
     expect(await provider.getStatus(sandboxId)).toEqual({ state: "missing" });
     await expect(provider.start(sandboxId)).rejects.toThrow(SandboxNotFoundError);

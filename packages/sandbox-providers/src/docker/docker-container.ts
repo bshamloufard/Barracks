@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { SandboxStatus } from "../sandbox-provider.js";
+import { type SandboxStatus, supervisorRefusedToStartExitCode } from "../sandbox-provider.js";
 
 /**
  * What Barrack reads from `docker container inspect`, and how a container's
@@ -45,7 +45,26 @@ export function isBarrackSandbox(container: InspectedContainer): boolean {
 /** The exit codes of a supervisor that was asked to stop: cleanly, or killed after the grace period. */
 const requestedStopExitCodes = new Set([0, 137, 143]);
 
-export function toSandboxStatus(container: InspectedContainer): SandboxStatus {
+/**
+ * Whether the container's supervisor exited by itself with an error, so
+ * that what it last wrote to standard error says why.
+ */
+export function hasSupervisorFailed(container: InspectedContainer): boolean {
+  const { State: state } = container;
+  return (
+    state.Status === "exited" && !state.OOMKilled && !requestedStopExitCodes.has(state.ExitCode)
+  );
+}
+
+/**
+ * The sandbox's state, from the container's. `supervisorLastWords` is what
+ * the supervisor last wrote to standard error, for a supervisor that
+ * failed (`hasSupervisorFailed`), when it could be read.
+ */
+export function toSandboxStatus(
+  container: InspectedContainer,
+  supervisorLastWords?: string,
+): SandboxStatus {
   const { State: state } = container;
   switch (state.Status) {
     case "running":
@@ -59,21 +78,64 @@ export function toSandboxStatus(container: InspectedContainer): SandboxStatus {
     case "created":
       return { state: "stopped" };
     case "exited":
-      return describeExitedContainer(state);
+      return describeExitedContainer(state, supervisorLastWords);
     default:
       return {
         state: "failed",
+        cause: "provider-fault",
         reason: `the container is ${state.Status}${state.Error === "" ? "" : `: ${state.Error}`}`,
       };
   }
 }
 
-function describeExitedContainer(state: InspectedContainer["State"]): SandboxStatus {
+/** Docker's own words, and the C library's, for a full disk. */
+const fullDiskPattern = /ENOSPC|no space left on device/i;
+
+function describeExitedContainer(
+  state: InspectedContainer["State"],
+  supervisorLastWords: string | undefined,
+): SandboxStatus {
   if (state.OOMKilled) {
-    return { state: "failed", reason: "the sandbox ran out of memory" };
+    return { state: "failed", cause: "out-of-memory", reason: "the sandbox ran out of memory" };
   }
   if (requestedStopExitCodes.has(state.ExitCode)) {
     return { state: "stopped" };
   }
-  return { state: "failed", reason: `the supervisor exited with code ${state.ExitCode}` };
+  const saying = supervisorLastWords === undefined ? "" : `, saying: ${supervisorLastWords}`;
+  if (state.ExitCode === supervisorRefusedToStartExitCode) {
+    return {
+      state: "failed",
+      cause: "supervisor-refused-to-start",
+      reason: `the supervisor refused to start${saying}`,
+    };
+  }
+  return {
+    state: "failed",
+    cause: fullDiskPattern.test(supervisorLastWords ?? "") ? "out-of-disk" : "supervisor-exited",
+    reason: `the supervisor exited with code ${state.ExitCode}${saying}`,
+  };
+}
+
+/** Lines of standard error kept as the supervisor's last words, and how long they may run. */
+const lastWordsLineCount = 6;
+const longestLastWordsLength = 600;
+
+/**
+ * The supervisor's last words, from the end of what the container wrote to
+ * standard error (where the supervisor writes why it stopped; its log lines
+ * go to standard output): its last few lines, joined, and cut short.
+ */
+export function summariseLastWords(standardError: string): string | undefined {
+  const lines = standardError
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(-lastWordsLineCount);
+  if (lines.length === 0) {
+    return undefined;
+  }
+  const lastWords = lines.join(" ");
+  return lastWords.length > longestLastWordsLength
+    ? `${lastWords.slice(0, longestLastWordsLength - 1)}…`
+    : lastWords;
 }

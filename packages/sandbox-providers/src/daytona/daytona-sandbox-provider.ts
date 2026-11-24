@@ -88,6 +88,19 @@ const ensureSupervisorCommand = "/usr/local/bin/barrack-ensure-supervisor";
  */
 const sandboxImageAgentUser = { BARRACK_AGENT_USER: "barrack-agent" };
 
+/** How much of a failed launch's output is quoted: its end, which says why. */
+const longestQuotedOutputLength = 600;
+
+function summariseCommandOutput(output: string): string {
+  const flattened = output.trim().replaceAll(/\s+/g, " ");
+  if (flattened.length === 0) {
+    return "nothing";
+  }
+  return flattened.length > longestQuotedOutputLength
+    ? `…${flattened.slice(-(longestQuotedOutputLength - 1))}`
+    : flattened;
+}
+
 export const sandboxLabel = "barrack.sandbox";
 export const threadIdLabel = "barrack.thread-id";
 
@@ -270,6 +283,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     attemptedOperation: string,
   ): Promise<SandboxProviderError | undefined> {
     let exitCode: number;
+    let output: string;
     try {
       await this.#handOverSecrets(sandbox.id, secrets);
       // The command gets the sandbox's environment explicitly as well, in case
@@ -281,6 +295,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
         launchSupervisorTimeoutInSeconds,
       );
       exitCode = result.exitCode;
+      output = result.output;
     } catch (failure) {
       return toSandboxProviderError(failure, attemptedOperation, sandbox.id);
     }
@@ -289,7 +304,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     }
     return new SandboxRefusedError(
       attemptedOperation,
-      `the sandbox could not launch its supervisor (exit code ${exitCode}); check that the snapshot was made from Barrack's sandbox image, and see /var/log/barrack/supervisor.log in the sandbox`,
+      `the sandbox could not launch its supervisor (exit code ${exitCode}); check that the snapshot was made from Barrack's sandbox image. It said: ${summariseCommandOutput(output)}`,
     );
   }
 

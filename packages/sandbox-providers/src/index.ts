@@ -20,18 +20,21 @@ export {
   type SandboxProviderConfigurationResult,
   sandboxProviderVariableNames,
 } from "./provider-configuration.js";
-export type {
-  CreatedSandbox,
-  SandboxCreationRequest,
-  SandboxProvider,
-  SandboxStartOptions,
-  SandboxState,
-  SandboxStatus,
-  ServiceAddress,
-  ServiceAddressRequest,
+export {
+  type CreatedSandbox,
+  type SandboxCreationRequest,
+  type SandboxFailureCause,
+  type SandboxProvider,
+  type SandboxStartOptions,
+  type SandboxState,
+  type SandboxStatus,
+  type ServiceAddress,
+  type ServiceAddressRequest,
+  supervisorRefusedToStartExitCode,
 } from "./sandbox-provider.js";
 export {
   SandboxAlreadyExistsError,
+  SandboxImageUnavailableError,
   SandboxNotFoundError,
   SandboxProviderError,
   SandboxProviderUnavailableError,

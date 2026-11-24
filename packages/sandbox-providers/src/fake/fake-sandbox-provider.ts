@@ -7,6 +7,7 @@ import {
 import type {
   CreatedSandbox,
   SandboxCreationRequest,
+  SandboxFailureCause,
   SandboxProvider,
   SandboxStartOptions,
   SandboxStatus,
@@ -202,10 +203,15 @@ export class FakeSandboxProvider implements SandboxProvider {
     });
   }
 
-  /** Puts a sandbox in the failed state, as if it had crashed. */
-  async markFailed(sandboxId: string, reason: string): Promise<void> {
+  /** Puts a sandbox in the failed state, as if it had crashed (or failed as `cause` says). */
+  async markFailed(
+    sandboxId: string,
+    reason: string,
+    cause: SandboxFailureCause = "supervisor-exited",
+  ): Promise<void> {
     await this.#halt(this.#require(`mark sandbox "${sandboxId}" failed`, sandboxId), {
       state: "failed",
+      cause,
       reason,
     });
   }

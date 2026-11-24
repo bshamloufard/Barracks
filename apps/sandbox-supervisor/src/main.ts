@@ -8,12 +8,24 @@ import { SecretRedactor } from "./secret-redactor.js";
 import { Supervisor } from "./supervisor.js";
 import { readSupervisorSecrets } from "./supervisor-secrets.js";
 
+/**
+ * The exit code with which the supervisor refuses to start: `EX_CONFIG`
+ * from sysexits.h. Sandbox providers read it as a sandbox that will fail the
+ * same way however often it is started, until its configuration is fixed.
+ */
+const refusedToStartExitCode = 78;
+
+/**
+ * Why the supervisor stops goes to standard error as well as the log, as
+ * its last words: providers show them to the user (Docker's reads the
+ * container's standard error), while the log goes to standard output.
+ */
 function exitWithProblems(problems: readonly string[]): never {
   const problemList = problems.map((problem) => `  - ${problem}`).join("\n");
   process.stderr.write(
     `The sandbox supervisor cannot start: its configuration is invalid.\n${problemList}\n`,
   );
-  process.exit(1);
+  process.exit(refusedToStartExitCode);
 }
 
 /** The fake agent is not a process, so only Pi needs a launcher that is checked. */
@@ -74,6 +86,9 @@ async function shutDown(exitCode: number, reason: string): Promise<void> {
   }
   isShuttingDown = true;
   logger.info({ reason, exitCode }, "Shutting down");
+  if (exitCode !== 0) {
+    process.stderr.write(`The sandbox supervisor stopped: ${secretRedactor.redactText(reason)}\n`);
+  }
   try {
     await supervisor.stop();
   } catch (error) {

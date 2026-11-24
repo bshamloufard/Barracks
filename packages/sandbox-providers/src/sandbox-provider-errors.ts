@@ -46,6 +46,13 @@ export class SandboxProviderUnavailableError extends SandboxProviderError {}
  */
 export class SandboxRefusedError extends SandboxProviderError {}
 
+/**
+ * The sandbox image (or the provider's snapshot of it) the provider is
+ * configured with cannot be found or fetched. Nothing a user does helps:
+ * the installation's administrator must make it available.
+ */
+export class SandboxImageUnavailableError extends SandboxRefusedError {}
+
 /** The thread already has a sandbox; `existingSandboxId` names it. */
 export class SandboxAlreadyExistsError extends SandboxProviderError {
   readonly threadId: string;

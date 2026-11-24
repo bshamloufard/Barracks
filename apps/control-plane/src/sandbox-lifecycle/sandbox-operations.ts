@@ -77,7 +77,29 @@ export class SandboxOperations {
    */
   carryOut(thread: ThreadRecord, supervisorToken?: MintedSupervisorToken): void {
     const logger = this.#loggerFor(thread);
-    const operation = this.#perform(thread, supervisorToken, logger).catch((error: unknown) => {
+    this.#runInBackground(thread, logger, this.#perform(thread, supervisorToken, logger));
+  }
+
+  /**
+   * Stops a sandbox, as `carryOut` does a thread just moved to `stopping`,
+   * but records its thread `failed` with `reason` once it has stopped,
+   * rather than `stopped`: for a sandbox stopped because something is wrong
+   * with it, which the user must be told and which a message should not
+   * simply wake. A stop taken over by another control plane finishes as an
+   * ordinary one, without the reason.
+   */
+  stopAndFail(thread: ThreadRecord, reason: string): void {
+    const logger = this.#loggerFor(thread);
+    if (thread.sandbox.state !== "stopping") {
+      logger.error({ sandboxState: thread.sandbox.state }, "Only a stopping sandbox can be failed");
+      return;
+    }
+    const { sandboxId } = thread.sandbox;
+    this.#runInBackground(thread, logger, this.#stop(thread, sandboxId, logger, reason));
+  }
+
+  #runInBackground(thread: ThreadRecord, logger: Logger, work: Promise<void>): void {
+    const operation = work.catch((error: unknown) => {
       logger.error(
         { err: error, sandboxState: thread.sandbox.state },
         "A sandbox operation failed unexpectedly; once its lease expires, reconciliation takes it over",
@@ -334,7 +356,12 @@ export class SandboxOperations {
    * once the stop is recorded at the operation's version, so it is the
    * stopped agent's run and not one a sandbox woken since has opened.
    */
-  async #stop(thread: ThreadRecord, sandboxId: string, logger: Logger): Promise<void> {
+  async #stop(
+    thread: ThreadRecord,
+    sandboxId: string,
+    logger: Logger,
+    failureReason?: string,
+  ): Promise<void> {
     const { threadRuns } = this.#options;
     threadRuns.prepareForStop(thread.threadId);
     try {
@@ -362,10 +389,15 @@ export class SandboxOperations {
       threadRuns.finishStop(thread.threadId);
     }
     const openRun = await this.#readOpenRun(thread.threadId, logger);
+    if (failureReason !== undefined) {
+      await this.#recordStoppedAsFailed(thread, sandboxId, failureReason, openRun, logger);
+      return;
+    }
     const finished = await this.#options.threadStore.finishStopping({
       threadId: thread.threadId,
       fromVersion: thread.version,
       wakeLeaseExpiresAt: this.leaseExpiry(),
+      at: this.#options.clock(),
     });
     if (finished.kind !== "changed") {
       logger.warn(
@@ -379,6 +411,21 @@ export class SandboxOperations {
       logger.info("A message arrived while the sandbox was stopping; waking it again");
       await this.#start(finished.thread, sandboxId, logger);
     }
+  }
+
+  async #recordStoppedAsFailed(
+    thread: ThreadRecord,
+    sandboxId: string,
+    reason: string,
+    openRun: OpenRun | undefined,
+    logger: Logger,
+  ): Promise<void> {
+    const recorded = await this.#record(thread, logger, { state: "failed", sandboxId, reason });
+    if (recorded.kind !== "changed") {
+      return;
+    }
+    await this.#closeOpenRun(thread.threadId, openRun, runEndedBySandboxStoppingMessage, logger);
+    logger.warn({ sandboxId, reason }, "Stopped the thread's sandbox and recorded it failed");
   }
 
   /**

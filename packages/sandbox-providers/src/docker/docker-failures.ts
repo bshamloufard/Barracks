@@ -1,4 +1,5 @@
 import {
+  SandboxImageUnavailableError,
   SandboxNotFoundError,
   type SandboxProviderError,
   SandboxProviderUnavailableError,
@@ -23,13 +24,17 @@ const daemonUnreachablePatterns = [
 
 const missingContainerPatterns = [/no such container/i, /no such object/i];
 
-const refusalPatterns = [
-  // The configured image cannot be found or pulled.
+/** The configured image cannot be found or pulled. */
+const imageUnavailablePatterns = [
   /unable to find image/i,
   /pull access denied/i,
   /manifest unknown/i,
   /no such image/i,
   /repository does not exist/i,
+  /error response from daemon: .*not found/i,
+];
+
+const refusalPatterns = [
   // The user running Barrack may not use Docker.
   /permission denied while trying to connect/i,
   // Resource limits the host cannot meet, or options it does not accept.
@@ -73,6 +78,12 @@ export function toSandboxProviderError(
   const explanation = `docker said "${quote(failure.standardError)}"`;
   if (daemonUnreachablePatterns.some((pattern) => pattern.test(failure.standardError))) {
     return new SandboxProviderUnavailableError(attemptedOperation, explanation);
+  }
+  if (imageUnavailablePatterns.some((pattern) => pattern.test(failure.standardError))) {
+    return new SandboxImageUnavailableError(
+      attemptedOperation,
+      `the sandbox image cannot be found or pulled; docker said "${quote(failure.standardError)}"`,
+    );
   }
   if (refusalPatterns.some((pattern) => pattern.test(failure.standardError))) {
     return new SandboxRefusedError(attemptedOperation, explanation);

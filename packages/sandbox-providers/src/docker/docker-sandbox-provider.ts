@@ -28,10 +28,12 @@ import {
 } from "../supervisor-secrets.js";
 import { createDockerCommandRunner, type DockerCommandRunner } from "./docker-cli.js";
 import {
+  hasSupervisorFailed,
   type InspectedContainer,
   isBarrackSandbox,
   isContainerId,
   parseInspectedContainer,
+  summariseLastWords,
   toSandboxStatus,
 } from "./docker-container.js";
 import {
@@ -156,7 +158,13 @@ export class DockerSandboxProvider implements SandboxProvider {
 
   async getStatus(sandboxId: string): Promise<SandboxStatus> {
     const container = await this.#inspectSandbox(sandboxId, `read the state of "${sandboxId}"`);
-    return container === undefined ? { state: "missing" } : toSandboxStatus(container);
+    if (container === undefined) {
+      return { state: "missing" };
+    }
+    const lastWords = hasSupervisorFailed(container)
+      ? await this.#readSupervisorLastWords(sandboxId)
+      : undefined;
+    return toSandboxStatus(container, lastWords);
   }
 
   async getServiceAddress(request: ServiceAddressRequest): Promise<ServiceAddress> {
@@ -202,6 +210,24 @@ export class DockerSandboxProvider implements SandboxProvider {
       standardInput: buildSecretsArchive(secrets, sandboxImageSupervisorUser.id),
       timeoutInMilliseconds: quickCommandTimeoutInMilliseconds,
     });
+  }
+
+  /**
+   * What the supervisor of a container that failed last wrote to standard
+   * error, which says why it stopped. Reading it is a courtesy: if Docker
+   * will not give the container's log (a socket proxy that does not allow
+   * it, say), the status is the same, only without the supervisor's words.
+   */
+  async #readSupervisorLastWords(sandboxId: string): Promise<string | undefined> {
+    try {
+      const standardError = await this.#docker(["container", "logs", "--tail", "40", sandboxId], {
+        resolveWith: "standard-error",
+        timeoutInMilliseconds: quickCommandTimeoutInMilliseconds,
+      });
+      return summariseLastWords(standardError);
+    } catch {
+      return undefined;
+    }
   }
 
   async #describeExistingSandbox(

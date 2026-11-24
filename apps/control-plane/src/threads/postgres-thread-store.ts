@@ -37,12 +37,14 @@ type ThreadRow = {
   title: string | null;
   last_activity_at: Date;
   wake_requested: boolean;
+  awaiting_supervisor_since: Date | null;
   model: string | null;
 };
 
 const threadColumns = `thread_id, owner_user_id, created_at, sandbox_provider,
   supervisor_token_digest, taken_over_supervisor_token_digests, sandbox_state, sandbox_id, sandbox_failure_reason, sandbox_problem,
-  lease_expires_at, state_version, title, last_activity_at, wake_requested, model`;
+  lease_expires_at, state_version, title, last_activity_at, wake_requested, model,
+  awaiting_supervisor_since`;
 
 /**
  * Keeps thread records in Postgres, in the table created by
@@ -82,8 +84,9 @@ export class PostgresThreadStore implements ThreadStore {
       const result = await client.query<ThreadRow>(
         `insert into ${this.#table}
           (thread_id, owner_user_id, created_at, last_activity_at, sandbox_provider,
-            supervisor_token_digest, sandbox_state, lease_expires_at, model)
-          values ($1, $2, $3, $3, $4, $5, 'creating', $6, $7)
+            supervisor_token_digest, sandbox_state, lease_expires_at, model,
+            awaiting_supervisor_since)
+          values ($1, $2, $3, $3, $4, $5, 'creating', $6, $7, $3)
           returning ${threadColumns}`,
         [
           thread.threadId,
@@ -125,11 +128,14 @@ export class PostgresThreadStore implements ThreadStore {
           sandbox_state = case when wake_requested then 'starting' else 'stopped' end,
           lease_expires_at = case when wake_requested then $3::timestamptz end,
           sandbox_problem = null,
+          awaiting_supervisor_since = case
+            when wake_requested then $4 else awaiting_supervisor_since
+          end,
           wake_requested = false,
           state_version = state_version + 1
         where thread_id = $1 and state_version = $2 and sandbox_state = 'stopping'
         returning ${threadColumns}`,
-      [request.threadId, request.fromVersion, request.wakeLeaseExpiresAt],
+      [request.threadId, request.fromVersion, request.wakeLeaseExpiresAt, request.at],
     );
     const row = result.rows[0];
     return row === undefined
@@ -168,6 +174,13 @@ export class PostgresThreadStore implements ThreadStore {
       threadId,
       at,
     ]);
+  }
+
+  async recordSupervisorAttached(threadId: string): Promise<void> {
+    await this.#pool.query(
+      `update ${this.#table} set awaiting_supervisor_since = null where thread_id = $1`,
+      [threadId],
+    );
   }
 
   async changeModel(
@@ -287,6 +300,11 @@ export class PostgresThreadStore implements ThreadStore {
           state_version = state_version + 1,
           wake_requested = wake_requested and sandbox_state = 'stopping' and $3 = 'stopping',
           last_activity_at = case when $3 = 'running' then $8 else last_activity_at end,
+          awaiting_supervisor_since = case
+            when $3 in ('creating', 'starting') then $8
+            when $3 = 'running' and awaiting_supervisor_since is not null then $8
+            else awaiting_supervisor_since
+          end,
           taken_over_supervisor_token_digests = case
             when $9::bytea is null then taken_over_supervisor_token_digests
             else array_append(taken_over_supervisor_token_digests, $9::bytea)
@@ -396,6 +414,7 @@ function toThreadRecord(row: ThreadRow): ThreadRecord {
     title: row.title ?? undefined,
     lastActivityAt: row.last_activity_at,
     isWakeRequested: row.wake_requested,
+    awaitingSupervisorSince: row.awaiting_supervisor_since ?? undefined,
     model: row.model ?? undefined,
   };
 }

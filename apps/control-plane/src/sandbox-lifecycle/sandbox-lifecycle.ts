@@ -253,6 +253,23 @@ export class SandboxLifecycle {
     return this.#recordActivity(threadId, "the user on the desktop");
   }
 
+  /**
+   * Notes that the thread's supervisor attached, so reconciliation does not
+   * take its sandbox for one that can never connect. A failure is logged and
+   * not fatal: the next attachment notes it again, and only a sandbox whose
+   * supervisor never attached for minutes is stopped.
+   */
+  async recordSupervisorAttached(threadId: string): Promise<void> {
+    try {
+      await this.#options.threadStore.recordSupervisorAttached(threadId);
+    } catch (error) {
+      this.#options.logger.error(
+        { err: error, threadId },
+        "Could not record that a supervisor attached",
+      );
+    }
+  }
+
   async #recordActivity(threadId: string, actor: string): Promise<void> {
     const now = this.#options.clock();
     const lastRecordedAt = this.#activityRecordedAt.get(threadId);

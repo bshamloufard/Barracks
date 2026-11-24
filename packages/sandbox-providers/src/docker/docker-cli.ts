@@ -17,6 +17,12 @@ export type DockerCommandOptions = {
   extraEnvironment?: Readonly<Record<string, string>>;
   /** Written to the command's standard input, such as a tar archive for `docker cp -`. */
   standardInput?: string | Buffer;
+  /**
+   * Which of the command's outputs the runner resolves with: standard output
+   * (the default), or standard error, where `docker container logs` writes
+   * what the container wrote to its own standard error.
+   */
+  resolveWith?: "standard-output" | "standard-error";
   timeoutInMilliseconds: number;
 };
 
@@ -41,7 +47,7 @@ export type DockerCommandRunner = (
 
 const maximumOutputInBytes = 16 * 1024 * 1024;
 
-/** Returns a runner for the given docker executable, which resolves with standard output. */
+/** Returns a runner for the given docker executable, which resolves with standard output, or standard error if asked. */
 export function createDockerCommandRunner(dockerExecutable: string): DockerCommandRunner {
   return (commandArguments, options) =>
     new Promise((resolve, reject) => {
@@ -56,7 +62,7 @@ export function createDockerCommandRunner(dockerExecutable: string): DockerComma
         },
         (error, standardOutput, standardError) => {
           if (error === null) {
-            resolve(standardOutput);
+            resolve(options.resolveWith === "standard-error" ? standardError : standardOutput);
             return;
           }
           reject(toDockerCommandFailure(error, standardError.trim()));

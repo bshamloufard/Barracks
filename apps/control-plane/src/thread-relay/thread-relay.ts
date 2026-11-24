@@ -614,6 +614,7 @@ export class ThreadRelay {
       },
       "Supervisor attached",
     );
+    void this.#threadActivity.recordSupervisorAttached(this.threadId);
     this.#broadcastSupervisorConnectionStatus();
     if (!(await this.#describeWorkspace(supervisor))) {
       return;

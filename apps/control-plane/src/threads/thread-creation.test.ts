@@ -10,6 +10,7 @@ import {
 import {
   FakeSandboxProvider,
   SandboxAlreadyExistsError,
+  SandboxImageUnavailableError,
   SandboxProviderUnavailableError,
   SandboxRefusedError,
 } from "@barrack/sandbox-providers";
@@ -192,6 +193,28 @@ describe("a sandbox that cannot be created", () => {
       canResume: false,
     });
     expect(controlPlane.sandboxProvider.sandboxIds()).toEqual([]);
+  });
+
+  it("says that the installation's administrator must provide a sandbox image that cannot be found", async () => {
+    await start();
+    controlPlane.sandboxProvider.failNextOperation(
+      new SandboxImageUnavailableError(
+        "create a sandbox",
+        'the sandbox image cannot be found or pulled; docker said "No such image"',
+      ),
+      "create",
+    );
+
+    const { threadId } = await createThreadThroughApi();
+    await controlPlane.whenOperationsSettle();
+
+    expect((await fetchThread(threadId)).sandbox).toEqual({
+      state: "failed",
+      reason: expect.stringMatching(
+        /cannot be found or pulled.*This installation's sandbox image is missing; its administrator must make it available/,
+      ),
+      canResume: false,
+    });
   });
 
   it("leaves the thread failed, saying to try again later, when the provider stays unavailable", async () => {

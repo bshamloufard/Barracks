@@ -1,4 +1,5 @@
 import {
+  SandboxImageUnavailableError,
   SandboxNotFoundError,
   type SandboxProviderError,
   SandboxProviderUnavailableError,
@@ -16,6 +17,13 @@ import { DaytonaApiFailure } from "./daytona-api.js";
 
 const longestQuotedMessageLength = 300;
 const passingStatusCodes = new Set([408, 429]);
+/**
+ * How Daytona refuses a snapshot it cannot create a sandbox from (missing,
+ * still building, or failed); its exact words have not been seen against
+ * the live service.
+ */
+const snapshotUnavailablePattern =
+  /snapshot.*(not found|does not exist|not active|is not ready|failed|inactive)/i;
 
 export function toSandboxProviderError(
   failure: unknown,
@@ -36,6 +44,12 @@ export function toSandboxProviderError(
   }
   if (passingStatusCodes.has(statusCode) || statusCode >= 500) {
     return new SandboxProviderUnavailableError(attemptedOperation, explanation);
+  }
+  if (snapshotUnavailablePattern.test(failure.message)) {
+    return new SandboxImageUnavailableError(
+      attemptedOperation,
+      `the snapshot named by BARRACK_DAYTONA_SNAPSHOT cannot be used; ${explanation}`,
+    );
   }
   return new SandboxRefusedError(attemptedOperation, explanation);
 }

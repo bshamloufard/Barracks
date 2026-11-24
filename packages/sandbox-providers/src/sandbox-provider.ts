@@ -128,12 +128,35 @@ export type CreatedSandbox = {
  * - `stopped`: not running; its files are kept and `start` resumes it.
  * - `failed`: stopped by something other than the control plane, such as its
  *   supervisor exiting with an error or the provider reporting a fault.
- *   `start` may bring it back; `reason` says what went wrong.
+ *   `start` may bring it back; `reason` says what went wrong, in words a
+ *   user can read, and `cause` which kind of failure it was.
  * - `missing`: the provider has no such sandbox (never had, or destroyed).
  */
 export type SandboxStatus =
   | { state: "starting" | "running" | "stopping" | "stopped" | "missing" }
-  | { state: "failed"; reason: string };
+  | { state: "failed"; cause: SandboxFailureCause; reason: string };
+
+/**
+ * Why a sandbox failed, as far as its provider can tell, so the caller can
+ * say what to do about it without knowing the provider:
+ *
+ * - `supervisor-refused-to-start`: the supervisor found its configuration
+ *   or its sandbox unusable and exited at once (exit code 78, `EX_CONFIG`);
+ *   starting it again fails the same way until the installation is fixed.
+ * - `supervisor-exited`: the supervisor ended with an error after starting.
+ * - `out-of-memory`: the sandbox reached its memory limit and was killed.
+ * - `out-of-disk`: the sandbox's disk, or the host's, was full.
+ * - `provider-fault`: the provider reports a fault of its own.
+ */
+export type SandboxFailureCause =
+  | "supervisor-refused-to-start"
+  | "supervisor-exited"
+  | "out-of-memory"
+  | "out-of-disk"
+  | "provider-fault";
+
+/** The exit code with which the supervisor says it refused to start (`EX_CONFIG` in sysexits.h). */
+export const supervisorRefusedToStartExitCode = 78;
 
 export type SandboxState = SandboxStatus["state"];
 

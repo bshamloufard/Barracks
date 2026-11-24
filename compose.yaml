@@ -91,6 +91,9 @@ services:
       #
       # Inspect a container named as a sandbox, or by its full ID.
       - -allowGET=(/v[0-9.]+)?/containers/(barrack-thread-[A-Za-z0-9_-]+|[0-9a-f]{64})/json
+      # Read the end of a failed sandbox's log by its full ID, where its
+      # supervisor says why it stopped.
+      - -allowGET=(/v[0-9.]+)?/containers/[0-9a-f]{64}/logs
       # Create a container; start and stop one by its full ID.
       # Pulling is not allowed, so the sandbox image must already be on this
       # machine.

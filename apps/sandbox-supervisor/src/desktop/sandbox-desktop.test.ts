@@ -16,15 +16,23 @@ import { isVncServerAnswering } from "./vnc-server-probe.js";
  * told to by its name, ends on its own after a moment, as a crashed X
  * server would.
  */
-function fakeDesktopScript(endsOnItsOwn: boolean): string {
+function fakeDesktopScript(behaviour: DesktopBehaviour): string {
+  if (behaviour === "fails-at-once") {
+    return `#!${process.execPath}
+console.error("Xvnc: cannot open the display");
+process.exit(1);
+`;
+  }
   return `#!${process.execPath}
 const server = require("node:net").createServer((socket) => socket.end("RFB 003.008\\n"));
 server.listen(Number(process.env.BARRACK_DESKTOP_VNC_PORT), "127.0.0.1");
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(0));
-${endsOnItsOwn ? "setTimeout(() => process.exit(3), 300);" : ""}
+${behaviour === "ends-on-its-own" ? "setTimeout(() => process.exit(3), 300);" : ""}
 `;
 }
+
+type DesktopBehaviour = "runs" | "ends-on-its-own" | "fails-at-once";
 
 const { PATH: searchPath } = process.env;
 
@@ -54,9 +62,9 @@ async function findFreePort(): Promise<number> {
   return address.port;
 }
 
-async function startDesktop(options: { endsOnItsOwn: boolean }) {
+async function startDesktop(behaviour: DesktopBehaviour) {
   const command = path.join(directory, "fake-desktop");
-  await writeFile(command, fakeDesktopScript(options.endsOnItsOwn));
+  await writeFile(command, fakeDesktopScript(behaviour));
   await chmod(command, 0o755);
   const vncPort = await findFreePort();
   desktop = new SandboxDesktop({
@@ -69,7 +77,11 @@ async function startDesktop(options: { endsOnItsOwn: boolean }) {
     workingDirectory: directory,
     logger: createSilentLogger(),
     onAvailabilityChanged: (availability) => reports.push(availability),
-    timing: { firstRestartDelayInMilliseconds: 50, probeIntervalInMilliseconds: 20 },
+    timing: {
+      firstRestartDelayInMilliseconds: 50,
+      probeIntervalInMilliseconds: 20,
+      maximumConsecutiveFailures: 3,
+    },
   });
   desktop.start();
   return { vncPort };
@@ -77,7 +89,7 @@ async function startDesktop(options: { endsOnItsOwn: boolean }) {
 
 describe("the sandbox's desktop", () => {
   it("is reported running once its VNC server answers, and ends when the supervisor stops it", async () => {
-    const { vncPort } = await startDesktop({ endsOnItsOwn: false });
+    const { vncPort } = await startDesktop("runs");
 
     await waitUntil(() => reports.some((report) => report.status === "running"), "running");
     await desktop?.stop();
@@ -87,7 +99,7 @@ describe("the sandbox's desktop", () => {
   });
 
   it("is started again whenever it ends, and reported starting meanwhile", async () => {
-    await startDesktop({ endsOnItsOwn: true });
+    await startDesktop("ends-on-its-own");
 
     await waitUntil(
       () => reports.filter((report) => report.status === "running").length >= 2,
@@ -102,6 +114,22 @@ describe("the sandbox's desktop", () => {
       },
       { status: "running" },
     ]);
+  });
+
+  it("is given up on, and reported unavailable in its own words, when it keeps ending at once", async () => {
+    await startDesktop("fails-at-once");
+
+    await waitUntil(() => reports.some((report) => report.status === "none"), "given up");
+    const reportsWhenGivenUp = reports.length;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    expect(reports.at(-1)).toEqual({
+      status: "none",
+      explanation:
+        "The sandbox's desktop stopped 3 times in a row soon after starting, so it is not started again until the sandbox restarts. It last said: Xvnc: cannot open the display",
+    });
+    expect(reports.map((report) => report.status)).toEqual(["starting", "none"]);
+    expect(reports).toHaveLength(reportsWhenGivenUp);
   });
 
   it("is reported missing, and nothing is run, in a sandbox without one", () => {

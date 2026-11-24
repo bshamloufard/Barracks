@@ -4,4 +4,5 @@ import type { ThreadActivity } from "../thread-relay/thread-activity.js";
 export const acceptingThreadActivity: ThreadActivity = {
   admitUserMessage: async () => ({ isAccepted: true }),
   recordAgentActivity: async () => undefined,
+  recordSupervisorAttached: async () => undefined,
 };

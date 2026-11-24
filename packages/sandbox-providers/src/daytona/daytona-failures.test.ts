@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SandboxImageUnavailableError,
   SandboxNotFoundError,
   SandboxProviderUnavailableError,
   SandboxRefusedError,
@@ -43,6 +44,16 @@ describe("classifying a failed Daytona call", () => {
 
   it("reports 404 during creation, a missing snapshot, as a refusal", () => {
     expect(toSandboxProviderError(answeredWith(404), "create")).toBeInstanceOf(SandboxRefusedError);
+  });
+
+  it("reports a snapshot Daytona cannot use as an image the administrator must provide", () => {
+    const error = toSandboxProviderError(
+      new DaytonaApiFailure("Snapshot barrack-sandbox-7 not found", 400, false),
+      "create a sandbox",
+    );
+
+    expect(error).toBeInstanceOf(SandboxImageUnavailableError);
+    expect(error.message).toMatch(/BARRACK_DAYTONA_SNAPSHOT cannot be used/);
   });
 
   it("quotes Daytona's message and keeps nothing else of the failure", () => {

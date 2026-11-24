@@ -57,6 +57,13 @@ export interface ThreadStore {
   recordActivity(threadId: string, at: Date): Promise<void>;
 
   /**
+   * Notes that a supervisor of the thread's sandbox has attached, so the
+   * sandbox no longer awaits one (`awaitingSupervisorSince`). It does not
+   * change the version: no operation under way depends on it.
+   */
+  recordSupervisorAttached(threadId: string): Promise<void>;
+
+  /**
    * Switches the thread's model, if it exists and belongs to `ownerUserId`;
    * returns the thread as it now is, or undefined. It does not change the
    * version: no operation under way depends on the model.
@@ -267,6 +274,15 @@ export type ThreadRecord = Omit<
   lastActivityAt: Date;
   /** A user message arrived while the sandbox was stopping, so it should start again once stopped. */
   isWakeRequested: boolean;
+  /**
+   * Since when the sandbox has awaited its supervisor: set when it is asked
+   * to be created or started, set again to when it is recorded running if
+   * no supervisor has attached meanwhile, and cleared when one attaches. A
+   * running sandbox whose supervisor has not attached within a deadline is
+   * stopped and its thread failed, saying why (`SandboxReconciler`).
+   * Undefined once a supervisor has attached.
+   */
+  awaitingSupervisorSince: Date | undefined;
 };
 
 /**
@@ -295,6 +311,8 @@ export type FinishStoppingRequest = {
   threadId: string;
   fromVersion: number;
   wakeLeaseExpiresAt: Date;
+  /** Now; a sandbox woken awaits its supervisor from then. */
+  at: Date;
 };
 
 /**
@@ -392,9 +410,30 @@ export function applyTransition(
     version: current.version + 1,
     isWakeRequested: isStopTakenOver && current.isWakeRequested,
     lastActivityAt: transition.to.state === "running" ? transition.at : current.lastActivityAt,
+    awaitingSupervisorSince: nextAwaitingSupervisorSince(current, transition),
     supervisorTokenDigests:
       transition.addedSupervisorTokenDigest === undefined
         ? current.supervisorTokenDigests
         : [...current.supervisorTokenDigests, transition.addedSupervisorTokenDigest],
   };
+}
+
+/**
+ * A sandbox asked to be created or started awaits its supervisor from then;
+ * one recorded running that still awaits it does so from then, so that the
+ * time a provider took to make or start it does not count.
+ */
+export function nextAwaitingSupervisorSince(
+  current: ThreadRecord,
+  transition: SandboxTransition,
+): Date | undefined {
+  switch (transition.to.state) {
+    case "creating":
+    case "starting":
+      return transition.at;
+    case "running":
+      return current.awaitingSupervisorSince === undefined ? undefined : transition.at;
+    default:
+      return current.awaitingSupervisorSince;
+  }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SandboxImageUnavailableError,
   SandboxNotFoundError,
   SandboxProviderUnavailableError,
   SandboxRefusedError,
@@ -38,15 +39,16 @@ describe("classifying a failed docker command", () => {
     ).toBeInstanceOf(SandboxProviderUnavailableError);
   });
 
-  it("reports an image that cannot be found as a refusal, quoting docker", () => {
+  it("reports an image that cannot be found as an image the administrator must provide, quoting docker", () => {
     const error = toSandboxProviderError(
       exitedWith("Unable to find image 'barrack-sandbox:missing' locally\nmore detail"),
       "create a sandbox",
     );
 
+    expect(error).toBeInstanceOf(SandboxImageUnavailableError);
     expect(error).toBeInstanceOf(SandboxRefusedError);
     expect(error.message).toBe(
-      `Could not create a sandbox: docker said "Unable to find image 'barrack-sandbox:missing' locally"`,
+      `Could not create a sandbox: the sandbox image cannot be found or pulled; docker said "Unable to find image 'barrack-sandbox:missing' locally"`,
     );
   });
 

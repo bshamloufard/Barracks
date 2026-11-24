@@ -36,6 +36,11 @@ export type LifecycleTiming = {
    * happened recently, at a precision well within the idle period.
    */
   agentActivityRecordingIntervalInMilliseconds: number;
+  /**
+   * How long a sandbox recorded running may go without its supervisor
+   * attaching before it is stopped and its thread failed, saying why.
+   */
+  supervisorAttachmentDeadlineInMilliseconds: number;
 };
 
 /** A provider that is unavailable may be back in a moment. */
@@ -49,6 +54,13 @@ const interruptGracePeriodInMilliseconds = 5_000;
 
 const longestAgentActivityRecordingIntervalInMilliseconds = 60_000;
 
+/**
+ * A supervisor connects within seconds of its sandbox running; five minutes
+ * leaves room for a slow network or a control plane redeploying, and still
+ * tells a user whose sandbox can never connect within one cup of coffee.
+ */
+const supervisorAttachmentDeadlineInMilliseconds = 5 * 60_000;
+
 export function deriveLifecycleTiming(settings: SandboxLifecycleSettings): LifecycleTiming {
   const leaseDurationInMilliseconds = 2 * settings.checkIntervalInMilliseconds;
   return {
@@ -60,5 +72,6 @@ export function deriveLifecycleTiming(settings: SandboxLifecycleSettings): Lifec
       longestAgentActivityRecordingIntervalInMilliseconds,
       settings.idlePeriodInMilliseconds / 4,
     ),
+    supervisorAttachmentDeadlineInMilliseconds,
   };
 }

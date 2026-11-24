@@ -1,5 +1,5 @@
 import { buildThreadApiPath, type ThreadSummary, threadResponseSchema } from "@barrack/protocol";
-import { SandboxProviderUnavailableError } from "@barrack/sandbox-providers";
+import { FakeSandboxProvider, SandboxProviderUnavailableError } from "@barrack/sandbox-providers";
 import { afterEach, describe, expect, it } from "vitest";
 import { developmentUserId } from "../authentication/development-single-user.js";
 import { ControllableClock } from "../test-support/controllable-clock.js";
@@ -13,7 +13,11 @@ import {
   testLifecycleSettings,
 } from "../test-support/test-control-plane.js";
 import type { ThreadRecord, ThreadSandboxRecord } from "../threads/thread-store.js";
-import { runEndedBySandboxStoppingMessage, sandboxLostReason } from "./lifecycle-messages.js";
+import {
+  runEndedBySandboxStoppingMessage,
+  sandboxLostReason,
+  stoppedFromOutsideProblem,
+} from "./lifecycle-messages.js";
 import { sandboxIdOf } from "./sandbox-operations.js";
 import { decideRepair } from "./sandbox-reconciler.js";
 
@@ -129,7 +133,10 @@ describe("reconciling settled sandboxes with the provider", () => {
 
     await reconcile(controlPlane, false);
 
-    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "stopped" });
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({
+      state: "stopped",
+      problem: stoppedFromOutsideProblem,
+    });
     const events = await readWholeThread(controlPlane.threadEventLog, threadId);
     expect(events.at(-1)?.event).toEqual({
       type: "agent_failed",
@@ -156,6 +163,42 @@ describe("reconciling settled sandboxes with the provider", () => {
       canResume: true,
     });
     expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+  });
+
+  it("says when a sandbox's supervisor refused to start that resuming will not help until the installation is fixed", async () => {
+    const controlPlane = await start();
+    const { threadId } = await controlPlane.createThread();
+    await controlPlane.sandboxProvider.markFailed(
+      await sandboxIdFor(controlPlane, threadId),
+      "the supervisor refused to start, saying: BARRACK_AGENT_USER: is not set",
+      "supervisor-refused-to-start",
+    );
+
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({
+      state: "failed",
+      reason:
+        "Its sandbox stopped because its supervisor refused to start: the supervisor refused to start, saying: BARRACK_AGENT_USER: is not set. Starting it again will fail the same way until this installation is fixed; tell its administrator.",
+      canResume: true,
+    });
+  });
+
+  it("says when a sandbox ran out of memory", async () => {
+    const controlPlane = await start();
+    const { threadId } = await controlPlane.createThread();
+    await controlPlane.sandboxProvider.markFailed(
+      await sandboxIdFor(controlPlane, threadId),
+      "the sandbox ran out of memory",
+      "out-of-memory",
+    );
+
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toMatchObject({
+      state: "failed",
+      reason: expect.stringMatching(/^Its sandbox ran out of memory and was stopped\. Resume/),
+    });
   });
 
   it("records a sandbox the provider has lost, running or stopped, as failed and gone", async () => {
@@ -359,6 +402,67 @@ describe("two control planes at once, as during a redeploy", () => {
   });
 });
 
+describe("a sandbox whose supervisor never connects", () => {
+  const deadline = 5 * 60_000;
+
+  /** A provider whose sandboxes run no supervisor at all, as when it cannot reach the control plane. */
+  async function startWithoutSupervisors(): Promise<TestControlPlane> {
+    clock = new ControllableClock();
+    const controlPlane = await TestControlPlane.start({
+      sandboxProvider: new FakeSandboxProvider(),
+      clock: clock.now,
+    });
+    controlPlanes.push(controlPlane);
+    return controlPlane;
+  }
+
+  it("is stopped once it has run without one past the deadline, and its thread failed, naming the likely cause", async () => {
+    const controlPlane = await startWithoutSupervisors();
+    const { threadId } = await controlPlane.createThread();
+    const sandboxId = await sandboxIdFor(controlPlane, threadId);
+
+    clock.advanceBy(deadline - 1_000);
+    await reconcile(controlPlane, false);
+    const beforeTheDeadline = await fetchThread(controlPlane, threadId);
+    clock.advanceBy(1_000);
+    await reconcile(controlPlane, false);
+
+    expect(beforeTheDeadline.sandbox).toEqual({ state: "running" });
+    expect(await controlPlane.sandboxProvider.getStatus(sandboxId)).toEqual({ state: "stopped" });
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({
+      state: "failed",
+      reason: expect.stringMatching(
+        /did not connect to the control plane within 5 minutes, so the sandbox was stopped\. The likely cause is that sandboxes cannot reach the control plane at ws:\/\/control-plane\.test:8787, the address this installation gives them \(BARRACK_SANDBOX_CONTROL_PLANE_URL\)/,
+      ),
+      canResume: true,
+    });
+  });
+
+  it("is left running once a supervisor has attached, however long ago", async () => {
+    const controlPlane = await start();
+    const { threadId } = await controlPlane.createThread();
+
+    clock.advanceBy(deadline * 3);
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+  });
+
+  it("is given the whole deadline again when resumed", async () => {
+    const controlPlane = await startWithoutSupervisors();
+    const { threadId } = await controlPlane.createThread();
+    clock.advanceBy(deadline);
+    await reconcile(controlPlane, false);
+
+    await controlPlane.sendApi("POST", `${buildThreadApiPath(threadId)}/resume`);
+    await controlPlane.whenOperationsSettle();
+    clock.advanceBy(deadline - 1_000);
+    await reconcile(controlPlane, false);
+
+    expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
+  });
+});
+
 describe("deciding a repair", () => {
   it.each([
     ["running", "starting"],
@@ -373,7 +477,9 @@ describe("deciding a repair", () => {
         ? { state: "running", sandboxId: "sandbox-1", problem: undefined }
         : { state: "stopped", sandboxId: "sandbox-1", problem: undefined };
     const status =
-      reported === "failed" ? { state: reported, reason: "It broke" } : { state: reported };
+      reported === "failed"
+        ? { state: reported, cause: "supervisor-exited" as const, reason: "It broke" }
+        : { state: reported };
 
     expect(decideRepair(recordedSandbox, status)).toBeUndefined();
   });

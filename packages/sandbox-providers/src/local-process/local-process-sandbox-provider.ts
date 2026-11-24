@@ -12,14 +12,15 @@ import {
   validateServiceAddressRequest,
   validateStartOptions,
 } from "../request-validation.js";
-import type {
-  CreatedSandbox,
-  SandboxCreationRequest,
-  SandboxProvider,
-  SandboxStartOptions,
-  SandboxStatus,
-  ServiceAddress,
-  ServiceAddressRequest,
+import {
+  type CreatedSandbox,
+  type SandboxCreationRequest,
+  type SandboxProvider,
+  type SandboxStartOptions,
+  type SandboxStatus,
+  type ServiceAddress,
+  type ServiceAddressRequest,
+  supervisorRefusedToStartExitCode,
 } from "../sandbox-provider.js";
 import {
   SandboxAlreadyExistsError,
@@ -133,7 +134,7 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
   /** Supervisors this process launched, by process identifier, until they exit. */
   readonly #launchedSupervisors = new Map<number, ChildProcess>();
   /** How each supervisor that exited without being stopped ended, while this process remembers. */
-  readonly #exitDescriptions = new Map<string, string>();
+  readonly #exitDescriptions = new Map<string, FailedStatus>();
   /** Sandboxes whose supervisor is being launched right now. */
   readonly #launchingSandboxIds = new Set<string>();
   /** Threads whose sandbox is being created right now, so two creations cannot both pass the check. */
@@ -219,10 +220,13 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
     if (isRunning) {
       return { state: "running" };
     }
-    return {
-      state: "failed",
-      reason: this.#exitDescriptions.get(sandboxId) ?? "its supervisor exited by itself",
-    };
+    return (
+      this.#exitDescriptions.get(sandboxId) ?? {
+        state: "failed",
+        cause: "supervisor-exited",
+        reason: "its supervisor exited by itself",
+      }
+    );
   }
 
   /**
@@ -299,10 +303,7 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
       this.#launchedSupervisors.set(processId, supervisor);
       supervisor.once("exit", (exitCode, signal) => {
         this.#launchedSupervisors.delete(processId);
-        this.#exitDescriptions.set(
-          sandboxId,
-          `its supervisor exited by itself (${signal ?? `exit code ${exitCode}`})`,
-        );
+        this.#exitDescriptions.set(sandboxId, describeSupervisorExit(exitCode, signal));
       });
     } finally {
       this.#launchingSandboxIds.delete(sandboxId);
@@ -420,6 +421,27 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
   #directoryOf(sandboxId: string): string {
     return path.join(this.#settings.sandboxesDirectory, sandboxId);
   }
+}
+
+type FailedStatus = Extract<SandboxStatus, { state: "failed" }>;
+
+/** Its output is the control plane's own, so that is where to read why. */
+function describeSupervisorExit(
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+): FailedStatus {
+  if (exitCode === supervisorRefusedToStartExitCode) {
+    return {
+      state: "failed",
+      cause: "supervisor-refused-to-start",
+      reason: "its supervisor refused to start; the control plane's output says why",
+    };
+  }
+  return {
+    state: "failed",
+    cause: "supervisor-exited",
+    reason: `its supervisor exited by itself (${signal ?? `exit code ${exitCode}`})`,
+  };
 }
 
 function workspaceDirectoryIn(sandboxDirectory: string): string {

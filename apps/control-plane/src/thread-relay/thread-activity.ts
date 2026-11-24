@@ -16,4 +16,10 @@ export interface ThreadActivity {
 
   /** Notes that the agent did something, before its event is recorded. Never rejects. */
   recordAgentActivity(threadId: string): Promise<void>;
+
+  /**
+   * Notes that the thread's supervisor has attached, so its sandbox is not
+   * taken for one whose supervisor can never connect. Never rejects.
+   */
+  recordSupervisorAttached(threadId: string): Promise<void>;
 }

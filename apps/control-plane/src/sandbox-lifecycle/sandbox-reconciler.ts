@@ -9,11 +9,13 @@ import {
   type ThreadStore,
 } from "../threads/thread-store.js";
 import {
-  limitLength,
+  describeSandboxFailure,
+  describeSupervisorNeverAttached,
   runEndedBySandboxStoppingMessage,
   sandboxLostReason,
+  stoppedFromOutsideProblem,
 } from "./lifecycle-messages.js";
-import type { Clock } from "./lifecycle-settings.js";
+import type { Clock, LifecycleTiming } from "./lifecycle-settings.js";
 import { type SandboxOperations, sandboxIdOf } from "./sandbox-operations.js";
 import type { ThreadRuns } from "./thread-runs.js";
 
@@ -24,6 +26,9 @@ export type SandboxReconcilerOptions = {
   threadEventLog: ThreadEventLog;
   threadRuns: ThreadRuns;
   clock: Clock;
+  timing: LifecycleTiming;
+  /** The address sandboxes are told to reach the control plane at, named when they cannot. */
+  controlPlaneUrlForSandboxes: string;
   logger: Logger;
 };
 
@@ -47,6 +52,11 @@ const threadsPerSweep = 1_000;
  *   closed in history. Running sandboxes are checked every sweep, since a
  *   running sandbox costs money and can stop by itself; stopped and failed
  *   ones only at startup, since nothing but the control plane starts them.
+ * - **A running sandbox whose supervisor never attached** within
+ *   `supervisorAttachmentDeadlineInMilliseconds` of its sandbox running is
+ *   stopped, and its thread failed with the likely causes, since it can do
+ *   nothing and costs money; otherwise its thread would show as starting
+ *   for ever, with no clue why.
  */
 export class SandboxReconciler {
   readonly #options: SandboxReconcilerOptions;
@@ -61,8 +71,55 @@ export class SandboxReconciler {
       ? ["running", "stopped", "failed"]
       : ["running"];
     for (const thread of await this.#options.threadStore.listInStates(states, threadsPerSweep)) {
-      await this.#compareWithProvider(thread);
+      const isRepaired = await this.#compareWithProvider(thread);
+      if (!isRepaired) {
+        await this.#failIfSupervisorNeverAttached(thread);
+      }
     }
+  }
+
+  /**
+   * Moved to `stopping` from the version read, so a supervisor attaching
+   * meanwhile, which does not move the version, still loses the race only
+   * by moments, and two control planes never both stop it.
+   */
+  async #failIfSupervisorNeverAttached(thread: ThreadRecord): Promise<void> {
+    const { sandbox, awaitingSupervisorSince } = thread;
+    const { clock, timing, operations, threadStore, logger } = this.#options;
+    const deadline = timing.supervisorAttachmentDeadlineInMilliseconds;
+    const isOverdue =
+      sandbox.state === "running" &&
+      awaitingSupervisorSince !== undefined &&
+      clock().getTime() - awaitingSupervisorSince.getTime() >= deadline;
+    if (!isOverdue) {
+      return;
+    }
+    const outcome = await threadStore.transition({
+      threadId: thread.threadId,
+      fromVersion: thread.version,
+      to: {
+        state: "stopping",
+        sandboxId: sandbox.sandboxId,
+        leaseExpiresAt: operations.leaseExpiry(),
+      },
+      at: clock(),
+    });
+    if (outcome.kind !== "changed") {
+      return;
+    }
+    const reason = describeSupervisorNeverAttached(
+      deadline,
+      this.#options.controlPlaneUrlForSandboxes,
+    );
+    logger.warn(
+      {
+        threadId: thread.threadId,
+        sandboxId: sandbox.sandboxId,
+        controlPlaneUrlForSandboxes: this.#options.controlPlaneUrlForSandboxes,
+      },
+      "A sandbox ran without its supervisor ever connecting; stopping it. Check that sandboxes can reach BARRACK_SANDBOX_CONTROL_PLANE_URL, and the sandbox's own log",
+    );
+    operations.stopAndFail(outcome.thread, reason);
   }
 
   async #takeOverAbandonedOperations(): Promise<void> {
@@ -89,10 +146,11 @@ export class SandboxReconciler {
     }
   }
 
-  async #compareWithProvider(thread: ThreadRecord): Promise<void> {
+  /** Whether the thread was found otherwise at the provider, and recorded so. */
+  async #compareWithProvider(thread: ThreadRecord): Promise<boolean> {
     const sandboxId = sandboxIdOf(thread.sandbox);
     if (sandboxId === undefined) {
-      return;
+      return false;
     }
     const logger = this.#options.logger.child({ threadId: thread.threadId, sandboxId });
     let status: SandboxStatus;
@@ -103,11 +161,11 @@ export class SandboxReconciler {
         { err: error },
         "Could not read a sandbox's state to reconcile it; trying again later",
       );
-      return;
+      return true;
     }
     const repair = decideRepair(thread.sandbox, status);
     if (repair === undefined) {
-      return;
+      return false;
     }
     const openRun =
       thread.sandbox.state === "running"
@@ -120,7 +178,7 @@ export class SandboxReconciler {
       at: this.#options.clock(),
     });
     if (outcome.kind !== "changed") {
-      return;
+      return true;
     }
     logger.warn(
       {
@@ -133,6 +191,7 @@ export class SandboxReconciler {
     if (openRun !== undefined) {
       await this.#closeOpenRun(thread.threadId, openRun, logger);
     }
+    return true;
   }
 
   /**
@@ -163,8 +222,9 @@ export class SandboxReconciler {
  * state, or undefined to leave it. A sandbox that is starting or stopping
  * at the provider is left until it settles.
  *
- * - Recorded running: stopped → stopped; failed → failed, resumable;
- *   missing → failed and gone.
+ * - Recorded running: stopped → stopped, saying something else stopped it;
+ *   failed → failed, resumable, saying why and what to do; missing → failed
+ *   and gone.
  * - Recorded stopped, or failed with a sandbox: running → running (whatever
  *   started it, it costs money, and idle shutdown stops it once it is idle);
  *   missing → failed and gone. Stopped and failed are left as recorded.
@@ -183,15 +243,9 @@ export function decideRepair(
   if (recorded.state === "running") {
     switch (status.state) {
       case "stopped":
-        return { state: "stopped", sandboxId, problem: undefined };
+        return { state: "stopped", sandboxId, problem: stoppedFromOutsideProblem };
       case "failed":
-        return {
-          state: "failed",
-          sandboxId,
-          reason: limitLength(
-            `Its sandbox stopped by itself: ${status.reason}. Resume the thread to start it again.`,
-          ),
-        };
+        return { state: "failed", sandboxId, reason: describeSandboxFailure(status) };
       default:
         return undefined;
     }

@@ -32,14 +32,22 @@ export function toSandboxStatus(record: DaytonaSandboxRecord | undefined): Sandb
   }
   const daytonaState = record.state ?? "unknown";
   if (failedDaytonaStates.has(daytonaState)) {
-    return { state: "failed", reason: record.errorReason ?? `Daytona reports ${daytonaState}` };
+    return {
+      state: "failed",
+      cause: "provider-fault",
+      reason: record.errorReason ?? `Daytona reports ${daytonaState}`,
+    };
   }
   const state = barrackStateByDaytonaState[daytonaState];
   if (state === undefined) {
     // Barrack never asks for the states left (pausing, resizing, forking,
     // snapshotting and the like), so meeting one means something else is
     // managing the sandbox.
-    return { state: "failed", reason: `Daytona reports the unexpected state "${daytonaState}"` };
+    return {
+      state: "failed",
+      cause: "provider-fault",
+      reason: `Daytona reports the unexpected state "${daytonaState}"`,
+    };
   }
   return { state };
 }

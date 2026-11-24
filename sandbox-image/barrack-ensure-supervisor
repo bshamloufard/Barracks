@@ -60,5 +60,8 @@ sleep 1
 if supervisor_is_running; then
   exit 0
 fi
-echo "The supervisor did not stay running; see $log_file." >&2
+# The end of the log says why, usually in the supervisor's own words; the
+# provider that ran this shows it to whoever started the sandbox.
+echo "The supervisor did not stay running. The end of $log_file:" >&2
+tail -n 8 "$log_file" >&2
 exit 1
