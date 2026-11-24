@@ -7,6 +7,15 @@ import {
 } from "../threads/thread-store.js";
 
 /**
+ * The users whose threads the contract creates. A store that checks that a
+ * thread's owner is a recorded user must have these recorded before the
+ * contract runs.
+ */
+export const contractOwnerUserIds = ["user-a", "user-b"] as const;
+
+const [ownerA, ownerB] = contractOwnerUserIds;
+
+/**
  * The behaviour every `ThreadStore` must have. Each implementation's test
  * file calls this with a function that creates a fresh, empty store, so the
  * in-memory store and the database-backed one are held to the same rules.
@@ -111,10 +120,12 @@ export function describeThreadStoreContract(
       const failedThreadIds = await store.failSandboxesStillBeingCreated("Interrupted");
 
       expect(failedThreadIds.toSorted()).toEqual(["thread-a", "thread-d"]);
-      const sandboxes = (await store.listNewestFirst(10)).map(({ threadId, sandbox }) => ({
-        threadId,
-        sandbox,
-      }));
+      const sandboxes = (await store.listNewestFirstOwnedBy(ownerA, 10)).map(
+        ({ threadId, sandbox }) => ({
+          threadId,
+          sandbox,
+        }),
+      );
       expect(sandboxes).toEqual([
         { threadId: "thread-d", sandbox: { state: "failed", reason: "Interrupted" } },
         {
@@ -127,17 +138,40 @@ export function describeThreadStoreContract(
       expect(await store.failSandboxesStillBeingCreated("Interrupted")).toEqual([]);
     });
 
-    it("lists threads newest first, no more than asked for", async () => {
+    it("lists a user's threads newest first, no more than asked for", async () => {
       const store = await createEmptyStore();
       for (const threadId of ["thread-a", "thread-b", "thread-c"]) {
         await store.create(newThread(threadId));
       }
 
-      const newestTwo = await store.listNewestFirst(2);
-      const all = await store.listNewestFirst(10);
+      const newestTwo = await store.listNewestFirstOwnedBy(ownerA, 2);
+      const all = await store.listNewestFirstOwnedBy(ownerA, 10);
 
       expect(newestTwo.map((thread) => thread.threadId)).toEqual(["thread-c", "thread-b"]);
       expect(all.map((thread) => thread.threadId)).toEqual(["thread-c", "thread-b", "thread-a"]);
+    });
+
+    it("lists only the threads that belong to the user", async () => {
+      const store = await createEmptyStore();
+      await store.create(newThread("thread-a", ownerA));
+      await store.create(newThread("thread-b", ownerB));
+      await store.create(newThread("thread-c", ownerA));
+
+      const listedForA = await store.listNewestFirstOwnedBy(ownerA, 10);
+      const listedForB = await store.listNewestFirstOwnedBy(ownerB, 10);
+
+      expect(listedForA.map((thread) => thread.threadId)).toEqual(["thread-c", "thread-a"]);
+      expect(listedForB.map((thread) => thread.threadId)).toEqual(["thread-b"]);
+      expect(await store.listNewestFirstOwnedBy("someone-else", 10)).toEqual([]);
+    });
+
+    it("finds a thread for its owner, and for nobody else, as if it did not exist", async () => {
+      const store = await createEmptyStore();
+      const created = await store.create(newThread("thread-a", ownerA));
+
+      expect(await store.findOwnedBy(ownerA, "thread-a")).toEqual(created);
+      expect(await store.findOwnedBy(ownerB, "thread-a")).toBeUndefined();
+      expect(await store.findOwnedBy(ownerB, "thread-never-created")).toBeUndefined();
     });
 
     it("hands out records that changing does not change the store", async () => {
@@ -154,6 +188,6 @@ export function describeThreadStoreContract(
   });
 }
 
-function newThread(threadId: string): NewThread {
-  return { threadId, sandboxProvider: "fake", supervisorTokenDigest: randomBytes(32) };
+function newThread(threadId: string, ownerUserId: string = ownerA): NewThread {
+  return { threadId, ownerUserId, sandboxProvider: "fake", supervisorTokenDigest: randomBytes(32) };
 }

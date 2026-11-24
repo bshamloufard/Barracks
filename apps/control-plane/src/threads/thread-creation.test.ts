@@ -12,10 +12,11 @@ import {
   SandboxRefusedError,
 } from "@barrack/sandbox-providers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { developmentAccessToken } from "../authentication/development-single-user.js";
 import { toolExecutionStarted } from "../test-support/example-agent-events.js";
 import { readWholeThread } from "../test-support/read-whole-thread.js";
 import {
-  allowedTestOrigin,
+  browserHeaders,
   TestControlPlane,
   type TestControlPlaneOptions,
 } from "../test-support/test-control-plane.js";
@@ -39,13 +40,13 @@ async function createThreadThroughApi(): Promise<ThreadSummary> {
 }
 
 async function fetchThread(threadId: string): Promise<ThreadSummary> {
-  const response = await fetch(`${controlPlane.httpBaseUrl}${buildThreadApiPath(threadId)}`);
+  const response = await controlPlane.getApi(buildThreadApiPath(threadId));
   expect(response.status).toBe(200);
   return threadResponseSchema.parse(await response.json()).thread;
 }
 
 async function listThreads(): Promise<ThreadSummary[]> {
-  const response = await fetch(`${controlPlane.httpBaseUrl}${threadsApiPath}`);
+  const response = await controlPlane.getApi(threadsApiPath);
   expect(response.status).toBe(200);
   return threadListResponseSchema.parse(await response.json()).threads;
 }
@@ -108,8 +109,8 @@ describe("creating a thread", () => {
     const { threadId, supervisorToken } = await controlPlane.createThread();
     await controlPlane.connectSupervisor({ threadId, supervisorToken });
     const responses = await Promise.all([
-      fetch(`${controlPlane.httpBaseUrl}${buildThreadApiPath(threadId)}`).then((r) => r.text()),
-      fetch(`${controlPlane.httpBaseUrl}${threadsApiPath}`).then((r) => r.text()),
+      controlPlane.getApi(buildThreadApiPath(threadId)).then((r) => r.text()),
+      controlPlane.getApi(threadsApiPath).then((r) => r.text()),
     ]);
 
     expect(controlPlane.logLines.length).toBeGreaterThan(0);
@@ -249,13 +250,13 @@ describe("a sandbox that cannot be created", () => {
 });
 
 describe("the threads API", () => {
-  it.each([
-    ["another website", { Origin: "https://attacker.example", "Content-Type": "application/json" }],
-    ["no origin", { "Content-Type": "application/json" }],
-  ])("refuses to create a thread for a request from %s with HTTP 403", async (_, headers) => {
+  it("refuses to create a thread for a request from another website with HTTP 403, even with a valid token", async () => {
     await start();
 
-    const response = await controlPlane.postThread(headers);
+    const response = await controlPlane.postThread({
+      ...browserHeaders(developmentAccessToken),
+      Origin: "https://attacker.example",
+    });
 
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { code: "forbidden_origin" } });
@@ -266,7 +267,7 @@ describe("the threads API", () => {
     await start();
 
     const response = await controlPlane.postThread({
-      Origin: allowedTestOrigin,
+      ...browserHeaders(developmentAccessToken),
       "Content-Type": "text/plain",
     });
 
@@ -281,10 +282,7 @@ describe("the threads API", () => {
   ])("refuses to create a thread from a body that is %s with HTTP 400", async (_, body) => {
     await start();
 
-    const response = await controlPlane.postThread(
-      { Origin: allowedTestOrigin, "Content-Type": "application/json" },
-      body,
-    );
+    const response = await controlPlane.postThread(browserHeaders(developmentAccessToken), body);
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "bad_request" } });
@@ -309,7 +307,7 @@ describe("the threads API", () => {
   ])("answers HTTP 404 for a thread that %s", async (_, threadId) => {
     await start();
 
-    const response = await fetch(`${controlPlane.httpBaseUrl}${threadsApiPath}/${threadId}`);
+    const response = await controlPlane.getApi(`${threadsApiPath}/${threadId}`);
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "not_found" } });

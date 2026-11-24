@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type {
   AssistantTextFragment,
+  ClientCommand,
   ClientMessageRejected,
-  ClientToControlPlaneMessage,
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
   SupervisorConnectionStatus,
@@ -134,7 +134,7 @@ export class ThreadRelay {
     });
   }
 
-  receiveFromClient(connection: ClientConnection, message: ClientToControlPlaneMessage): void {
+  receiveFromClient(connection: ClientConnection, message: ClientCommand): void {
     this.#enqueue(`handle ${message.type} from a client`, async () => {
       if (message.type === "send_user_message") {
         await this.#acceptUserMessage(connection, message.text);

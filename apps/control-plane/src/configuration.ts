@@ -6,6 +6,10 @@ import {
 } from "@barrack/sandbox-providers";
 import { z } from "zod";
 import {
+  type AuthenticationConfiguration,
+  readAuthenticationConfiguration,
+} from "./authentication/authentication-configuration.js";
+import {
   type DatabaseConfiguration,
   databaseEnvironmentShape,
   describeProblems,
@@ -85,6 +89,8 @@ export type ControlPlaneConfiguration = {
   logLevel: LogLevel;
   /** Where thread history is stored; undefined keeps it in memory, where a restart loses it. */
   database: DatabaseConfiguration | undefined;
+  /** How users prove who they are. */
+  authentication: AuthenticationConfiguration;
   /** Which provider creates threads' sandboxes. */
   sandboxProvider: SandboxProviderConfiguration;
   /** What every new sandbox's supervisor is told. Holds model keys: never log it. */
@@ -98,30 +104,39 @@ export type ConfigurationResult =
 /** Reads and checks every setting at once, so a misconfigured start reports all problems together. */
 export function readConfiguration(environment: NodeJS.ProcessEnv): ConfigurationResult {
   const validation = environmentSchema.safeParse(environment);
+  const authentication = readAuthenticationConfiguration(environment);
   const sandboxProvider = readSandboxProviderConfiguration(environment);
   const problems = [
     ...(validation.success ? [] : describeProblems(validation.error)),
+    ...(authentication.ok ? [] : authentication.problems),
     ...(sandboxProvider.ok ? [] : sandboxProvider.problems),
   ];
-  if (!validation.success || !sandboxProvider.ok) {
+  if (!validation.success || !authentication.ok || !sandboxProvider.ok) {
     return { ok: false, problems };
   }
   const settings = validation.data;
-  const isolationProblem = describeUnisolatedProviderExposure(
-    sandboxProvider.configuration,
-    settings.BARRACK_CONTROL_PLANE_HOST,
-  );
-  if (isolationProblem !== undefined) {
-    return { ok: false, problems: [isolationProblem] };
+  const host = settings.BARRACK_CONTROL_PLANE_HOST;
+  const exposureProblems = [
+    describeUnauthenticatedExposure(authentication.configuration, host),
+    describeUnisolatedProviderExposure(sandboxProvider.configuration, host),
+  ].filter((problem) => problem !== undefined);
+  if (exposureProblems.length > 0) {
+    return { ok: false, problems: exposureProblems };
   }
   return {
     ok: true,
-    configuration: toConfiguration(settings, sandboxProvider.configuration, environment),
+    configuration: toConfiguration(
+      settings,
+      authentication.configuration,
+      sandboxProvider.configuration,
+      environment,
+    ),
   };
 }
 
 function toConfiguration(
   settings: Settings,
+  authentication: AuthenticationConfiguration,
   sandboxProvider: SandboxProviderConfiguration,
   environment: NodeJS.ProcessEnv,
 ): ControlPlaneConfiguration {
@@ -132,6 +147,7 @@ function toConfiguration(
     webClientDirectory: settings.BARRACK_WEB_CLIENT_DIRECTORY,
     logLevel: settings.BARRACK_LOG_LEVEL,
     database: toDatabaseConfiguration(settings),
+    authentication,
     sandboxProvider,
     supervisorEnvironment: {
       controlPlaneUrlForSandboxes: settings.BARRACK_SANDBOX_CONTROL_PLANE_URL,
@@ -150,6 +166,23 @@ function toAgentSettings(settings: Settings): AgentSettings {
     throw new Error("The configuration schema let the Pi agent through without a model");
   }
   return { harness: "pi", model: settings.BARRACK_MODEL };
+}
+
+/**
+ * Development mode lets every client act as its one user, with a token it
+ * hands to anyone who asks, so only programs on this machine may reach it.
+ * A sandbox is not on this machine in that sense: a Docker container reaches
+ * the host's bridge address, so the control plane cannot listen there
+ * either, or an agent could control every thread.
+ */
+function describeUnauthenticatedExposure(
+  authentication: AuthenticationConfiguration,
+  host: string,
+): string | undefined {
+  if (authentication.method !== "development-single-user" || loopbackHosts.has(host)) {
+    return undefined;
+  }
+  return "BARRACK_CONTROL_PLANE_HOST: must be a loopback address (127.0.0.1, localhost or ::1) with BARRACK_AUTHENTICATION=development-single-user, which lets anyone who reaches it act as its one user; use Supabase authentication to listen anywhere else";
 }
 
 /**

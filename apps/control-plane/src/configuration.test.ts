@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readConfiguration } from "./configuration.js";
 
-/** The fewest settings that start a control plane: where sandboxes run, how they reach it, and the agent. */
+/** The fewest settings that start a control plane: where sandboxes run, how they reach it, the agent, and sign-in. */
 const minimalEnvironment = {
+  BARRACK_SUPABASE_URL: "https://project-ref.supabase.co/",
+  BARRACK_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_example",
+  BARRACK_ALLOWED_USER_EMAILS: "Owner@Example.com",
   BARRACK_SANDBOX_PROVIDER: "docker",
   BARRACK_DOCKER_IMAGE: "barrack-sandbox:dev",
   BARRACK_SANDBOX_CONTROL_PLANE_URL: "ws://host.docker.internal:8787/",
@@ -10,6 +13,7 @@ const minimalEnvironment = {
 };
 
 const localProcessEnvironment = {
+  BARRACK_AUTHENTICATION: "development-single-user",
   BARRACK_SANDBOX_PROVIDER: "local-process",
   BARRACK_ALLOW_UNISOLATED_SANDBOXES: "development-only",
   BARRACK_LOCAL_SANDBOX_DIRECTORY: "/tmp/barrack-sandboxes",
@@ -36,6 +40,18 @@ describe("the control plane configuration", () => {
         webClientDirectory: undefined,
         logLevel: "info",
         database: undefined,
+        authentication: {
+          method: "supabase",
+          project: {
+            url: "https://project-ref.supabase.co",
+            publishableKey: "sb_publishable_example",
+            issuer: "https://project-ref.supabase.co/auth/v1",
+          },
+          admission: {
+            kind: "listed-email-addresses",
+            emailAddresses: new Set(["owner@example.com"]),
+          },
+        },
         sandboxProvider: expect.objectContaining({ kind: "docker" }),
         supervisorEnvironment: {
           controlPlaneUrlForSandboxes: "ws://host.docker.internal:8787",
@@ -116,6 +132,9 @@ describe("the control plane configuration", () => {
       "BARRACK_ALLOWED_CLIENT_ORIGINS",
       "BARRACK_WEB_CLIENT_DIRECTORY",
       "BARRACK_LOG_LEVEL",
+      "BARRACK_SUPABASE_URL",
+      "BARRACK_SUPABASE_PUBLISHABLE_KEY",
+      "BARRACK_ALLOWED_USER_EMAILS",
       "BARRACK_SANDBOX_PROVIDER",
     ]);
   });
@@ -138,15 +157,51 @@ describe("the control plane configuration", () => {
     expect(result.ok && result.configuration.sandboxProvider.kind).toBe("local-process");
   });
 
-  it("refuses the local-process provider on an interface other machines can reach", () => {
+  it("refuses the local-process provider on an interface other machines can reach, even with sign-in", () => {
     const result = readConfiguration({
+      ...minimalEnvironment,
       ...localProcessEnvironment,
+      BARRACK_AUTHENTICATION: "supabase",
       BARRACK_CONTROL_PLANE_HOST: "0.0.0.0",
     });
 
     expect(result).toEqual({
       ok: false,
       problems: [expect.stringMatching(/^BARRACK_CONTROL_PLANE_HOST: must be a loopback address/)],
+    });
+  });
+
+  it("refuses development mode on an interface other machines, or sandboxes, can reach", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_AUTHENTICATION: "development-single-user",
+      BARRACK_CONTROL_PLANE_HOST: "172.17.0.1",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [
+        expect.stringMatching(
+          /^BARRACK_CONTROL_PLANE_HOST: must be a loopback address .* BARRACK_AUTHENTICATION=development-single-user/,
+        ),
+      ],
+    });
+  });
+
+  it("listens anywhere with Supabase authentication", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_CONTROL_PLANE_HOST: "0.0.0.0",
+    });
+
+    expect(result.ok && result.configuration.host).toBe("0.0.0.0");
+  });
+
+  it("needs no Supabase settings in development mode", () => {
+    const result = readConfiguration(localProcessEnvironment);
+
+    expect(result.ok && result.configuration.authentication).toEqual({
+      method: "development-single-user",
     });
   });
 

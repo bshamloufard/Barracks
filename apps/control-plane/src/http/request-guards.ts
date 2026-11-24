@@ -2,32 +2,40 @@ import type { MiddlewareHandler } from "hono";
 import { respondWithApiError } from "./api-error.js";
 
 /**
- * Stops other websites from changing anything through the user's browser
- * while there is no sign-in (cross-site request forgery). Two checks, each
- * enough on its own in today's browsers:
+ * Refuses an API request from a web page on an origin the installation does
+ * not serve its client from. Browsers send `Origin` on every cross-origin
+ * request and on every POST, and pages cannot forge it. A request without
+ * one is let through: native apps and other programs send none, and they
+ * must present an access token like everyone else.
  *
- * - The `Origin` header, which browsers send on every cross-origin request
- *   and on every POST, and which pages cannot forge, must be one the client
- *   WebSocket endpoint also allows. A request without one is refused, so
- *   programs other than browsers must send an allowed origin too.
- * - The body must be declared JSON. A plain HTML form cannot send that
- *   content type, and a script on another site can only by asking first
- *   (a CORS preflight), which this server never approves.
- *
- * Neither stops a program on the same machine, which is why the control
- * plane listens only on the loopback interface by default.
+ * The access token is what stops other websites acting through the user's
+ * browser: it is not sent automatically, as a cookie would be. This check is
+ * a second fence, and the one that matters in development mode, whose token
+ * is no secret.
  */
-export function guardStateChangingRequests(allowedOrigins: ReadonlySet<string>): MiddlewareHandler {
+export function refuseDisallowedOrigins(allowedOrigins: ReadonlySet<string>): MiddlewareHandler {
   return async (context, next) => {
     const origin = context.req.header("origin");
-    if (origin === undefined || !allowedOrigins.has(origin)) {
+    if (origin !== undefined && !allowedOrigins.has(origin)) {
       return respondWithApiError(
         context,
         403,
         "forbidden_origin",
-        `Origin "${origin ?? ""}" is not allowed to make this request.`,
+        `Origin "${origin}" is not allowed to make this request.`,
       );
     }
+    await next();
+    return undefined;
+  };
+}
+
+/**
+ * A request that changes something must declare a JSON body. A plain HTML
+ * form cannot send that content type, and a script on another site can only
+ * by asking first (a CORS preflight), which this server never approves.
+ */
+export function requireJsonBody(): MiddlewareHandler {
+  return async (context, next) => {
     if (!isJsonMediaType(context.req.header("content-type"))) {
       return respondWithApiError(
         context,

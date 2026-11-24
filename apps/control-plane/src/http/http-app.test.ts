@@ -25,7 +25,7 @@ async function get(path: string): Promise<Response> {
   if (controlPlane === undefined) {
     throw new Error("Start the control plane first.");
   }
-  return fetch(`${controlPlane.httpBaseUrl}${path}`);
+  return controlPlane.getApi(path);
 }
 
 describe("the HTTP app", () => {

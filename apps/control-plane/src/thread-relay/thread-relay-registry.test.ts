@@ -1,5 +1,5 @@
 import { pino } from "pino";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { agentRunStarted } from "../test-support/example-agent-events.js";
 import {
   allPendingWorkSettled,
@@ -7,9 +7,28 @@ import {
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
+import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
+import { ThreadAccess } from "../threads/thread-access.js";
 import { ThreadRelayRegistry } from "./thread-relay-registry.js";
 
 const threadId = "thread-1";
+let access: ThreadAccess;
+
+/** Clients are attached only with proof their user owns the thread, so the thread is given an owner. */
+beforeAll(async () => {
+  const threadStore = new InMemoryThreadStore();
+  await threadStore.create({
+    threadId,
+    ownerUserId: "user-a",
+    sandboxProvider: "fake",
+    supervisorTokenDigest: Buffer.alloc(32),
+  });
+  const checkedAccess = await ThreadAccess.check(threadStore, "user-a", threadId);
+  if (checkedAccess === undefined) {
+    throw new Error("The thread's owner was refused access to it.");
+  }
+  access = checkedAccess;
+});
 
 function createRegistry(): ThreadRelayRegistry {
   return new ThreadRelayRegistry(new InMemoryThreadEventLog(), pino({ level: "silent" }));
@@ -20,12 +39,12 @@ describe("the thread relay registry", () => {
     const registry = createRegistry();
     const supervisorRelay = registry.attachSupervisor(threadId, new FakeSupervisorConnection());
     const client = new FakeClientConnection();
-    registry.attachClient(threadId, client, 0);
+    registry.attachClient(access, client, 0);
     await allPendingWorkSettled();
 
     supervisorRelay.detachClient(client);
     await allPendingWorkSettled();
-    const laterRelay = registry.attachClient(threadId, new FakeClientConnection(), 0);
+    const laterRelay = registry.attachClient(access, new FakeClientConnection(), 0);
 
     expect(laterRelay).toBe(supervisorRelay);
   });
@@ -35,13 +54,13 @@ describe("the thread relay registry", () => {
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
     const relay = registry.attachSupervisor(threadId, supervisor);
-    registry.attachClient(threadId, client, 0);
+    registry.attachClient(access, client, 0);
     await allPendingWorkSettled();
 
     relay.detachClient(client);
     relay.detachSupervisor(supervisor);
     await allPendingWorkSettled();
-    const laterRelay = registry.attachClient(threadId, new FakeClientConnection(), 0);
+    const laterRelay = registry.attachClient(access, new FakeClientConnection(), 0);
 
     expect(laterRelay).not.toBe(relay);
   });
@@ -54,9 +73,9 @@ describe("the thread relay registry", () => {
 
     relay.detachSupervisor(supervisor);
     const client = new FakeClientConnection();
-    const clientRelay = registry.attachClient(threadId, client, 0);
+    const clientRelay = registry.attachClient(access, client, 0);
     await allPendingWorkSettled();
-    const laterRelay = registry.attachClient(threadId, new FakeClientConnection(), 0);
+    const laterRelay = registry.attachClient(access, new FakeClientConnection(), 0);
 
     expect(clientRelay).toBe(relay);
     expect(laterRelay).toBe(relay);
@@ -69,16 +88,16 @@ describe("the thread relay registry", () => {
   it("does not let a dropped relay remove the relay that replaced it", async () => {
     const registry = createRegistry();
     const firstClient = new FakeClientConnection();
-    const droppedRelay = registry.attachClient(threadId, firstClient, 0);
+    const droppedRelay = registry.attachClient(access, firstClient, 0);
     await allPendingWorkSettled();
     droppedRelay.detachClient(firstClient);
-    const replacementRelay = registry.attachClient(threadId, new FakeClientConnection(), 0);
+    const replacementRelay = registry.attachClient(access, new FakeClientConnection(), 0);
     await allPendingWorkSettled();
 
     // A supervisor whose socket finished closing only after its relay was dropped.
     droppedRelay.detachSupervisor(new FakeSupervisorConnection());
     await allPendingWorkSettled();
-    const laterRelay = registry.attachClient(threadId, new FakeClientConnection(), 0);
+    const laterRelay = registry.attachClient(access, new FakeClientConnection(), 0);
 
     expect(laterRelay).toBe(replacementRelay);
   });
@@ -92,7 +111,7 @@ describe("the thread relay registry", () => {
     await allPendingWorkSettled();
 
     const client = new FakeClientConnection();
-    registry.attachClient(threadId, client, 0);
+    registry.attachClient(access, client, 0);
     await allPendingWorkSettled();
 
     expect(client.inbox.messages.slice(0, 2)).toEqual([

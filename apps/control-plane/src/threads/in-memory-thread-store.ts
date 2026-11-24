@@ -52,8 +52,17 @@ export class InMemoryThreadStore implements ThreadStore {
     return record === undefined ? undefined : copyOf(record);
   }
 
-  async listNewestFirst(limit: number): Promise<ThreadRecord[]> {
-    return this.#threads.toReversed().slice(0, limit).map(copyOf);
+  async findOwnedBy(ownerUserId: string, threadId: string): Promise<ThreadRecord | undefined> {
+    const record = this.#find(threadId);
+    return record?.ownerUserId === ownerUserId ? copyOf(record) : undefined;
+  }
+
+  async listNewestFirstOwnedBy(ownerUserId: string, limit: number): Promise<ThreadRecord[]> {
+    return this.#threads
+      .filter((record) => record.ownerUserId === ownerUserId)
+      .toReversed()
+      .slice(0, limit)
+      .map(copyOf);
   }
 
   #changeCreatingSandbox(

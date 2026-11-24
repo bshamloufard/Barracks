@@ -1,3 +1,4 @@
+import { bearerTokenFrom } from "../bearer-token.js";
 import { supervisorTokenMatches } from "../threads/supervisor-token.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 
@@ -31,10 +32,4 @@ export function authorizeWithThreadTokens(threadStore: ThreadStore): SupervisorA
       thread !== undefined && supervisorTokenMatches(presentedToken, thread.supervisorTokenDigest)
     );
   };
-}
-
-/** https://www.rfc-editor.org/rfc/rfc6750#section-2.1 (the scheme name is case-insensitive). */
-function bearerTokenFrom(authorizationHeader: string | undefined): string | undefined {
-  const match = /^Bearer +(\S+)\s*$/i.exec(authorizationHeader ?? "");
-  return match?.[1];
 }

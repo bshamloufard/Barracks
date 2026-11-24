@@ -24,15 +24,27 @@ export interface ThreadStore {
    */
   failSandboxesStillBeingCreated(reason: string): Promise<string[]>;
 
-  /** The thread, or undefined if there is none with that identifier. */
+  /**
+   * The thread, or undefined if there is none with that identifier. Whoever
+   * owns it: for the control plane's own work, such as checking a
+   * supervisor's token. Anything answering a user uses `findOwnedBy`.
+   */
   find(threadId: string): Promise<ThreadRecord | undefined>;
 
-  /** At most `limit` threads, the most recently created first. */
-  listNewestFirst(limit: number): Promise<ThreadRecord[]>;
+  /**
+   * The thread if it exists and belongs to `ownerUserId`; otherwise
+   * undefined, whether it does not exist or belongs to someone else.
+   */
+  findOwnedBy(ownerUserId: string, threadId: string): Promise<ThreadRecord | undefined>;
+
+  /** At most `limit` of the user's threads, the most recently created first. */
+  listNewestFirstOwnedBy(ownerUserId: string, limit: number): Promise<ThreadRecord[]>;
 }
 
 export type NewThread = {
   threadId: string;
+  /** The user the thread belongs to, who alone may see or control it. */
+  ownerUserId: string;
   /** The provider asked for the sandbox, such as `docker`; a sandbox identifier means nothing to any other. */
   sandboxProvider: string;
   /** SHA-256 of the supervisor's token. The token itself is never stored. */
@@ -49,7 +61,9 @@ export type ThreadSandboxRecord =
   | { state: "ready"; sandboxId: string }
   | { state: "failed"; reason: string };
 
-export type ThreadRecord = NewThread & {
+export type ThreadRecord = Omit<NewThread, "ownerUserId"> & {
+  /** Undefined only for a thread created before sign-in existed, which nobody may see. */
+  ownerUserId: string | undefined;
   createdAt: Date;
   sandbox: ThreadSandboxRecord;
 };

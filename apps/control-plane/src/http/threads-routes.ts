@@ -12,18 +12,18 @@ import type { Logger } from "../logger.js";
 import type { ThreadCreator } from "../threads/thread-creator.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 import { respondWithApiError } from "./api-error.js";
-import { guardStateChangingRequests } from "./state-changing-request-guard.js";
+import { requireJsonBody } from "./request-guards.js";
+import { type SignedInEnvironment, signedInUserOf } from "./require-signed-in-user.js";
 
 export type ThreadsRoutesDependencies = {
   threadStore: ThreadStore;
   threadCreator: ThreadCreator;
-  allowedClientOrigins: ReadonlySet<string>;
   logger: Logger;
 };
 
 /**
  * The thread list has no paging yet; this many is far more than one person
- * works through before sign-in and stopping threads arrive.
+ * works through before stopping threads arrives.
  */
 const listedThreadLimit = 100;
 
@@ -32,13 +32,18 @@ const maximumRequestBodyInBytes = 16 * 1024;
 
 /**
  * `POST /api/threads` creates a thread, `GET /api/threads` lists the newest,
- * and `GET /api/threads/{threadId}` fetches one. Shapes are in
- * `@barrack/protocol` (`threads-api.ts`).
+ * and `GET /api/threads/{threadId}` fetches one, always the signed-in user's
+ * own: another user's thread is answered exactly as one that does not exist.
+ * They sit behind `requireSignedInUser`. Shapes are in `@barrack/protocol`
+ * (`threads-api.ts`).
  */
-export function addThreadsRoutes(app: Hono, dependencies: ThreadsRoutesDependencies): void {
+export function addThreadsRoutes(
+  app: Hono<SignedInEnvironment>,
+  dependencies: ThreadsRoutesDependencies,
+): void {
   app.post(
     threadsApiPath,
-    guardStateChangingRequests(dependencies.allowedClientOrigins),
+    requireJsonBody(),
     bodyLimit({
       maxSize: maximumRequestBodyInBytes,
       onError: (context) =>
@@ -53,7 +58,7 @@ export function addThreadsRoutes(app: Hono, dependencies: ThreadsRoutesDependenc
 }
 
 async function createThread(
-  context: Context,
+  context: Context<SignedInEnvironment>,
   dependencies: ThreadsRoutesDependencies,
 ): Promise<Response> {
   const body = await readJsonBody(context);
@@ -65,32 +70,37 @@ async function createThread(
       "A new thread is created with an empty JSON object, {}, as the body.",
     );
   }
+  const { userId } = signedInUserOf(context);
   try {
-    const thread = await dependencies.threadCreator.createThread();
+    const thread = await dependencies.threadCreator.createThread(userId);
     const response: ThreadResponse = { thread: toThreadSummary(thread) };
     return context.json(response, 201);
   } catch (error) {
-    dependencies.logger.error({ err: error }, "Could not create a thread");
+    dependencies.logger.error({ err: error, userId }, "Could not create a thread");
     return respondUnavailable(context, "The control plane could not record a new thread.");
   }
 }
 
 async function listThreads(
-  context: Context,
+  context: Context<SignedInEnvironment>,
   dependencies: ThreadsRoutesDependencies,
 ): Promise<Response> {
+  const { userId } = signedInUserOf(context);
   try {
-    const threads = await dependencies.threadStore.listNewestFirst(listedThreadLimit);
+    const threads = await dependencies.threadStore.listNewestFirstOwnedBy(
+      userId,
+      listedThreadLimit,
+    );
     const response: ThreadListResponse = { threads: threads.map(toThreadSummary) };
     return context.json(response);
   } catch (error) {
-    dependencies.logger.error({ err: error }, "Could not list threads");
+    dependencies.logger.error({ err: error, userId }, "Could not list threads");
     return respondUnavailable(context, "The control plane could not read its threads.");
   }
 }
 
 async function fetchThread(
-  context: Context,
+  context: Context<SignedInEnvironment>,
   threadId: string,
   dependencies: ThreadsRoutesDependencies,
 ): Promise<Response> {
@@ -99,8 +109,9 @@ async function fetchThread(
   if (!threadIdSchema.safeParse(threadId).success) {
     return notFound();
   }
+  const { userId } = signedInUserOf(context);
   try {
-    const thread = await dependencies.threadStore.find(threadId);
+    const thread = await dependencies.threadStore.findOwnedBy(userId, threadId);
     return thread === undefined ? notFound() : context.json({ thread: toThreadSummary(thread) });
   } catch (error) {
     dependencies.logger.error({ err: error, threadId }, "Could not read a thread");
@@ -108,7 +119,7 @@ async function fetchThread(
   }
 }
 
-/** What clients may see of a thread: never its token digest, provider or sandbox identifier. */
+/** What clients may see of a thread: never its token digest, owner, provider or sandbox identifier. */
 function toThreadSummary(thread: ThreadRecord): ThreadSummary {
   const { sandbox } = thread;
   return {
