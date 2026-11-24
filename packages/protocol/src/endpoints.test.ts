@@ -32,6 +32,15 @@ describe("supervisor endpoint", () => {
     });
   });
 
+  it("rejects a supervisor still speaking version 1, saying which version is expected", () => {
+    const result = parseSupervisorEndpointPath("/threads/thread-1/supervisor?protocolVersion=1");
+
+    expect(result).toEqual({
+      ok: false,
+      errorMessage: 'Protocol version "1" is not supported; expected 2.',
+    });
+  });
+
   it("rejects a peer that does not state its protocol version", () => {
     expect(parseSupervisorEndpointPath("/threads/thread-1/supervisor").ok).toBe(false);
   });
