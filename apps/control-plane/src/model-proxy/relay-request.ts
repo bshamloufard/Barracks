@@ -72,6 +72,7 @@ class RequestRelay {
   #firstByteTimer: NodeJS.Timeout | undefined;
   #totalTimer: NodeJS.Timeout | undefined;
   #isFinished = false;
+  #isRequestSent = false;
 
   constructor(options: RelayRequestOptions, resolve: (outcome: RelayOutcome) => void) {
     this.#options = options;
@@ -110,11 +111,16 @@ class RequestRelay {
     });
     upstreamRequest.on("response", (upstreamResponse) => this.#relayAnswer(upstreamResponse));
     upstreamRequest.on("error", () => this.#interrupt("upstream_failed"));
-    pipeline(request, this.#requestBody, upstreamRequest).catch((error: unknown) => {
-      this.#interrupt(
-        error instanceof ByteLimitExceededError ? "request_too_large" : "agent_went_away",
-      );
-    });
+    pipeline(request, this.#requestBody, upstreamRequest).then(
+      () => {
+        this.#isRequestSent = true;
+      },
+      (error: unknown) => {
+        this.#interrupt(
+          error instanceof ByteLimitExceededError ? "request_too_large" : "agent_went_away",
+        );
+      },
+    );
   }
 
   #relayAnswer(upstreamResponse: IncomingMessage): void {
@@ -168,7 +174,11 @@ class RequestRelay {
       return;
     }
     this.#isFinished = true;
-    this.#abortController.abort();
+    // A request answered and sent in full keeps its connection for the next;
+    // one the provider answered before reading it all is ended here.
+    if (!this.#isRequestSent) {
+      this.#abortController.abort();
+    }
     clearTimeout(this.#firstByteTimer);
     clearTimeout(this.#totalTimer);
     this.#resolve({

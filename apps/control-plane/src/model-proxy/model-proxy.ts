@@ -95,6 +95,11 @@ export class ModelProxy {
       );
       return;
     }
+    if (Number(request.headers["content-length"] ?? 0) > this.#options.limits.maximumRequestBytes) {
+      admission.release();
+      sendRefusal(response, route.format, proxyRefusals.requestTooLarge);
+      return;
+    }
     const cancellation = new AbortController();
     this.#trackInFlight(threadId, cancellation);
     try {
@@ -128,10 +133,6 @@ export class ModelProxy {
     if (authorization.kind === "refused") {
       logger.warn({ reason: authorization.reason }, "Refused a model request");
       sendRefusal(response, route.format, authorization.refusal);
-      return;
-    }
-    if (Number(request.headers["content-length"] ?? 0) > this.#options.limits.maximumRequestBytes) {
-      sendRefusal(response, route.format, proxyRefusals.requestTooLarge);
       return;
     }
     response.shouldKeepAlive = true;
