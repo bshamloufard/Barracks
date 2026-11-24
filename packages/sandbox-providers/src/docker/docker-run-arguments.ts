@@ -25,8 +25,9 @@ export type DockerProviderSettings = {
    * A control plane running in a container on the same network is then
    * reachable by its name there, and other containers kept off that network,
    * such as its database, are not reachable at all (see compose.yaml).
+   * Optional, so that settings written before it existed stay valid.
    */
-  network: string | undefined;
+  network?: string | undefined;
 };
 
 /**
