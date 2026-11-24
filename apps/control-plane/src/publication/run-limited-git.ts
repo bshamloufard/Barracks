@@ -31,7 +31,7 @@ export type LimitedGitCommand = {
 
 export type LimitedGitOutcome =
   | { kind: "succeeded"; standardOutput: string }
-  | { kind: "failed"; standardError: string }
+  | { kind: "failed"; exitCode: number | null; standardOutput: string; standardError: string }
   | { kind: "limit_exceeded"; resource: LimitedResource; standardError: string };
 
 /**
@@ -126,7 +126,12 @@ function decideOutcome(ending: {
   standardError: string;
 }): LimitedGitOutcome {
   if (ending.stoppedFor === "output") {
-    return { kind: "failed", standardError: "Git printed far more than expected." };
+    return {
+      kind: "failed",
+      exitCode: null,
+      standardOutput: "",
+      standardError: "Git printed far more than expected.",
+    };
   }
   const exceeded = ending.stoppedFor ?? findExceededLimit(ending.signal, ending.standardError);
   if (exceeded !== undefined) {
@@ -134,7 +139,12 @@ function decideOutcome(ending: {
   }
   return ending.exitCode === 0
     ? { kind: "succeeded", standardOutput: ending.standardOutput }
-    : { kind: "failed", standardError: ending.standardError };
+    : {
+        kind: "failed",
+        exitCode: ending.exitCode,
+        standardOutput: ending.standardOutput,
+        standardError: ending.standardError,
+      };
 }
 
 /** Keeps at most `maximumBytes` of a stream; past that, keeps the end, or calls `onOverflow`. */

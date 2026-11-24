@@ -19,6 +19,7 @@ export class InMemoryThreadRepositoryStore implements ThreadRepositoryStore {
       ...repository,
       threadId,
       lastPublishedCommit: undefined,
+      replaceableCommit: undefined,
       pullRequest: undefined,
     });
   }
@@ -50,6 +51,7 @@ export class InMemoryThreadRepositoryStore implements ThreadRepositoryStore {
       this.#records.set(threadId, {
         ...record,
         lastPublishedCommit: publication.lastPublishedCommit,
+        replaceableCommit: publication.replaceableCommit,
         pullRequest: record.pullRequest ?? publication.pullRequest,
       });
     }

@@ -315,15 +315,93 @@ describe("publishing a thread's branch", () => {
     expect(answer.status).toBe(409);
     expect(errorOf(answer.body)).toMatchObject({
       code: "publication_failed",
-      message: expect.stringContaining("did not push"),
+      message: expect.stringContaining("holds commits someone else pushed"),
     });
     expect(await github.readBranch(repository, thread.workBranch)).toBe(theirs);
     expect(await recordedRepositoryEvents(thread.threadId)).toEqual([
       {
         type: "repository_publication_failed",
-        errorMessage: expect.stringContaining("did not push"),
+        errorMessage: expect.stringContaining("holds commits someone else pushed"),
       },
     ]);
+  });
+
+  it("adds the agent's commits on top of someone else's, as a fast-forward", async () => {
+    const thread = await startPublishingThread();
+    const theirs = await pushCommitAsSomeoneElse(
+      repository.directory,
+      thread.workBranch,
+      "main",
+      "theirs.txt",
+    );
+    await takeBranchFromRepository(thread);
+    const ours = await commit(thread.clone, "ours.txt");
+
+    const answer = await publish(thread, await bundleSinceBase(thread), false);
+
+    expect(answer).toMatchObject({ status: 200, body: { commit: ours } });
+    expect(await github.readBranch(repository, thread.workBranch)).toBe(ours);
+    expect(await commitIsAncestor(theirs, ours)).toBe(true);
+  });
+
+  it("refuses to drop someone else's commit from beneath one Barrack pushed on top of it", async () => {
+    const thread = await startPublishingThread();
+    await pushCommitAsSomeoneElse(repository.directory, thread.workBranch, "main", "theirs.txt");
+    await takeBranchFromRepository(thread);
+    await commit(thread.clone, "ours.txt");
+    await publish(thread, await bundleSinceBase(thread), false);
+    const published = await github.readBranch(repository, thread.workBranch);
+    await runGit(["reset", "--quiet", "--hard", thread.baseCommit], thread.clone);
+    await commit(thread.clone, "rewritten.txt");
+
+    const answer = await publish(thread, await bundleSinceBase(thread), false);
+
+    expect(errorOf(answer.body).message).toContain("holds commits someone else pushed");
+    expect(await github.readBranch(repository, thread.workBranch)).toBe(published);
+  });
+
+  it("never takes someone else's commit it found on the branch for its own, so cannot then overwrite it", async () => {
+    const thread = await startPublishingThread();
+    const theirs = await pushCommitAsSomeoneElse(
+      repository.directory,
+      thread.workBranch,
+      "main",
+      "theirs.txt",
+    );
+    await takeBranchFromRepository(thread);
+    const adopted = await publish(thread, await bundleSinceBase(thread), false);
+    await runGit(["reset", "--quiet", "--hard", thread.baseCommit], thread.clone);
+    await commit(thread.clone, "mine.txt");
+
+    const overwrite = await publish(thread, await bundleSinceBase(thread), false);
+
+    expect(adopted).toMatchObject({ status: 200, body: { commit: theirs } });
+    expect(errorOf(overwrite.body).message).toContain("holds commits someone else pushed");
+    expect(await github.readBranch(repository, thread.workBranch)).toBe(theirs);
+  });
+
+  it("pushes nothing when someone pushes to the branch between the check and the push", async () => {
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "first.txt");
+    await publish(thread, await bundleSinceBase(thread), false);
+    await commit(thread.clone, "second.txt");
+    const heldPush = github.holdNextGitRequest("push");
+
+    const answering = publish(thread, await bundleSinceBase(thread), false);
+    await heldPush.reached;
+    const theirs = await pushCommitAsSomeoneElse(
+      repository.directory,
+      thread.workBranch,
+      "main",
+      "theirs.txt",
+    );
+    heldPush.release();
+    const answer = await answering;
+
+    expect(errorOf(answer.body).message).toContain(
+      `pushed to ${thread.workBranch} while Barrack was publishing`,
+    );
+    expect(await github.readBranch(repository, thread.workBranch)).toBe(theirs);
   });
 
   it("finishes a publication whose push went through but was never recorded", async () => {
@@ -625,6 +703,29 @@ describe("creating a thread on a repository", () => {
     expect(await listed.json()).toEqual({ threads: [] });
   });
 });
+
+/** The agent's work branch since the base, as the supervisor bundles it. */
+function bundleSinceBase(thread: PublishingThread): Promise<Buffer> {
+  return bundleOf(thread.clone, [`${thread.baseCommit}..${thread.workBranch}`]);
+}
+
+/** The agent fetches its branch as someone else left it in the repository, with its read token, and works on from there. */
+async function takeBranchFromRepository(thread: PublishingThread): Promise<void> {
+  await runGit(
+    ["fetch", "--quiet", repository.directory, `${thread.workBranch}:refs/remotes/published`],
+    thread.clone,
+  );
+  await runGit(["reset", "--quiet", "--hard", "refs/remotes/published"], thread.clone);
+}
+
+async function commitIsAncestor(ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await runGit(["merge-base", "--is-ancestor", ancestor, descendant], repository.directory);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Git reading `input` on its standard input, as `mktree` does. */
 function runGitWithInput(

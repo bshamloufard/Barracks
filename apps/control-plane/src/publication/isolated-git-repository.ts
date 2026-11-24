@@ -9,7 +9,7 @@ import {
   type GitChildLimits,
   type LimitedResource,
 } from "./git-child-limits.js";
-import { runLimitedGit } from "./run-limited-git.js";
+import { type LimitedGitOutcome, runLimitedGit } from "./run-limited-git.js";
 
 /**
  * A bare repository the control plane makes for one publication and throws
@@ -39,6 +39,9 @@ import { runLimitedGit } from "./run-limited-git.js";
 
 /** Git is found where the control plane finds its other programs. */
 const { PATH: searchPath } = process.env;
+
+/** Where the remote work branch is fetched to, outside `refs/heads`, so nothing takes it for the branch being published. */
+const remoteBranchCopy = "refs/barrack/remote-work-branch";
 
 export type RepositoryCredentials = { username: string; password: string };
 
@@ -136,40 +139,75 @@ export class IsolatedGitRepository {
     );
   }
 
-  /** Whether `ancestor` is reachable from `descendant`. */
+  /**
+   * Whether `ancestor` is reachable from `descendant`. Git answers 0 for yes
+   * and 1 for no; anything else (a commit it does not have, say) means it
+   * could not tell, which throws rather than being taken for either.
+   */
   async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
-    try {
-      await this.#runInRepository(["merge-base", "--is-ancestor", ancestor, descendant]);
+    const gitArguments = ["merge-base", "--is-ancestor", ancestor, descendant];
+    const outcome = await this.#runOutcome(gitArguments, this.#repositoryPath);
+    if (outcome.kind === "succeeded") {
       return true;
-    } catch {
+    }
+    if (outcome.kind === "failed" && outcome.exitCode === 1) {
       return false;
     }
+    throw this.#toError(gitArguments, outcome);
   }
 
-  /** The commit the branch points at in the remote repository now, or undefined if it does not exist. */
-  async readRemoteBranch(reference: string): Promise<string | undefined> {
+  /**
+   * Fetches the branch as it is in the remote repository now, with its
+   * history (without file contents), and returns the commit it points at,
+   * or undefined if it does not exist. The history is what tells a
+   * fast-forward from a rewrite.
+   */
+  async fetchRemoteBranch(reference: string): Promise<string | undefined> {
     const output = await this.#runInRepository(["ls-remote", "origin", reference]);
-    const line = output.split("\n").find((entry) => entry.endsWith(`\t${reference}`));
-    return line?.split("\t")[0];
+    const isPresent = output.split("\n").some((entry) => entry.endsWith(`\t${reference}`));
+    if (!isPresent) {
+      return undefined;
+    }
+    await this.#runInRepository([
+      "fetch",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "origin",
+      `+${reference}:${remoteBranchCopy}`,
+    ]);
+    return (
+      await this.#runInRepository(["rev-parse", "--verify", `${remoteBranchCopy}^{commit}`])
+    ).trim();
   }
 
   /**
    * Pushes `commit` to `reference`, but only if the remote branch is still
    * at `expectedRemoteCommit` (absent, when undefined): Git's lease, which
    * makes the push fail rather than overwrite anything pushed since.
+   * Returns whether the lease held; any other failure throws.
    */
   async push(
     reference: string,
     commit: string,
     expectedRemoteCommit: string | undefined,
-  ): Promise<void> {
-    await this.#runInRepository([
+  ): Promise<"pushed" | "branch_moved"> {
+    const gitArguments = [
       "push",
       "--porcelain",
       `--force-with-lease=${reference}:${expectedRemoteCommit ?? ""}`,
       "origin",
       `${commit}:${reference}`,
-    ]);
+    ];
+    const outcome = await this.#runOutcome(gitArguments, this.#repositoryPath);
+    if (outcome.kind === "succeeded") {
+      return "pushed";
+    }
+    // With --porcelain, Git reports a lease that no longer holds on its
+    // standard output as "[rejected] (stale info)".
+    if (outcome.kind === "failed" && outcome.standardOutput.includes("(stale info)")) {
+      return "branch_moved";
+    }
+    throw this.#toError(gitArguments, outcome);
   }
 
   async discard(): Promise<void> {
@@ -188,7 +226,19 @@ export class IsolatedGitRepository {
     workingDirectory: string,
     options: { allowBundleFile?: boolean; input?: Readable } = {},
   ): Promise<string> {
-    const outcome = await runLimitedGit({
+    const outcome = await this.#runOutcome(gitArguments, workingDirectory, options);
+    if (outcome.kind === "succeeded") {
+      return outcome.standardOutput;
+    }
+    throw this.#toError(gitArguments, outcome);
+  }
+
+  #runOutcome(
+    gitArguments: string[],
+    workingDirectory: string,
+    options: { allowBundleFile?: boolean; input?: Readable } = {},
+  ): Promise<LimitedGitOutcome> {
+    return runLimitedGit({
       gitArguments,
       workingDirectory,
       environment: this.#environment(options.allowBundleFile ?? false),
@@ -197,14 +247,15 @@ export class IsolatedGitRepository {
       limits: this.#options.limits,
       applicable: this.#options.applicableLimits,
     });
-    switch (outcome.kind) {
-      case "succeeded":
-        return outcome.standardOutput;
-      case "limit_exceeded":
-        throw new GitLimitExceededError(gitArguments[0] ?? "", outcome.resource);
-      case "failed":
-        throw this.#describeFailure(gitArguments, outcome.standardError);
-    }
+  }
+
+  #toError(
+    gitArguments: string[],
+    outcome: Exclude<LimitedGitOutcome, { kind: "succeeded" }>,
+  ): GitCommandError {
+    return outcome.kind === "limit_exceeded"
+      ? new GitLimitExceededError(gitArguments[0] ?? "", outcome.resource)
+      : this.#describeFailure(gitArguments, outcome.standardError);
   }
 
   /**

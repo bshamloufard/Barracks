@@ -18,6 +18,7 @@ import type { GithubSettings } from "../github/github-settings.js";
 import { checkLiveRepositoryAccess } from "../github/live-repository-access.js";
 import type { Logger } from "../logger.js";
 import type {
+  RepositoryPublication,
   ThreadRepositoryRecord,
   ThreadRepositoryStore,
 } from "../repositories/thread-repository-store.js";
@@ -37,6 +38,7 @@ import {
 } from "./isolated-git-repository.js";
 import { type PublicationBundleUploads, PublicationError } from "./publication-bundle-uploads.js";
 import { describePublishing } from "./publishing-availability.js";
+import { decidePush } from "./push-decision.js";
 
 /** Far more than an agent's commits on a task come to; a bundle larger than this is refused. */
 export const maximumPublicationBundleSizeInBytes = 100 * 1024 * 1024;
@@ -98,10 +100,11 @@ type Verified = {
  *    branch), check it builds on the repository's own history, check every
  *    object in it, all in a throwaway repository Git cannot be configured
  *    or extended in (see `IsolatedGitRepository`).
- * 4. Push to `barrack/<thread>` only, and only over the commit Barrack
- *    pushed there last: a branch someone else pushed to is never
- *    overwritten. A second publication after the agent rewrote its own
- *    commits replaces them; nothing but Barrack's own work is ever lost.
+ * 4. Push to `barrack/<thread>` only, as a fast-forward, or replacing
+ *    Barrack's own last push when nothing anyone else pushed lies beneath
+ *    it (`decidePush`): a publication after the agent rewrote its own
+ *    commits replaces them, and nothing but Barrack's own work is ever
+ *    lost.
  * 5. Open a pull request as the App if asked and none is recorded; one is
  *    opened at most once, and later publications update its branch.
  *
@@ -215,7 +218,7 @@ export class ThreadPublisher {
       applicableLimits: findApplicableLimits(),
     });
     try {
-      const commit = await this.#pushWorkBranch(verified, isolated);
+      const { commit, branch } = await this.#pushWorkBranch(verified, isolated);
       const pullRequest = await this.#ensurePullRequest(
         verified,
         connection,
@@ -223,7 +226,7 @@ export class ThreadPublisher {
         openPullRequest,
       );
       await this.#options.repositories.recordPublication(thread.threadId, {
-        lastPublishedCommit: commit,
+        ...branch,
         pullRequest: pullRequest?.pullRequest,
       });
       const branchUrl = `${linked.htmlUrl}/tree/${repository.workBranch}`;
@@ -278,8 +281,14 @@ export class ThreadPublisher {
     return { connection, linked };
   }
 
-  /** Returns the commit the work branch now points at in the repository. */
-  async #pushWorkBranch(verified: Verified, isolated: IsolatedGitRepository): Promise<string> {
+  /**
+   * Returns the commit the work branch now points at in the repository,
+   * and what to record of the branch: changed only if Barrack pushed.
+   */
+  async #pushWorkBranch(
+    verified: Verified,
+    isolated: IsolatedGitRepository,
+  ): Promise<{ commit: string; branch: Omit<RepositoryPublication, "pullRequest"> }> {
     const { repository, publicationId } = verified;
     const reference = `refs/heads/${repository.workBranch}`;
     const bundlePath = path.join(isolated.directory, "work.bundle");
@@ -305,26 +314,49 @@ export class ThreadPublisher {
     );
     const commit = header.value.tipCommit;
     const remoteCommit = await this.#withinLimits("Reading the branch in the repository", () =>
-      isolated.readRemoteBranch(reference),
+      isolated.fetchRemoteBranch(reference),
     );
-    // A branch already at the commit being published needs nothing: an
-    // earlier publication pushed it but could not record that it did, or
-    // another control plane published the same commit a moment ago.
-    if (
-      remoteCommit !== undefined &&
-      remoteCommit !== commit &&
-      remoteCommit !== repository.lastPublishedCommit
-    ) {
-      throw new PublicationError(
-        `${repository.workBranch} in the repository has commits Barrack did not push there. Barrack never overwrites someone else's work; delete or rename that branch on GitHub to publish again.`,
-      );
+    const decision = await this.#withinLimits("Comparing the branch with the repository's", () =>
+      decidePush({
+        workBranch: repository.workBranch,
+        commit,
+        remoteCommit,
+        replaceableCommit: repository.replaceableCommit,
+        isAncestor: (ancestor, descendant) => isolated.isAncestor(ancestor, descendant),
+      }).catch((error: unknown) => {
+        if (error instanceof GitLimitExceededError || !(error instanceof GitCommandError)) {
+          throw error;
+        }
+        this.#options.logger.warn({ err: error }, "Could not tell whether a push fast-forwards");
+        throw new PublicationError(
+          "Barrack could not tell whether these commits build on the branch in the repository, so it pushed nothing. Try again.",
+        );
+      }),
+    );
+    const unchanged = {
+      lastPublishedCommit: repository.lastPublishedCommit,
+      replaceableCommit: repository.replaceableCommit,
+    };
+    switch (decision.kind) {
+      case "refuse":
+        throw new PublicationError(decision.reason);
+      case "already_there":
+        return { commit, branch: unchanged };
+      case "push": {
+        const pushed = await this.#withinLimits("Pushing the branch", () =>
+          isolated.push(reference, commit, decision.expectedRemoteCommit),
+        );
+        if (pushed === "branch_moved") {
+          throw new PublicationError(
+            `Someone pushed to ${repository.workBranch} while Barrack was publishing, so nothing was pushed and nothing of theirs was overwritten. Publish again.`,
+          );
+        }
+        return {
+          commit,
+          branch: { lastPublishedCommit: commit, replaceableCommit: decision.replaceableAfter },
+        };
+      }
     }
-    if (remoteCommit !== commit) {
-      await this.#withinLimits("Pushing the branch", () =>
-        isolated.push(reference, commit, remoteCommit),
-      );
-    }
-    return commit;
   }
 
   get #gitChildLimits(): GitChildLimits {

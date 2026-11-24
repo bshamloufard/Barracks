@@ -88,6 +88,7 @@ describeWithTestDatabase("the Postgres repository and GitHub stores", () => {
 
     await repositories.recordPublication("thread-1", {
       lastPublishedCommit: "0123456789abcdef0123456789abcdef01234567",
+      replaceableCommit: "0123456789abcdef0123456789abcdef01234567",
       pullRequest: { number: 3, url: "https://github.com/octo/app/pull/3" },
     });
 
@@ -95,6 +96,7 @@ describeWithTestDatabase("the Postgres repository and GitHub stores", () => {
       ...repository,
       threadId: "thread-1",
       lastPublishedCommit: "0123456789abcdef0123456789abcdef01234567",
+      replaceableCommit: "0123456789abcdef0123456789abcdef01234567",
       pullRequest: { number: 3, url: "https://github.com/octo/app/pull/3" },
     });
     expect([...(await repositories.findMany(["thread-1", "thread-2"])).keys()]).toEqual([
@@ -128,16 +130,19 @@ describeWithTestDatabase("the Postgres repository and GitHub stores", () => {
     const pullRequest = { number: 3, url: "https://github.com/octo/app/pull/3" };
     await repositories.recordPublication("thread-1", {
       lastPublishedCommit: "0123456789abcdef0123456789abcdef01234567",
+      replaceableCommit: "0123456789abcdef0123456789abcdef01234567",
       pullRequest,
     });
 
     await repositories.recordPublication("thread-1", {
       lastPublishedCommit: "89abcdef0123456789abcdef0123456789abcdef",
+      replaceableCommit: undefined,
       pullRequest: undefined,
     });
 
     expect(await repositories.find("thread-1")).toMatchObject({
       lastPublishedCommit: "89abcdef0123456789abcdef0123456789abcdef",
+      replaceableCommit: undefined,
       pullRequest,
     });
   });

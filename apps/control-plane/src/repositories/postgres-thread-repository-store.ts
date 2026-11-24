@@ -20,13 +20,14 @@ type ThreadRepositoryRow = {
   github_full_name: string | null;
   github_html_url: string | null;
   last_published_commit: string | null;
+  replaceable_commit: string | null;
   pull_request_number: number | null;
   pull_request_url: string | null;
 };
 
 const repositoryColumns = `thread_id, url, access, base_branch, work_branch, github_repository_id,
   github_installation_id, github_full_name, github_html_url, last_published_commit,
-  pull_request_number, pull_request_url`;
+  replaceable_commit, pull_request_number, pull_request_url`;
 
 function tableIn(schema: string): string {
   return `${escapeIdentifier(schema)}.thread_repositories`;
@@ -97,6 +98,7 @@ export class PostgresThreadRepositoryStore implements ThreadRepositoryStore {
     await this.#pool.query(
       `update ${this.#table} set
           last_published_commit = $2,
+          replaceable_commit = $5,
           pull_request_number = coalesce(pull_request_number, $3),
           pull_request_url = coalesce(pull_request_url, $4)
         where thread_id = $1`,
@@ -105,6 +107,7 @@ export class PostgresThreadRepositoryStore implements ThreadRepositoryStore {
         publication.lastPublishedCommit ?? null,
         publication.pullRequest?.number ?? null,
         publication.pullRequest?.url ?? null,
+        publication.replaceableCommit ?? null,
       ],
     );
   }
@@ -119,6 +122,7 @@ function toRecord(row: ThreadRepositoryRow): ThreadRepositoryRecord {
     workBranch: row.work_branch,
     github: toGithubReference(row),
     lastPublishedCommit: row.last_published_commit ?? undefined,
+    replaceableCommit: row.replaceable_commit ?? undefined,
     pullRequest:
       row.pull_request_number === null || row.pull_request_url === null
         ? undefined

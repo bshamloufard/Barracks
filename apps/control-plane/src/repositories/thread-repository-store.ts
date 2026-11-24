@@ -34,6 +34,14 @@ export type GithubRepositoryReference = {
 export type RepositoryPublication = {
   /** The commit the control plane last pushed to the work branch. */
   lastPublishedCommit: string | undefined;
+  /**
+   * The one commit a later publication may replace rather than build on:
+   * Barrack's own last push, while nothing anyone else pushed lies beneath
+   * it. Undefined before Barrack pushed anything, and once it pushed on top
+   * of someone else's commit; never a commit Barrack found there without
+   * pushing it.
+   */
+  replaceableCommit: string | undefined;
   /** The pull request opened for the work branch, if any. */
   pullRequest: { number: number; url: string } | undefined;
 };
@@ -52,8 +60,8 @@ export interface ThreadRepositoryStore {
   findMany(threadIds: readonly string[]): Promise<Map<string, ThreadRepositoryRecord>>;
 
   /**
-   * Records a publication: the commit pushed and, once there is one, the
-   * pull request. A pull request already recorded is kept, so a
+   * Records a publication: the commit pushed, the commit a later one may
+   * replace and, once there is one, the pull request. A pull request already recorded is kept, so a
    * publication that did not open one (another control plane's, finishing
    * second) never makes the thread forget it.
    */
