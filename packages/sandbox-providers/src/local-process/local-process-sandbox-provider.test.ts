@@ -135,6 +135,24 @@ describe("the local-process sandbox provider", () => {
     expect(await readdir(sandboxesDirectory)).toEqual([]);
   });
 
+  it("has a supervisor's process recorded before the supervisor runs, so no supervisor runs unseen", async () => {
+    // The first thing this supervisor does is look for its own record.
+    provider = createProvider([
+      "/bin/sh",
+      "-c",
+      'cat ../supervisor.pid > recorded-before-running; printf "%s" "$$" > own-process; exec sleep 30',
+    ]);
+    const sandboxId = await createSandbox();
+    const workspace = workspaceOf(sandboxId);
+    const readInWorkspace = (fileName: string) => readFile(path.join(workspace, fileName), "utf8");
+    await vi.waitFor(() => expect(existsSync(path.join(workspace, "own-process"))).toBe(true));
+
+    expect(await readInWorkspace("recorded-before-running")).toBe(
+      await readInWorkspace("own-process"),
+    );
+    expect(await provider.getStatus(sandboxId)).toEqual({ state: "running" });
+  });
+
   it("reports a stop cut short as stopping, and lets a provider opened afresh finish it", async () => {
     const sandboxId = await createSandbox();
     const sandboxDirectory = path.dirname(workspaceOf(sandboxId));

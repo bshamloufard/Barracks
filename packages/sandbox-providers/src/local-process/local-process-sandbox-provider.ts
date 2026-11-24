@@ -33,8 +33,8 @@ import {
   readSandboxRecord,
   readSupervisorProcess,
   removeSupervisorProcessId,
+  supervisorProcessFilePath,
   writeSandboxRecord,
-  writeSupervisorProcessId,
 } from "./local-sandbox-records.js";
 import { stopSupervisorsWhenThisProcessExits } from "./supervisors-on-exit.js";
 
@@ -99,6 +99,29 @@ const hostVariableNames = [
 ];
 
 const exitPollIntervalInMilliseconds = 50;
+
+/**
+ * How a supervisor is launched: through the shell, which records its own
+ * process identifier (which `exec` keeps for the supervisor) before the
+ * supervisor runs, then tells the provider on file descriptor 3. A control
+ * plane killed between starting the process and recording it, as the
+ * provider recorded it before, left a supervisor running that a successor
+ * could not see; the successor's start then launched a second, which
+ * replaced the first in the middle of its work. Now the record is the
+ * launch's own first step. If nobody is listening on descriptor 3 any
+ * more, the shell is ended by SIGPIPE before the supervisor runs, leaving
+ * a record of a process gone, which reads as a supervisor that exited.
+ * A command that cannot be found ends it before anything is recorded,
+ * with the shell's code for that, 127.
+ */
+const launchScript = [
+  'command -v -- "$2" > /dev/null || exit 127',
+  'printf "%s" "$$" > "$1" || exit 126',
+  'printf "recorded\\n" >&3',
+  "exec 3>&-",
+  "shift",
+  'exec "$@"',
+].join("\n");
 
 export class LocalProcessSandboxProvider implements SandboxProvider {
   readonly #settings: LocalProcessProviderSettings;
@@ -270,27 +293,34 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
           `its supervisor exited by itself (${signal ?? `exit code ${exitCode}`})`,
         );
       });
-      await writeSupervisorProcessId(directory, processId);
     } finally {
       this.#launchingSandboxIds.delete(sandboxId);
     }
   }
 
+  /** Resolves once the supervisor's process identifier is on disk; see `launchScript`. */
   async #spawnSupervisor(
     sandboxDirectory: string,
     supervisorEnvironment: Readonly<Record<string, string>>,
   ): Promise<ChildProcess> {
-    const [executable, ...commandArguments] = this.#settings.supervisorCommand;
-    const supervisor = spawn(executable, commandArguments, {
-      cwd: workspaceDirectoryIn(sandboxDirectory),
-      env: this.#supervisorProcessEnvironment(sandboxDirectory, supervisorEnvironment),
-      // The supervisor's JSON log lines join the control plane's own output.
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-    await new Promise<void>((resolve, reject) => {
-      supervisor.once("spawn", resolve);
-      supervisor.once("error", reject);
-    });
+    const supervisor = spawn(
+      "/bin/sh",
+      [
+        "-c",
+        launchScript,
+        "barrack-supervisor-launch",
+        supervisorProcessFilePath(sandboxDirectory),
+        ...this.#settings.supervisorCommand,
+      ],
+      {
+        cwd: workspaceDirectoryIn(sandboxDirectory),
+        env: this.#supervisorProcessEnvironment(sandboxDirectory, supervisorEnvironment),
+        // The supervisor's JSON log lines join the control plane's own
+        // output; descriptor 3 is where the launch says it is recorded.
+        stdio: ["ignore", "inherit", "inherit", "pipe"],
+      },
+    );
+    await waitUntilRecorded(supervisor, this.#settings.supervisorCommand[0]);
     return supervisor;
   }
 
@@ -405,6 +435,27 @@ async function prepareDirectories(sandboxDirectory: string): Promise<void> {
   await mkdir(stateDirectoryIn(sandboxDirectory), { recursive: true });
   await mkdir(supervisorStateDirectoryIn(sandboxDirectory), { recursive: true });
   await promisify(execFile)("git", ["init", "--quiet"], { cwd: workspaceDirectory });
+}
+
+function waitUntilRecorded(launch: ChildProcess, executable: string): Promise<void> {
+  const recorded = launch.stdio[3];
+  return new Promise<void>((resolve, reject) => {
+    const failBeforeRecording = (exitCode: number | null, signal: NodeJS.Signals | null) =>
+      reject(
+        new Error(
+          exitCode === 127
+            ? `its command, "${executable}", was not found`
+            : `it ended before it was recorded (${signal ?? `exit code ${exitCode}`})`,
+        ),
+      );
+    launch.once("error", reject);
+    launch.once("exit", failBeforeRecording);
+    recorded?.once("data", () => {
+      launch.off("exit", failBeforeRecording);
+      recorded.destroy();
+      resolve();
+    });
+  });
 }
 
 function hasExited(childProcess: ChildProcess): boolean {

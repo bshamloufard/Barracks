@@ -13,7 +13,10 @@ import { z } from "zod";
  *   on this provider the agent runs as that same user and can read it
  *   anyway (see the provider's own comment).
  * - `supervisor.pid`: the process identifier of the running supervisor,
- *   written once it has started. Whoever stops it first renames the file
+ *   written by the shell that launches it, before the supervisor runs (see
+ *   the provider's `launchScript`), so no supervisor ever runs unrecorded,
+ *   even if the control plane launching it is killed at that moment.
+ *   Whoever stops it first renames the file
  *   `supervisor-stopping.pid`, then signals the process, then removes the
  *   file once it has exited. A `supervisor.pid` naming a process that is
  *   gone therefore means the supervisor exited by itself, and a stop cut
@@ -81,11 +84,9 @@ export async function readEverySandboxRecord(
   return records.filter((record) => record !== undefined);
 }
 
-export async function writeSupervisorProcessId(
-  sandboxDirectory: string,
-  processId: number,
-): Promise<void> {
-  await writeFile(path.join(sandboxDirectory, supervisorProcessFileName), String(processId));
+/** Where the launching shell records the supervisor's process identifier. */
+export function supervisorProcessFilePath(sandboxDirectory: string): string {
+  return path.join(sandboxDirectory, supervisorProcessFileName);
 }
 
 /** The supervisor last launched, and whether a stop of it has begun; undefined if none runs or ran. */
