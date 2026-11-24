@@ -271,6 +271,31 @@ describe("a message to a thread whose sandbox is stopped", () => {
       .inbox.waitFor("the message", (message) => message.type === "deliver_user_message");
     expect(supervisors.messagesHandedOver(threadId)).toEqual(["Actually, one more thing"]);
   });
+
+  it("sent while the sandbox is stopping wakes it even when the stop reports failing but the sandbox stopped", async () => {
+    await start();
+    const { threadId } = await controlPlane.createThread();
+    const client = await controlPlane.connectClient(threadId);
+    const { sandboxProvider } = controlPlane;
+    const stopSandbox = sandboxProvider.stop.bind(sandboxProvider);
+    vi.spyOn(sandboxProvider, "stop").mockImplementationOnce(async (sandboxId) => {
+      await stopSandbox(sandboxId);
+      throw new SandboxProviderUnavailableError("stop sandbox", "the answer timed out");
+    });
+    const releaseStop = sandboxProvider.holdNextOperation("stop");
+
+    await stopThread(threadId);
+    client.sendUserMessage("Actually, one more thing");
+    await client.waitForSequence(1);
+    releaseStop();
+    await controlPlane.whenOperationsSettle();
+
+    expect((await fetchThread(threadId)).sandbox).toEqual({ state: "running" });
+    await supervisors
+      .latest(threadId)
+      .inbox.waitFor("the message", (message) => message.type === "deliver_user_message");
+    expect(supervisors.messagesHandedOver(threadId)).toEqual(["Actually, one more thing"]);
+  });
 });
 
 describe("the limit on running sandboxes", () => {
@@ -360,6 +385,26 @@ describe("deleting a thread", () => {
     expect(await controlPlane.sandboxProvider.getStatus(sandboxId)).toEqual({ state: "missing" });
     expect(await eventsOf(threadId)).toEqual([]);
     expect(await client.closed).toMatchObject({ closeCode: closeCodes.threadNotFound });
+  });
+
+  it("leaves no history behind for a message admitted just before the deletion began and recorded after it", async () => {
+    await start();
+    const { threadId } = await controlPlane.createThread();
+    const client = await controlPlane.connectClient(threadId);
+    const recording = controlPlane.threadEventLog.holdNextAppend();
+    client.sendUserMessage("Sent as the thread is deleted");
+    await recording.beforeRecording.reached;
+
+    await deleteThread(threadId);
+    await vi.waitFor(async () => {
+      expect(await controlPlane.threadStore.find(threadId)).toBeUndefined();
+    });
+    recording.beforeRecording.release();
+    recording.afterRecording.release();
+    await controlPlane.whenOperationsSettle();
+
+    expect(await eventsOf(threadId)).toEqual([]);
+    expect(await controlPlane.threadEventLog.readNewestSequence(threadId)).toBe(0);
   });
 
   it("deletes a stopped thread, and one whose sandbox the provider has already lost", async () => {
@@ -478,9 +523,13 @@ describe("a provider failing in the middle of a change", () => {
       new SandboxProviderUnavailableError("stop sandbox", "the provider timed out"),
       "stop",
     );
-    vi.spyOn(controlPlane.sandboxProvider, "getStatus").mockRejectedValueOnce(
-      new SandboxProviderUnavailableError("read sandbox", "the provider timed out"),
+    const unreadable = new SandboxProviderUnavailableError(
+      "read sandbox",
+      "the provider timed out",
     );
+    vi.spyOn(controlPlane.sandboxProvider, "getStatus")
+      .mockRejectedValueOnce(unreadable)
+      .mockRejectedValueOnce(unreadable);
 
     await stopAndSettle(threadId);
 

@@ -73,8 +73,13 @@ export class ThreadRelayRegistry implements ThreadRuns {
     return this.#relayFor(threadId).closeOpenRun(run, errorMessage);
   }
 
-  disconnectEveryone(threadId: string): void {
-    this.#relaysByThreadId.get(threadId)?.disconnectEveryone();
+  /** With no relay for the thread, nothing of it can be on its way into the log here. */
+  forgetDeletedThread(threadId: string): Promise<void> {
+    const relay = this.#relaysByThreadId.get(threadId);
+    if (relay === undefined) {
+      return this.#options.threadEventLog.deleteHistory(threadId);
+    }
+    return relay.forgetDeletedThread();
   }
 
   #relayFor(threadId: string): ThreadRelay {

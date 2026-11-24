@@ -370,8 +370,29 @@ export class ThreadRelay {
     return true;
   }
 
-  /** The thread was deleted: everyone attached is disconnected, and its supervisor forgotten. */
-  disconnectEveryone(): void {
+  /**
+   * The thread was deleted: everyone attached is disconnected, its
+   * supervisor forgotten, and its history removed once the work already
+   * queued is done. A user message admitted just before the deletion began
+   * may still be on its way into the log; removing the history after it,
+   * in the queue, leaves none of it behind, and a message queued later is
+   * refused, since its thread no longer exists. Resolves once removed.
+   */
+  forgetDeletedThread(): Promise<void> {
+    this.#disconnectEveryone();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    this.#enqueue("remove a deleted thread's history", async () => {
+      try {
+        await this.#threadEventLog.deleteHistory(this.threadId);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return promise;
+  }
+
+  #disconnectEveryone(): void {
     for (const client of [...this.#clientPhases.keys()]) {
       this.detachClient(client);
       client.close(closeCodes.threadNotFound, "This thread has been deleted");

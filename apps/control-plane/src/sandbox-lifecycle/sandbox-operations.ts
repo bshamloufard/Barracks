@@ -4,6 +4,7 @@ import {
   SandboxNotFoundError,
   type SandboxProvider,
   SandboxProviderUnavailableError,
+  type SandboxStatus,
 } from "@barrack/sandbox-providers";
 import type { Logger } from "../logger.js";
 import type { OpenRun, ThreadEventLog } from "../thread-event-log/thread-event-log.js";
@@ -311,14 +312,16 @@ export class SandboxOperations {
         ),
       );
     } catch (error) {
-      await this.#settleAfterFailure(
-        thread,
-        sandboxId,
-        describeProviderFailure("Its sandbox could not be stopped", error),
-        error,
-        logger,
-      );
-      return;
+      if (!(await this.#hasStoppedAfterAll(sandboxId, error, logger))) {
+        await this.#settleAfterFailure(
+          thread,
+          sandboxId,
+          describeProviderFailure("Its sandbox could not be stopped", error),
+          error,
+          logger,
+        );
+        return;
+      }
     } finally {
       threadRuns.finishStop(thread.threadId);
     }
@@ -343,9 +346,38 @@ export class SandboxOperations {
   }
 
   /**
+   * A stop can report failing and yet have stopped the sandbox (its answer
+   * lost on the way back, say). It then did what was asked, and finishes as
+   * a stop that succeeded, so a message that asked the sandbox to wake
+   * meanwhile still wakes it, rather than waiting for an agent nobody
+   * starts. If the state cannot be read, the failure is settled as any
+   * other, which reads it again and records why it could not.
+   */
+  async #hasStoppedAfterAll(sandboxId: string, error: unknown, logger: Logger): Promise<boolean> {
+    if (error instanceof SandboxNotFoundError) {
+      return false;
+    }
+    let status: SandboxStatus;
+    try {
+      status = await this.#options.sandboxProvider.getStatus(sandboxId);
+    } catch {
+      return false;
+    }
+    if (status.state !== "stopped") {
+      return false;
+    }
+    logger.warn(
+      { err: error, sandboxId },
+      "Stopping the sandbox reported a failure, but the sandbox is stopped; finishing the stop",
+    );
+    return true;
+  }
+
+  /**
    * Destroys the sandbox, then removes the thread's history and record. The
-   * history is removed again after the record, in case a message admitted
-   * just before the deletion began was recorded meanwhile.
+   * history is removed again after the record, behind anything the relay
+   * was still recording, in case a message admitted just before the
+   * deletion began is recorded meanwhile.
    */
   async #delete(
     thread: ThreadRecord,
@@ -376,8 +408,7 @@ export class SandboxOperations {
       logger.warn("The thread's record moved on while it was being deleted; leaving it as it is");
       return;
     }
-    await threadEventLog.deleteHistory(thread.threadId);
-    threadRuns.disconnectEveryone(thread.threadId);
+    await threadRuns.forgetDeletedThread(thread.threadId);
     logger.info({ sandboxId }, "Deleted the thread, its sandbox and its history");
   }
 

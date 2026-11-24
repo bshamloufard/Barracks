@@ -24,6 +24,10 @@ export interface ThreadRuns {
    */
   closeOpenRun(threadId: string, run: OpenRun, errorMessage: string): Promise<void>;
 
-  /** Disconnects every client and supervisor attached to a thread that has been deleted. */
-  disconnectEveryone(threadId: string): void;
+  /**
+   * Disconnects every client and supervisor attached to a thread whose
+   * record has been removed, and removes its history once anything this
+   * control plane was still recording for it is recorded.
+   */
+  forgetDeletedThread(threadId: string): Promise<void>;
 }
