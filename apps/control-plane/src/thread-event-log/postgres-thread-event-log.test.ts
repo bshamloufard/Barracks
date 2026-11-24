@@ -24,7 +24,7 @@ import {
 import { describeThreadEventLogContract } from "../test-support/thread-event-log-contract.js";
 import { readMissedEvents } from "../thread-relay/read-missed-events.js";
 import { ThreadRelay } from "../thread-relay/thread-relay.js";
-import { PostgresThreadEventLog } from "./postgres-thread-event-log.js";
+import { openRunStartStatementFor, PostgresThreadEventLog } from "./postgres-thread-event-log.js";
 
 const threadId = "thread-1";
 
@@ -215,6 +215,35 @@ describeWithTestDatabase("the Postgres thread event log", () => {
 
     expect(readsWhileAppending).toBeGreaterThan(1);
     expect(await log.readNewestSequence(threadId)).toBe(appenderCount * appendsPerAppender);
+  });
+
+  it("finds the open run's start from an index of run starts alone, however many events follow it", async () => {
+    const schema = await schemas.createMigrated();
+    const log = new PostgresThreadEventLog(pool, schema);
+    const qualifiedSchema = escapeIdentifier(schema);
+    await recordTestEvent(log, threadId, agentRunStarted);
+    // Postgres cannot take a field out of JSON holding this escape.
+    await recordTestEvent(log, threadId, { ...userMessage("awkward"), text: "nul \u0000" });
+    // An agent can send as many events as it likes within one run.
+    await pool.query(
+      `insert into ${qualifiedSchema}.thread_events (thread_id, sequence, recorded_at, event)
+        select $1, sequence, now(), '{"type":"tool_execution_started"}'::json
+        from generate_series(3, 50001) as sequence`,
+      [threadId],
+    );
+    await pool.query(
+      `update ${qualifiedSchema}.thread_sequence_counters set last_sequence = 50001 where thread_id = $1`,
+      [threadId],
+    );
+    await pool.query(`analyze ${qualifiedSchema}.thread_events`);
+
+    const plan = await pool.query<{ "QUERY PLAN": unknown }>(
+      `explain (format json) ${openRunStartStatementFor(qualifiedSchema)}`,
+      [threadId],
+    );
+
+    expect(await log.readOpenRunStart(threadId)).toBe(1);
+    expect(JSON.stringify(plan.rows[0]?.["QUERY PLAN"])).toContain("thread_events_run_starts");
   });
 
   it("lets a client joining while events are being recorded see each exactly once, in order, after the announced range", async () => {

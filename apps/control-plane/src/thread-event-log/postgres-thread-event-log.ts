@@ -64,6 +64,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
   readonly #appendStatement: string;
   readonly #closeOpenRunStatement: string;
   readonly #readNewestSequenceStatement: string;
+  readonly #readOpenRunStartStatement: string;
   readonly #readEventsStatement: string;
   readonly #readResumePointStatement: string;
   readonly #readUserMessagesDeliveredStatement: string;
@@ -77,6 +78,7 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     this.#appendStatement = appendStatementFor(qualifiedSchema);
     this.#closeOpenRunStatement = closeOpenRunStatementFor(qualifiedSchema);
     this.#readNewestSequenceStatement = `select last_sequence from ${qualifiedSchema}.thread_sequence_counters where thread_id = $1`;
+    this.#readOpenRunStartStatement = openRunStartStatementFor(qualifiedSchema);
     this.#readEventsStatement = `select sequence, recorded_at, event from ${qualifiedSchema}.thread_events
       where thread_id = $1 and sequence > $2 and sequence <= $3
       order by sequence
@@ -180,24 +182,11 @@ export class PostgresThreadEventLog implements ThreadEventLog {
     return openedBy === undefined ? undefined : { openedBySupervisorInstanceId: openedBy };
   }
 
-  /**
-   * The newest `agent_run_started` while the counter row says a run is open:
-   * every run start opens a run, so that one began the run open now. Read
-   * from the newest event back along the thread's primary key, which within
-   * a run open now is a short way.
-   */
+  /** See `openRunStartStatementFor`. */
   async readOpenRunStart(threadId: string): Promise<number | undefined> {
-    const result = await this.#pool.query<{ sequence: string }>(
-      `select recorded.sequence from ${this.#qualifiedSchema}.thread_events as recorded
-        join ${this.#qualifiedSchema}.thread_sequence_counters as counter
-          on counter.thread_id = recorded.thread_id
-        where recorded.thread_id = $1
-          and counter.open_run_supervisor_instance_id is not null
-          and recorded.event->>'type' = 'agent_run_started'
-        order by recorded.sequence desc
-        limit 1`,
-      [threadId],
-    );
+    const result = await this.#pool.query<{ sequence: string }>(this.#readOpenRunStartStatement, [
+      threadId,
+    ]);
     const sequence = result.rows[0]?.sequence;
     return sequence === undefined ? undefined : Number(sequence);
   }
@@ -406,6 +395,24 @@ function closeOpenRunStatementFor(qualifiedSchema: string): string {
     select $1::text, closed.sequence, clock_timestamp(), $2::json
     from closed
     returning sequence, recorded_at`;
+}
+
+/**
+ * The newest `agent_run_started` while the counter row says a run is open:
+ * every run start opens a run, so that one began the run open now. Found
+ * from the index of run starts alone (migration 0130), by the event as it
+ * is stored, whatever follows it.
+ */
+export function openRunStartStatementFor(qualifiedSchema: string): string {
+  return `select recorded.sequence from ${qualifiedSchema}.thread_events as recorded
+    join ${qualifiedSchema}.thread_sequence_counters as counter
+      on counter.thread_id = recorded.thread_id
+    where recorded.thread_id = $1
+      and counter.open_run_supervisor_instance_id is not null
+      and (recorded.event::text like '{"type":"agent_run_started"}'
+        or recorded.event::text like '{"type":"agent_run_started",%')
+    order by recorded.sequence desc
+    limit 1`;
 }
 
 /**
