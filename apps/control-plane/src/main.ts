@@ -146,11 +146,6 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
   if (github.app !== undefined) {
     describePublicationLimits(logger);
   }
-  if (supervisorEnvironment.agent.harness === "pi") {
-    logger.warn(
-      "Model provider keys in this environment are forwarded to every thread's sandbox, where the agent can read them. This stands in for per-user model access until it is built.",
-    );
-  }
 }
 
 /** Publishing runs Git on untrusted input; says which of its limits this machine cannot apply. */
