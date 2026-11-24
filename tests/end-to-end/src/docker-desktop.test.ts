@@ -130,7 +130,11 @@ async function findOnCanvas(
       '[data-testid="desktop-screen"] canvas',
     );
     const context = canvas?.getContext("2d");
+    // The canvas has no size until noVNC has heard the desktop's.
     if (canvas === null || canvas === undefined || context === null || context === undefined) {
+      return undefined;
+    }
+    if (canvas.width === 0 || canvas.height === 0) {
       return undefined;
     }
     const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -261,10 +265,14 @@ if (unavailableReason !== undefined) {
       await waitForDesktopStatus(laptopPage, watchingText);
 
       client.sendUserMessage(`${desktopTriggers.browse}${pages.startUrl}`);
-      await waitUntil("the agent's browser shows the first page", async () => {
-        return (
-          (await findOnCanvas(laptopPage, desktopTestPageColours.firstPageButton)) !== undefined
-        );
+      // Whichever page the agent has reached when the viewer is next looked at.
+      await waitUntil("the viewer shows the agent's browser on a test page", async () => {
+        for (const colour of Object.values(desktopTestPageColours)) {
+          if ((await findOnCanvas(laptopPage, colour)) !== undefined) {
+            return true;
+          }
+        }
+        return false;
       });
       await saveScreenshot(laptopPage, "01-watching-the-agent-open-firefox");
       await client.waitUntilRunsHaveSettled(1);

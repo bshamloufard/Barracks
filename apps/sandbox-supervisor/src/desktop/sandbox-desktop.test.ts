@@ -26,6 +26,8 @@ ${endsOnItsOwn ? "setTimeout(() => process.exit(3), 300);" : ""}
 `;
 }
 
+const { PATH: searchPath } = process.env;
+
 let directory: string;
 let desktop: SandboxDesktop | undefined;
 let reports: Array<Omit<DesktopAvailability, "type">>;
@@ -61,7 +63,7 @@ async function startDesktop(options: { endsOnItsOwn: boolean }) {
     configuration: { command, display: ":97", vncPort, controlFile: path.join(directory, "c") },
     launcher: new SameUserAgentLauncher(),
     sourceEnvironment: {
-      PATH: process.env["PATH"],
+      PATH: searchPath,
       BARRACK_SUPERVISOR_TOKEN: "not for the desktop",
     },
     workingDirectory: directory,
