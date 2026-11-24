@@ -5,7 +5,7 @@ import { ThreadConnection } from "./connection/thread-connection";
 import { ThreadRecordPoller } from "./connection/thread-record-poller";
 import { mintUserMessageId } from "./connection/user-message-id";
 import { threadListAddress } from "./page-address";
-import type { LifecycleAction, ThreadState } from "./thread-state/thread-state";
+import type { ConversationEntry, LifecycleAction, ThreadState } from "./thread-state/thread-state";
 import { ThreadStore } from "./thread-state/thread-store";
 
 export type ThreadControls = {
@@ -147,8 +147,10 @@ export function useThread(threadId: string): ThreadControls {
 
 /**
  * The supervisor connecting or leaving means the sandbox started or
- * stopped, and a new user message may have woken it, so the record is
- * fetched again at once rather than when next due. Returns how to stop.
+ * stopped, a new user message may have woken it, and a publication may have
+ * opened the thread's pull request, which the record links to; so the
+ * record is fetched again at once rather than when next due. Returns how to
+ * stop.
  */
 function refreshRecordWhenItLikelyChanged(
   store: ThreadStore,
@@ -157,14 +159,25 @@ function refreshRecordWhenItLikelyChanged(
   let previous = store.getState();
   return store.subscribe(() => {
     const current = store.getState();
-    const userMessageCount = (state: ThreadState) =>
-      state.entries.filter((entry) => entry.kind === "user_message").length;
     if (
       current.isSupervisorConnected !== previous.isSupervisorConnected ||
-      userMessageCount(current) > userMessageCount(previous)
+      countEntries(current, isUserMessage) > countEntries(previous, isUserMessage) ||
+      countEntries(current, isPublication) > countEntries(previous, isPublication)
     ) {
       recordPoller.refreshNow();
     }
     previous = current;
   });
+}
+
+function countEntries(state: ThreadState, isCounted: (entry: ConversationEntry) => boolean) {
+  return state.entries.filter(isCounted).length;
+}
+
+function isUserMessage(entry: ConversationEntry): boolean {
+  return entry.kind === "user_message";
+}
+
+function isPublication(entry: ConversationEntry): boolean {
+  return entry.kind === "repository_event" && entry.event.type === "repository_published";
 }
