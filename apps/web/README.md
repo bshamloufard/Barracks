@@ -18,7 +18,7 @@ It is deliberately bare: React and a small hand-written stylesheet, no UI framew
 
 | Setting                            | Default | Meaning                                                                                           |
 | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `?thread=` in the page address     | `local` | Which thread to show. Any name works; Milestone 1 has no thread records.                          |
+| `?thread=` in the page address     | `local` | Which thread to show: 1 to 64 letters, digits, `_` or `-`. Milestone 1 has no thread records.     |
 | `BARRACK_CONTROL_PLANE_PORT` (dev) | `8787`  | Where the Vite dev server forwards `/threads/…` WebSockets and `/health` (always on `127.0.0.1`). |
 
 The page always talks to the control plane at its own origin: through Vite's proxy in development, or directly when the control plane serves the built page. The control plane only accepts origins on its allow list, which by default covers `http://localhost:5173` and `http://127.0.0.1:5173`.
