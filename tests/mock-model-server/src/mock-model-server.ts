@@ -17,12 +17,22 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * - containing `FAIL_ALWAYS`: an "overloaded" error every time, so Pi's
  *   retries run out;
  * - containing `REJECT_KEY`: an invalid key error, which Pi does not retry;
+ * - containing `EXHAUST_QUOTA`: an exhausted quota error (status 429, as
+ *   OpenAI sends it), which Pi does not retry either;
+ * - containing `RATE_LIMIT`: a rate limit error every time, which Pi retries
+ *   until its retries run out;
  * - containing `OVERFLOW_ONCE`: a context overflow error the first time, so
  *   Pi compacts the conversation (when it has enough to compact) and retries;
  * - containing `REPLY_SLOWLY`: a long reply, one word every 100 ms, so a test
  *   can act while the agent is busy;
  * - anything else: "Hello there.".
  * A tool result gets the reply "Done.".
+ *
+ * Every request's credential (its `Authorization: Bearer` value) is
+ * recorded, and a test can declare a credential's quota exhausted, so that
+ * every request presenting it fails as `EXHAUST_QUOTA` does. The error
+ * bodies are OpenAI's own, as its API documents them:
+ * https://platform.openai.com/docs/guides/error-codes
  */
 export const mockModelTriggers = {
   toolExecution: "RUN_TOOL",
@@ -31,6 +41,8 @@ export const mockModelTriggers = {
   transientFailure: "FAIL_ONCE",
   persistentFailure: "FAIL_ALWAYS",
   invalidKey: "REJECT_KEY",
+  exhaustedQuota: "EXHAUST_QUOTA",
+  rateLimit: "RATE_LIMIT",
   contextOverflow: "OVERFLOW_ONCE",
   slowReply: "REPLY_SLOWLY",
 } as const;
@@ -38,10 +50,27 @@ export const mockModelTriggers = {
 const slowReplyWordCount = 50;
 const slowReplyWordDelayInMilliseconds = 100;
 
-type MockFailure = { statusCode: number; message: string };
+type MockFailure = { statusCode: number; message: string; type?: string; code?: string };
 
 const overloadedFailure: MockFailure = { statusCode: 503, message: "The model is overloaded." };
-const invalidKeyFailure: MockFailure = { statusCode: 401, message: "Incorrect API key provided" };
+const invalidKeyFailure: MockFailure = {
+  statusCode: 401,
+  message: "Incorrect API key provided",
+  type: "invalid_request_error",
+  code: "invalid_api_key",
+};
+const exhaustedQuotaFailure: MockFailure = {
+  statusCode: 429,
+  message: "You exceeded your current quota, please check your plan and billing details.",
+  type: "insufficient_quota",
+  code: "insufficient_quota",
+};
+const rateLimitFailure: MockFailure = {
+  statusCode: 429,
+  message: "Rate limit reached for requests",
+  type: "requests",
+  code: "rate_limit_exceeded",
+};
 const contextOverflowFailure: MockFailure = {
   statusCode: 400,
   message: "Your input exceeds the context window of this model.",
@@ -55,8 +84,19 @@ export type MockModelServer = {
   port: number;
   /** The messages of every request received, oldest request first. */
   receivedConversations: ChatMessage[][];
+  /** The credential each of those requests presented, or undefined for none. */
+  receivedCredentials: Array<string | undefined>;
+  /** The model each of those requests named. */
+  receivedModels: string[];
+  /** Makes every later request presenting `credential` fail as out of quota. */
+  exhaustQuotaOf(credential: string): void;
   close(): Promise<void>;
 };
+
+type ReceivedRequests = Pick<
+  MockModelServer,
+  "receivedConversations" | "receivedCredentials" | "receivedModels"
+> & { exhaustedCredentials: Set<string> };
 
 type ChunkWriter = (delta: object, finishReason: string | null) => void;
 type ReplyWriter = { writeChunk: ChunkWriter; hasClientLeft: () => boolean };
@@ -66,9 +106,14 @@ type ReplyWriter = { writeChunk: ChunkWriter; hasClientLeft: () => boolean };
  * Docker containers reach the host on.
  */
 export async function startMockModelServer(host = "127.0.0.1"): Promise<MockModelServer> {
-  const receivedConversations: ChatMessage[][] = [];
+  const received: ReceivedRequests = {
+    receivedConversations: [],
+    receivedCredentials: [],
+    receivedModels: [],
+    exhaustedCredentials: new Set(),
+  };
   const server = createServer((request, response) => {
-    void answerRequest(request, response, receivedConversations);
+    void answerRequest(request, response, received);
   });
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const address = server.address();
@@ -78,7 +123,10 @@ export async function startMockModelServer(host = "127.0.0.1"): Promise<MockMode
   return {
     baseUrl: `http://${host}:${address.port}/v1`,
     port: address.port,
-    receivedConversations,
+    receivedConversations: received.receivedConversations,
+    receivedCredentials: received.receivedCredentials,
+    receivedModels: received.receivedModels,
+    exhaustQuotaOf: (credential) => received.exhaustedCredentials.add(credential),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
@@ -86,18 +134,25 @@ export async function startMockModelServer(host = "127.0.0.1"): Promise<MockMode
 async function answerRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  receivedConversations: ChatMessage[][],
+  received: ReceivedRequests,
 ): Promise<void> {
   if (!request.url?.endsWith("/chat/completions")) {
     response.writeHead(404).end();
     return;
   }
   const body: { model: string; messages: ChatMessage[] } = JSON.parse(await readBody(request));
-  receivedConversations.push(body.messages);
-  const failure = chooseFailure(body.messages, receivedConversations);
+  const credential = readBearerCredential(request);
+  received.receivedConversations.push(body.messages);
+  received.receivedCredentials.push(credential);
+  received.receivedModels.push(body.model);
+  const failure =
+    credential !== undefined && received.exhaustedCredentials.has(credential)
+      ? exhaustedQuotaFailure
+      : chooseFailure(body.messages, received.receivedConversations);
   if (failure !== undefined) {
-    response.writeHead(failure.statusCode, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error: { message: failure.message } }));
+    const { statusCode, ...error } = failure;
+    response.writeHead(statusCode, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error }));
     return;
   }
   response.writeHead(200, { "content-type": "text/event-stream" });
@@ -129,6 +184,12 @@ function chooseFailure(
   }
   if (lastUserText.includes(mockModelTriggers.persistentFailure)) {
     return overloadedFailure;
+  }
+  if (lastUserText.includes(mockModelTriggers.exhaustedQuota)) {
+    return exhaustedQuotaFailure;
+  }
+  if (lastUserText.includes(mockModelTriggers.rateLimit)) {
+    return rateLimitFailure;
   }
   const isFirstRequestWith = (trigger: string) =>
     lastUserText.includes(trigger) &&
@@ -219,6 +280,11 @@ function writeBashCall(writeChunk: ChunkWriter, command: string): void {
   const commandArguments = JSON.stringify({ command });
   writeChunk({ tool_calls: [{ index: 0, function: { arguments: commandArguments } }] }, null);
   writeChunk({}, "tool_calls");
+}
+
+function readBearerCredential(request: IncomingMessage): string | undefined {
+  const { authorization } = request.headers;
+  return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {
