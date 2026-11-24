@@ -55,10 +55,15 @@ export class FakeAgentHarness implements AgentHarness {
       return;
     }
     this.#pendingMessages.push(message);
-    if (this.#currentRun === undefined) {
-      const abortController = new AbortController();
-      this.#currentRun = { abortController, finished: this.#run(abortController.signal) };
+    this.#startRunIfIdle();
+  }
+
+  #startRunIfIdle(): void {
+    if (this.#currentRun !== undefined || this.#pendingMessages.length === 0) {
+      return;
     }
+    const abortController = new AbortController();
+    this.#currentRun = { abortController, finished: this.#run(abortController.signal) };
   }
 
   async interrupt(): Promise<void> {
@@ -82,14 +87,25 @@ export class FakeAgentHarness implements AgentHarness {
 
   async #run(abortSignal: AbortSignal): Promise<void> {
     this.#emitEvent({ type: "agent_run_started" });
-    let outcome: MessageOutcome = "answered";
-    let message = this.#pendingMessages.shift();
-    while (message !== undefined && outcome === "answered") {
-      outcome = await this.#respondTo(message, abortSignal);
-      message = this.#pendingMessages.shift();
-    }
+    const outcome = await this.#answerPendingMessages(abortSignal);
     this.#currentRun = undefined;
     this.#finishRun(outcome);
+    // A message that arrived while an interrupted run was winding down was
+    // never part of it, so it gets a run of its own.
+    this.#startRunIfIdle();
+  }
+
+  /** Takes a message off the list only when it is about to be answered. */
+  async #answerPendingMessages(abortSignal: AbortSignal): Promise<MessageOutcome> {
+    let message = this.#pendingMessages.shift();
+    while (message !== undefined) {
+      const outcome = await this.#respondTo(message, abortSignal);
+      if (outcome !== "answered") {
+        return outcome;
+      }
+      message = this.#pendingMessages.shift();
+    }
+    return "answered";
   }
 
   #finishRun(outcome: MessageOutcome): void {

@@ -112,6 +112,28 @@ describe("FakeAgentHarness", () => {
     expect(observer.events[2]).toEqual({ type: "agent_run_settled", wasInterrupted: true });
   });
 
+  it("answers a message sent right after an interrupt in a new run, once the interrupted one settles", async () => {
+    const { observer, harness } = createHarness(20);
+
+    harness.deliverUserMessage({ messageId: "user-1", text: "a long answer please" });
+    await waitUntil(() => observer.outputTypes.includes("fragment"), "the first fragment arrives");
+    const interrupted = harness.interrupt();
+    harness.deliverUserMessage({ messageId: "user-2", text: "hello" });
+    await interrupted;
+    await waitUntil(hasSettled(observer, 2), "the second run settles");
+
+    expect(observer.eventTypes).toEqual([
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+      "agent_run_started",
+      "assistant_message",
+      "agent_run_settled",
+    ]);
+    expect(observer.events[2]).toEqual({ type: "agent_run_settled", wasInterrupted: true });
+    expect(observer.events[4]).toMatchObject({ content: [{ text: 'You said: "hello"' }] });
+  });
+
   it("settles the run as interrupted when stopped in the middle of it", async () => {
     const { observer, harness } = createHarness(20);
 
