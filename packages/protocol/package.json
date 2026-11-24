@@ -1,0 +1,24 @@
+{
+  "name": "@barrack/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Message schemas shared by the Barrack control plane, sandbox supervisor and clients.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}
