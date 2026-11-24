@@ -1,20 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AccessTokenSource } from "../authentication/sign-in-service";
+import type { AccessTokenLookup, AccessTokenSource } from "../authentication/sign-in-service";
 import { createAuthorizedFetch } from "./authorized-fetch";
 
 /** Tokens that change only when refreshed, as supabase-js hands them out. */
-function tokensStartingAt(firstToken: string | undefined): AccessTokenSource {
+function tokensStartingAt(firstToken: string): AccessTokenSource {
   let current = firstToken;
   let refreshCount = 0;
   return {
-    currentAccessToken: async () => current,
+    currentAccessToken: async () => ({ status: "available", accessToken: current }),
     refreshAccessToken: async () => {
       refreshCount += 1;
       current = `refreshed-${refreshCount}`;
-      return current;
+      return { status: "available", accessToken: current };
     },
   };
 }
+
+/** A source that answers `firstAnswer` for the current token and `refreshAnswer` for a refresh. */
+function tokensRefreshingTo(
+  firstAnswer: AccessTokenLookup,
+  refreshAnswer: AccessTokenLookup = firstAnswer,
+): AccessTokenSource {
+  return {
+    currentAccessToken: async () => firstAnswer,
+    refreshAccessToken: async () => refreshAnswer,
+  };
+}
+
+const offline: AccessTokenLookup = {
+  status: "unavailable",
+  reason: "Could not refresh your sign-in with Supabase: Failed to fetch",
+};
 
 /** A control plane that accepts only the listed tokens, and answers the rest with `refusal`. */
 function controlPlaneAccepting(acceptedTokens: string[], refusal = 401) {
@@ -99,5 +115,49 @@ describe("an authorized request", () => {
     expect(response.status).toBe(403);
     expect(controlPlane.tokensSeen).toEqual(["Bearer token-1"]);
     expect(refusals.onNotAllowed).toHaveBeenCalledOnce();
+  });
+
+  it("fails the request without signing out when no token can be had while offline", async () => {
+    const controlPlane = controlPlaneAccepting([]);
+    const refusals = handlers();
+    const authorizedFetch = createAuthorizedFetch(
+      tokensRefreshingTo(offline),
+      refusals,
+      controlPlane.send,
+    );
+
+    await expect(authorizedFetch("/api/threads")).rejects.toThrow(
+      /Failed to fetch\. You are still signed in/,
+    );
+    expect(controlPlane.tokensSeen).toEqual([]);
+    expect(refusals.onSignInRequired).not.toHaveBeenCalled();
+  });
+
+  it("fails the request without signing out when a refused token cannot be refreshed while offline", async () => {
+    const controlPlane = controlPlaneAccepting([]);
+    const refusals = handlers();
+    const authorizedFetch = createAuthorizedFetch(
+      tokensRefreshingTo({ status: "available", accessToken: "stale" }, offline),
+      refusals,
+      controlPlane.send,
+    );
+
+    await expect(authorizedFetch("/api/threads")).rejects.toThrow(/still signed in/);
+    expect(controlPlane.tokensSeen).toEqual(["Bearer stale"]);
+    expect(refusals.onSignInRequired).not.toHaveBeenCalled();
+  });
+
+  it("asks the user to sign in again, sending nothing, when the session is definitely gone", async () => {
+    const controlPlane = controlPlaneAccepting([]);
+    const refusals = handlers();
+    const authorizedFetch = createAuthorizedFetch(
+      tokensRefreshingTo({ status: "signed_out" }),
+      refusals,
+      controlPlane.send,
+    );
+
+    await expect(authorizedFetch("/api/threads")).rejects.toThrow(/signed out/);
+    expect(controlPlane.tokensSeen).toEqual([]);
+    expect(refusals.onSignInRequired).toHaveBeenCalledOnce();
   });
 });

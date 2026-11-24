@@ -1,12 +1,21 @@
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
-import type { SignedInSession, SignInService } from "./sign-in-service";
+import {
+  type AccessTokenLookup,
+  accessTokenOf,
+  type SessionLookup,
+  type SignedInSession,
+  type SignInService,
+} from "./sign-in-service";
+import { interpretSessionAnswer } from "./supabase-session-answer";
 
 /**
  * Signs in with Supabase Auth by a six-digit code sent by email. supabase-js
  * keeps the session in the browser's local storage and refreshes its access
  * token before it expires; while a tab is hidden it pauses refreshing, so a
  * token can be stale when the tab returns, which `currentAccessToken` and
- * the connection's reconnect-on-expiry both cope with.
+ * the connection's reconnect-on-expiry both cope with. A refresh that
+ * cannot reach Supabase is reported as `unavailable`, never as signed out
+ * (see `interpretSessionAnswer`).
  * https://supabase.com/docs/guides/auth/auth-email-passwordless#with-otp
  */
 export class SupabaseSignInService implements SignInService {
@@ -27,22 +36,23 @@ export class SupabaseSignInService implements SignInService {
     });
   }
 
-  async restoreSession(): Promise<SignedInSession | undefined> {
+  async restoreSession(): Promise<SessionLookup> {
     const { data, error } = await this.#client.auth.getSession();
-    if (error !== null) {
-      throw new Error(`Could not read your sign-in: ${error.message}`);
-    }
-    return toSignedInSession(data.session);
+    return interpretSessionAnswer(data.session, error);
   }
 
-  async currentAccessToken(): Promise<string | undefined> {
-    const { data } = await this.#client.auth.getSession();
-    return data.session?.access_token;
+  async currentAccessToken(): Promise<AccessTokenLookup> {
+    return accessTokenOf(await this.restoreSession());
   }
 
-  async refreshAccessToken(): Promise<string | undefined> {
-    const { data } = await this.#client.auth.refreshSession();
-    return data.session?.access_token;
+  /**
+   * A refresh Supabase refused while the access token is still valid leaves
+   * the session in place, so the stored session, not the refusal, decides.
+   */
+  async refreshAccessToken(): Promise<AccessTokenLookup> {
+    const { data, error } = await this.#client.auth.refreshSession();
+    const lookup = interpretSessionAnswer(data.session, error);
+    return lookup.status === "signed_out" ? this.currentAccessToken() : accessTokenOf(lookup);
   }
 
   async requestCode(emailAddress: string): Promise<void> {

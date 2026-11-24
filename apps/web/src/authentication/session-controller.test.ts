@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionController } from "./session-controller";
-import type { SignedInSession, SignInService } from "./sign-in-service";
+import {
+  accessTokenOf,
+  type SessionLookup,
+  type SignedInSession,
+  type SignInService,
+} from "./sign-in-service";
 
 /** A sign-in service whose session the test changes, as supabase-js would on sign-in and refresh. */
 class FakeSignInService implements SignInService {
   readonly hasSignIn = true;
   readonly sentCodes: string[] = [];
+  signOutCount = 0;
+  /** While set, every lookup answers this, as supabase-js does when a refresh cannot reach Supabase. */
+  unreachableReason: string | undefined;
   #session: SignedInSession | undefined;
   readonly #listeners = new Set<(session: SignedInSession | undefined) => void>();
 
@@ -20,16 +28,21 @@ class FakeSignInService implements SignInService {
     }
   }
 
-  async restoreSession() {
-    return this.#session;
+  async restoreSession(): Promise<SessionLookup> {
+    if (this.unreachableReason !== undefined) {
+      return { status: "unavailable", reason: this.unreachableReason };
+    }
+    return this.#session === undefined
+      ? { status: "signed_out" }
+      : { status: "signed_in", session: this.#session };
   }
 
   async currentAccessToken() {
-    return this.#session?.accessToken;
+    return accessTokenOf(await this.restoreSession());
   }
 
   async refreshAccessToken() {
-    return this.#session?.accessToken;
+    return this.currentAccessToken();
   }
 
   async requestCode(emailAddress: string) {
@@ -44,6 +57,7 @@ class FakeSignInService implements SignInService {
   }
 
   async signOut() {
+    this.signOutCount += 1;
     this.changeSession(undefined);
   }
 
@@ -125,5 +139,41 @@ describe("the page's session", () => {
     vi.unstubAllGlobals();
 
     expect(session.getState()).toMatchObject({ name: "signed_out" });
+  });
+
+  it("keeps a stored session it cannot refresh at startup, and signs in once it can", async () => {
+    vi.useFakeTimers();
+    const service = new FakeSignInService({ emailAddress: "ada@example.com", accessToken: "t" });
+    service.unreachableReason = "Could not refresh your sign-in with Supabase: Failed to fetch";
+    const session = new SessionController(service);
+    const stop = session.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const whileOffline = session.getState();
+
+    service.unreachableReason = undefined;
+    await vi.advanceTimersByTimeAsync(10_000);
+    stop();
+    vi.useRealTimers();
+
+    expect(whileOffline).toEqual({
+      name: "unavailable",
+      reason: "Could not refresh your sign-in with Supabase: Failed to fetch",
+    });
+    expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
+    expect(service.signOutCount).toBe(0);
+  });
+
+  it("does not sign out when a request finds no token can be had while offline", async () => {
+    const service = new FakeSignInService({ emailAddress: "ada@example.com", accessToken: "t" });
+    const session = new SessionController(service);
+    session.start();
+    await settle();
+    service.unreachableReason = "Could not refresh your sign-in with Supabase: Failed to fetch";
+
+    await expect(session.threadsApi.listThreads()).rejects.toThrow(/still signed in/);
+    await settle();
+
+    expect(service.signOutCount).toBe(0);
+    expect(session.getState()).toMatchObject({ name: "signed_in" });
   });
 });

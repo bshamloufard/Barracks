@@ -20,9 +20,10 @@ export const closeCodes = {
   invalidMessage: 4400,
   /**
    * The client did not authenticate: its first message was something other
-   * than `authenticate`, none came in time, its token was not valid, or a
-   * later token was for a different user. Reconnecting with the same token
-   * will not help; the user should sign in again.
+   * than `authenticate`, its token was not valid, or a later token was for a
+   * different user. Reconnecting with the same token will not help; the user
+   * should sign in again. (A client that sent nothing in time is told
+   * `authenticationTimedOut` instead.)
    */
   notAuthenticated: 4401,
   /**
@@ -37,6 +38,13 @@ export const closeCodes = {
    * help.
    */
   userNotAllowed: 4403,
+  /**
+   * No `authenticate` message arrived in the time allowed after the upgrade.
+   * Nothing is wrong with the user's sign-in (the client may have been slow
+   * to send, or its network slow to carry it), so the client should
+   * reconnect, with backoff, rather than ask the user to sign in again.
+   */
+  authenticationTimedOut: 4405,
   /**
    * There is no thread with this identifier that the user may see. A thread
    * that exists but belongs to someone else is answered exactly the same way.

@@ -84,7 +84,7 @@ export class ClientSession {
     this.#logger.info({ lastSeenSequence: this.#endpoint.lastSeenSequence }, "Client connected");
     keepConnectionAlive(this.#webSocket, heartbeatIntervalInMilliseconds, this.#logger);
     this.#authenticationDeadline = setTimeout(
-      () => this.#close(closeCodes.notAuthenticated, "Did not authenticate in time"),
+      () => this.#close(closeCodes.authenticationTimedOut, "Did not authenticate in time"),
       clientAuthenticationTimeoutInMilliseconds,
     );
     this.#webSocket.on("error", (error) =>

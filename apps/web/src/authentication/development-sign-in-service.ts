@@ -1,4 +1,9 @@
-import type { SignedInSession, SignInService } from "./sign-in-service";
+import type {
+  AccessTokenLookup,
+  SessionLookup,
+  SignedInSession,
+  SignInService,
+} from "./sign-in-service";
 
 /**
  * A control plane in development mode has one fixed user, whose token it
@@ -13,16 +18,16 @@ export class DevelopmentSignInService implements SignInService {
     this.#session = { emailAddress: undefined, accessToken };
   }
 
-  async restoreSession(): Promise<SignedInSession> {
-    return this.#session;
+  async restoreSession(): Promise<SessionLookup> {
+    return { status: "signed_in", session: this.#session };
   }
 
-  async currentAccessToken(): Promise<string> {
-    return this.#session.accessToken;
+  async currentAccessToken(): Promise<AccessTokenLookup> {
+    return { status: "available", accessToken: this.#session.accessToken };
   }
 
-  async refreshAccessToken(): Promise<string> {
-    return this.#session.accessToken;
+  async refreshAccessToken(): Promise<AccessTokenLookup> {
+    return this.currentAccessToken();
   }
 
   async requestCode(): Promise<void> {

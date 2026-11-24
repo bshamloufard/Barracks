@@ -5,6 +5,7 @@ import {
   parseControlPlaneToClientMessage,
 } from "@barrack/protocol";
 import type { SessionController } from "../authentication/session-controller";
+import type { AccessTokenLookup } from "../authentication/sign-in-service";
 import type { ThreadStore } from "../thread-state/thread-store";
 import {
   advanceConnection,
@@ -12,18 +13,17 @@ import {
   type ConnectionEvent,
   type ConnectionMachineState,
   initialConnectionMachineState,
-  reopenConnection,
   type StopConsequence,
 } from "./connection-machine";
 
 /**
  * Keeps one WebSocket open to the control plane for a thread, feeding what
- * arrives into the thread's store. Its first message on every socket is the
- * signed-in user's access token, and each refreshed token follows while the
- * socket is open. Whenever the connection drops it reconnects, naming the
- * last sequence the store holds, so the control plane replays exactly what
- * was missed. The rules are in `connection-machine.ts`; this carries them
- * out.
+ * arrives into the thread's store. Before each socket is opened it obtains
+ * the signed-in user's access token, which is the socket's first message,
+ * and each refreshed token follows while the socket is open. Whenever the
+ * connection drops it reconnects, naming the last sequence the store holds,
+ * so the control plane replays exactly what was missed. The rules are in
+ * `connection-machine.ts`; this carries them out.
  */
 export class ThreadConnection {
   readonly #threadId: string;
@@ -44,7 +44,7 @@ export class ThreadConnection {
     this.#stopFollowingTokens = this.#session.onAccessTokenRefreshed((accessToken) =>
       this.#advance({ type: "access_token_refreshed", accessToken }),
     );
-    this.#connect();
+    this.#advance({ type: "attempt_started" });
   }
 
   stop(): void {
@@ -69,16 +69,31 @@ export class ThreadConnection {
     this.#socket.send(JSON.stringify(message));
   }
 
-  #connect(): void {
-    this.#machine = reopenConnection(this.#machine);
+  /**
+   * A lookup that fails unexpectedly (a bug, not an answer) is reported and
+   * treated like one that could not reach the sign-in service, so the page
+   * keeps trying rather than hang or sign the user out.
+   */
+  #obtainAccessToken(refreshFirst: boolean): void {
+    const { accessTokens } = this.#session;
+    const lookup = refreshFirst
+      ? accessTokens.refreshAccessToken()
+      : accessTokens.currentAccessToken();
+    void lookup
+      .catch((error: unknown): AccessTokenLookup => {
+        console.error("Could not obtain an access token:", error);
+        return { status: "unavailable", reason: String(error) };
+      })
+      .then((result) => this.#advance({ type: "access_token_obtained", lookup: result }));
+  }
+
+  #openSocket(): void {
     const socket = new WebSocket(this.#endpointUrl());
     this.#socket = socket;
     socket.addEventListener("open", () => {
-      void this.#session.accessTokens.currentAccessToken().then((accessToken) => {
-        if (this.#socket === socket) {
-          this.#advance({ type: "socket_opened", accessToken });
-        }
-      });
+      if (this.#socket === socket) {
+        this.#advance({ type: "socket_opened" });
+      }
     });
     socket.addEventListener("message", (event) => this.#receive(socket, event));
     socket.addEventListener("close", (event) => {
@@ -129,6 +144,12 @@ export class ThreadConnection {
 
   #carryOut(effect: ConnectionEffect): void {
     switch (effect.type) {
+      case "obtain_access_token":
+        this.#obtainAccessToken(effect.refreshFirst);
+        return;
+      case "open_socket":
+        this.#openSocket();
+        return;
       case "send_authentication":
         this.#socket?.send(
           JSON.stringify({ type: "authenticate", accessToken: effect.accessToken }),
@@ -137,10 +158,10 @@ export class ThreadConnection {
       case "close_socket":
         this.#socket?.close();
         return;
-      case "reconnect":
+      case "retry":
         this.#store.dispatch({ type: "connection_changed", connection: { name: "reconnecting" } });
         this.#reconnectTimer = setTimeout(
-          () => void this.#reconnect(effect.refreshAccessTokenFirst),
+          () => this.#advance({ type: "attempt_started" }),
           effect.delayInMilliseconds,
         );
         return;
@@ -152,15 +173,6 @@ export class ThreadConnection {
         });
         this.#reportStop(effect.consequence);
         return;
-    }
-  }
-
-  async #reconnect(refreshAccessTokenFirst: boolean): Promise<void> {
-    if (refreshAccessTokenFirst) {
-      await this.#session.accessTokens.refreshAccessToken();
-    }
-    if (this.#machine.phase !== "stopped") {
-      this.#connect();
     }
   }
 

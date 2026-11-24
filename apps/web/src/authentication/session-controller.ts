@@ -1,6 +1,12 @@
 import { createAuthorizedFetch } from "../api/authorized-fetch";
 import { ThreadsApi } from "../api/threads-api";
-import type { AccessTokenSource, SignedInSession, SignInService } from "./sign-in-service";
+import { reconnectDelayInMilliseconds } from "../connection/reconnect-delay";
+import type {
+  AccessTokenSource,
+  SessionLookup,
+  SignedInSession,
+  SignInService,
+} from "./sign-in-service";
 import {
   initialSignInState,
   reduceSignInState,
@@ -24,6 +30,7 @@ export class SessionController {
   readonly #tokenListeners = new Set<(accessToken: string) => void>();
   #state: SignInState = initialSignInState;
   #lastAccessToken: string | undefined;
+  #restoreRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(service: SignInService) {
     this.#service = service;
@@ -47,12 +54,11 @@ export class SessionController {
   /** Restores any earlier session and follows changes to it until the returned function is called. */
   start(): () => void {
     const stopFollowing = this.#service.onSessionChanged((session) => this.#applySession(session));
-    this.#service.restoreSession().then(
-      (session) => this.#applySession(session),
-      (error: unknown) =>
-        this.#dispatch({ type: "session_restore_failed", reason: describeError(error) }),
-    );
-    return stopFollowing;
+    this.#restoreSession(0);
+    return () => {
+      stopFollowing();
+      clearTimeout(this.#restoreRetryTimer);
+    };
   }
 
   /** Calls `listener` with each new token while signed in, for open connections to send on. */
@@ -102,6 +108,37 @@ export class SessionController {
       console.error(error);
     }
     this.#applySession(undefined);
+  }
+
+  /**
+   * A stored session whose token cannot be refreshed yet (the page opened
+   * offline, say) is neither signed in nor out: the page says so and asks
+   * again, backing off, until there is a definite answer.
+   */
+  #restoreSession(failedAttemptCount: number): void {
+    this.#service.restoreSession().then(
+      (lookup) => this.#applyRestoredSession(lookup, failedAttemptCount),
+      (error: unknown) =>
+        this.#dispatch({ type: "session_restore_failed", reason: describeError(error) }),
+    );
+  }
+
+  #applyRestoredSession(lookup: SessionLookup, failedAttemptCount: number): void {
+    switch (lookup.status) {
+      case "signed_in":
+        this.#applySession(lookup.session);
+        return;
+      case "signed_out":
+        this.#applySession(undefined);
+        return;
+      case "unavailable":
+        this.#dispatch({ type: "session_restore_failed", reason: lookup.reason });
+        this.#restoreRetryTimer = setTimeout(
+          () => this.#restoreSession(failedAttemptCount + 1),
+          reconnectDelayInMilliseconds(failedAttemptCount),
+        );
+        return;
+    }
   }
 
   #applySession(session: SignedInSession | undefined): void {

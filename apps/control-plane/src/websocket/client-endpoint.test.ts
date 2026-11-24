@@ -109,12 +109,12 @@ describe("the client endpoint", () => {
     expect(recorded).toMatchObject({ event: { text: longestMessageAtItsLargest } });
   });
 
-  it("closes a client that does not authenticate in time, and sends it nothing", async () => {
+  it("closes a client that does not authenticate in time with a code of its own, and sends it nothing", async () => {
     const client = await controlPlane.openUnauthenticatedClient(threadId);
 
     const closed = await client.closed;
 
-    expect(closed.closeCode).toBe(closeCodes.notAuthenticated);
+    expect(closed.closeCode).toBe(closeCodes.authenticationTimedOut);
     expect(client.inbox.messages).toEqual([]);
   });
 
