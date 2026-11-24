@@ -84,6 +84,8 @@ export class ControlPlaneConnection {
   }
 
   send(message: SupervisorToControlPlaneMessage): void {
+    // Once closed or failed for good the supervisor is exiting, and the
+    // reason has already been logged.
     if (this.#hasFailed || this.#isClosedByUs) {
       return;
     }

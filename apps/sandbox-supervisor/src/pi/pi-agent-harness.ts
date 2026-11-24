@@ -87,9 +87,13 @@ export class PiAgentHarness implements AgentHarness {
       return;
     }
     this.#pendingUserMessages.push(message);
-    this.#delivering ??= this.#deliverPendingMessages().finally(() => {
-      this.#delivering = undefined;
-    });
+    this.#delivering ??= this.#deliverPendingMessages()
+      .catch((error: unknown) => {
+        this.#logger.error({ err: error }, "Delivering user messages to Pi failed");
+      })
+      .finally(() => {
+        this.#delivering = undefined;
+      });
   }
 
   /**
@@ -210,8 +214,18 @@ export class PiAgentHarness implements AgentHarness {
     if (this.#isStopped) {
       return undefined;
     }
-    const piProcess = await this.#spawnPi();
+    let piProcess: PiProcess;
+    try {
+      piProcess = await this.#spawnPi();
+    } catch (error) {
+      this.#reportAgentFailure(`Pi could not be started: ${describeError(error)}`);
+      return undefined;
+    }
     this.#piProcess = piProcess;
+    return this.#waitUntilReady(piProcess);
+  }
+
+  async #waitUntilReady(piProcess: PiProcess): Promise<PiProcess | undefined> {
     try {
       const stateData = await rejectAfter(
         piProcess.client.send({ type: "get_state" }),
@@ -223,14 +237,16 @@ export class PiAgentHarness implements AgentHarness {
     } catch (error) {
       // If Pi exited, its exit has already been reported as `agent_failed`.
       if (!(error instanceof PiOutputEndedError)) {
-        this.#emitEvent({
-          type: "agent_failed",
-          errorMessage: limitErrorMessage(`Pi did not become ready: ${describeError(error)}`),
-        });
+        this.#reportAgentFailure(`Pi did not become ready: ${describeError(error)}`);
         await piProcess.stop();
       }
       return undefined;
     }
+  }
+
+  #reportAgentFailure(description: string): void {
+    this.#logger.error({ description }, "The agent failed");
+    this.#emitEvent({ type: "agent_failed", errorMessage: limitErrorMessage(description) });
   }
 
   async #spawnPi(): Promise<PiProcess> {
@@ -312,16 +328,13 @@ export class PiAgentHarness implements AgentHarness {
       this.#observer.onAgentProcessEnded({ wasExpected: true, description: exit.description });
       return;
     }
-    this.#logger.error({ description: exit.description }, "Pi exited unexpectedly");
     const diagnostics = exit.recentDiagnostics.trim();
-    this.#emitEvent({
-      type: "agent_failed",
-      errorMessage: limitErrorMessage(
-        diagnostics.length === 0
-          ? `${exit.description} It will be started again on the next message.`
-          : `${exit.description} It will be started again on the next message. Its last diagnostics:\n${diagnostics}`,
-      ),
-    });
+    const restartNote = "It will be started again on the next message.";
+    this.#reportAgentFailure(
+      diagnostics.length === 0
+        ? `${exit.description} ${restartNote}`
+        : `${exit.description} ${restartNote} Its last diagnostics:\n${diagnostics}`,
+    );
     this.#observer.onAgentProcessEnded({ wasExpected: false, description: exit.description });
   }
 
