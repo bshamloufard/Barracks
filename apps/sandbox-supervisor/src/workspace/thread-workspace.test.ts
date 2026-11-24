@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { FakeGithub, type FakeRepository } from "@barrack/fake-github";
 import {
+  publicationBundleFailedSchema,
   type WorkspaceEvent,
   type WorkspaceRepository,
   workspaceEventSchema,
@@ -18,7 +19,7 @@ import type {
 } from "../agent-process/agent-process-launcher.js";
 import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher.js";
 import type { CredentialAnswer } from "./git-credential-server.js";
-import { sendPublicationBundle } from "./publication-bundle.js";
+import { describeBundleFailure, sendPublicationBundle } from "./publication-bundle.js";
 import { describeCredentialHelperCommand, ThreadWorkspace } from "./thread-workspace.js";
 
 /**
@@ -506,6 +507,18 @@ describe("the publication bundle", () => {
 
     await expect(send(sandbox, workspace, 16)).rejects.toThrow(/more than 16 bytes/);
     expect(uploads).toEqual([]);
+  });
+
+  it("fails with a reason the protocol accepts, however long or empty Git's words were", () => {
+    const reasons = [new Error("error: ".repeat(10_000)), new Error(""), "not an error"].map(
+      describeBundleFailure,
+    );
+
+    for (const reason of reasons) {
+      const failure = { type: "publication_bundle_failed", publicationId: "publication-1", reason };
+      expect(publicationBundleFailedSchema.safeParse(failure).success, reason).toBe(true);
+    }
+    expect(reasons[1]).toBe("The bundle could not be made.");
   });
 
   it("is refused when the agent has committed nothing", async () => {

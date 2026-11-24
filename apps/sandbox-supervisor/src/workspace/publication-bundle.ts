@@ -2,8 +2,9 @@ import { createReadStream, createWriteStream, type WriteStream } from "node:fs";
 import { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform, type TransformCallback } from "node:stream";
-import type { CreatePublicationBundle } from "@barrack/protocol";
+import { type CreatePublicationBundle, maximumErrorMessageLength } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
+import { shortenText } from "../shorten-text.js";
 import type { CloneRecord, ThreadWorkspace } from "./thread-workspace.js";
 import { describeGitFailure } from "./thread-workspace.js";
 
@@ -59,6 +60,18 @@ export async function sendPublicationBundle(
   } finally {
     await rm(bundlePath, { force: true });
   }
+}
+
+/**
+ * Why a bundle could not be made, for the user, within the protocol's
+ * bounds: Git's words can come from what the agent put in its workspace,
+ * and a reason the control plane refused would cost the supervisor its
+ * connection and leave the publication waiting until it timed out, its
+ * reason lost.
+ */
+export function describeBundleFailure(error: unknown): string {
+  const reason = error instanceof Error ? error.message.trim() : "";
+  return shortenText(reason || "The bundle could not be made.", maximumErrorMessageLength, 0.5);
 }
 
 async function readWorkBranchTip(workspace: ThreadWorkspace, clone: CloneRecord): Promise<string> {

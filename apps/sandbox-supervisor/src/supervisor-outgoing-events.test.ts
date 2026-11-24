@@ -1,7 +1,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { maximumFrameLength, parseSupervisorToControlPlaneMessage } from "@barrack/protocol";
+import {
+  maximumFrameLength,
+  maximumIdentifierLength,
+  parseSupervisorToControlPlaneMessage,
+} from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgentHarness, AgentHarnessObserver } from "./agent-harness.js";
@@ -13,8 +17,10 @@ import { startTestControlPlane, type TestControlPlane } from "./test-support/tes
 import { pause, waitUntil } from "./test-support/wait-until.js";
 
 /**
- * No real harness can be made to produce a multi-megabyte event on demand,
- * so the harness is replaced by one that hands its observer to the test.
+ * What the supervisor does with an agent event the control plane would
+ * refuse: too large for one frame, or breaking the protocol. No real
+ * harness can be made to produce such events on demand, so the harness is
+ * replaced by one that hands its observer to the test.
  */
 const harnessObservers: AgentHarnessObserver[] = [];
 
@@ -112,6 +118,80 @@ describe("Supervisor with events too large for one frame", () => {
         type: "agent_event",
         eventNumber: 1,
         event: { type: "agent_run_settled", wasInterrupted: false },
+      },
+    ]);
+  });
+});
+
+describe("Supervisor with events that break the protocol", () => {
+  function receivedEvents(): unknown[] {
+    return controlPlane.receivedFrames.map((frame) => {
+      const parsed = parseSupervisorToControlPlaneMessage(frame);
+      return parsed.ok && parsed.value.type === "agent_event" ? parsed.value.event : frame;
+    });
+  }
+
+  it("sends, in place of an assistant message the protocol refuses, an errored message saying why", async () => {
+    currentObserver().onAgentEvent({
+      type: "assistant_message",
+      messageId: "message-1",
+      content: [
+        { type: "text", text: "Let me look." },
+        { type: "tool_call", toolCallId: "call-1", toolName: "", arguments: {} },
+      ],
+      endReason: "tool_use_requested",
+    });
+
+    await waitUntil(() => controlPlane.receivedFrames.length === 1, "the event arrives");
+
+    expect(receivedEvents()).toEqual([
+      {
+        type: "assistant_message",
+        messageId: "message-1",
+        content: [],
+        endReason: "errored",
+        errorMessage: expect.stringMatching(
+          /^Barrack could not record a message from the agent, so it is left out of this thread's history: .*toolName/s,
+        ),
+      },
+    ]);
+    expect(controlPlane.connections[0]?.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("says so, under an identifier of its own, when the start of a tool execution breaks the protocol", async () => {
+    currentObserver().onAgentEvent({
+      type: "tool_execution_started",
+      toolCallId: "x".repeat(maximumIdentifierLength + 1),
+      toolName: "bash",
+      arguments: {},
+    });
+
+    await waitUntil(() => controlPlane.receivedFrames.length === 1, "the event arrives");
+
+    expect(receivedEvents()).toEqual([
+      {
+        type: "assistant_message",
+        messageId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        content: [],
+        endReason: "errored",
+        errorMessage: expect.stringContaining(
+          "Barrack could not record the start of a tool call, so it is left out of this thread's history:",
+        ),
+      },
+    ]);
+  });
+
+  it("still ends the run when the agent's report that it failed breaks the protocol", async () => {
+    currentObserver().onAgentEvent({ type: "agent_failed", errorMessage: "" });
+
+    await waitUntil(() => controlPlane.receivedFrames.length === 1, "the event arrives");
+
+    expect(receivedEvents()).toEqual([
+      {
+        type: "agent_failed",
+        errorMessage: expect.stringContaining(
+          "Barrack could not record the agent's report that it failed, so it is left out of this thread's history:",
+        ),
       },
     ]);
   });

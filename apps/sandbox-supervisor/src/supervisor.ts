@@ -4,7 +4,9 @@ import {
   agentEventSchema,
   type ConfigureModelAccess,
   type DeliverUserMessage,
+  identifierSchema,
   maximumAgentEventFrameLength,
+  maximumErrorMessageLength,
   type StreamFragment,
   streamFragmentSchema,
   type WorkspaceEvent,
@@ -27,8 +29,9 @@ import { ThreadDesktop } from "./desktop/thread-desktop.js";
 import { fitAgentEventInFrame, measureAgentEventFrame } from "./fit-agent-event-in-frame.js";
 import type { Logger } from "./logger.js";
 import type { SecretRedactor } from "./secret-redactor.js";
+import { shortenText } from "./shorten-text.js";
 import type { CredentialAnswer } from "./workspace/git-credential-server.js";
-import { sendPublicationBundle } from "./workspace/publication-bundle.js";
+import { describeBundleFailure, sendPublicationBundle } from "./workspace/publication-bundle.js";
 import { ThreadWorkspace } from "./workspace/thread-workspace.js";
 
 export type SupervisorSettings = {
@@ -177,18 +180,15 @@ export class Supervisor {
   /**
    * The control plane closes the connection on any invalid frame, and an
    * event is sent again until it is recorded, so an event that would fail
-   * its checks is held back here and logged instead. One too large for a
-   * frame is sent shrunk, saying what was left out. A model credential is
-   * never sent, wherever in the event it turned up.
+   * its checks is never sent: a notice saying so is sent in its place. One
+   * too large for a frame is sent shrunk, saying what was left out. A model
+   * credential is never sent, wherever in the event it turned up.
    */
   #sendAgentEvent(reportedEvent: AgentEvent): void {
     const event = this.#secretRedactor.redactValue(reportedEvent);
     const validation = agentEventSchema.safeParse(event);
     if (!validation.success) {
-      this.#logger.error(
-        { eventType: event.type, reason: z.prettifyError(validation.error) },
-        "Not sending an agent event that breaks the protocol",
-      );
+      this.#sendNoticeInPlaceOf(event, z.prettifyError(validation.error));
       return;
     }
     const frameLength = measureAgentEventFrame(event);
@@ -199,9 +199,9 @@ export class Supervisor {
     const fittedEvent = fitAgentEventInFrame(event);
     const fittedFrameLength = measureAgentEventFrame(fittedEvent);
     if (fittedFrameLength > maximumAgentEventFrameLength) {
-      this.#logger.error(
-        { eventType: event.type, frameLength: fittedFrameLength },
-        "Not sending an agent event that is too large even after shrinking",
+      this.#sendNoticeInPlaceOf(
+        event,
+        `it would take ${fittedFrameLength} characters even after shrinking, more than one frame holds.`,
       );
       return;
     }
@@ -212,7 +212,45 @@ export class Supervisor {
     this.#connection.sendAgentEvent(fittedEvent);
   }
 
-  /** Workspace events are small and fixed in shape, so they need no shrinking. */
+  /**
+   * What the agent did must not vanish without a word, so the user is shown
+   * an errored message saying what was left out and why. An assistant
+   * message keeps its identifier, so the notice takes the place of the text
+   * streamed for it; and the agent's report that it failed stays one, so the
+   * run it ends is still ended.
+   */
+  #sendNoticeInPlaceOf(event: AgentEvent, reason: string): void {
+    this.#logger.error(
+      { eventType: event.type, reason },
+      "Sending a notice in place of an agent event the control plane would refuse",
+    );
+    const errorMessage = shortenText(
+      `Barrack could not record ${describeAgentEvent(event)}, so it is left out of this thread's history: ${reason}`,
+      maximumErrorMessageLength,
+      0.5,
+    );
+    if (event.type === "agent_failed") {
+      this.#connection.sendAgentEvent({ type: "agent_failed", errorMessage });
+      return;
+    }
+    const keepsItsIdentifier =
+      event.type === "assistant_message" && identifierSchema.safeParse(event.messageId).success;
+    this.#connection.sendAgentEvent({
+      type: "assistant_message",
+      messageId: keepsItsIdentifier ? event.messageId : randomUUID(),
+      content: [],
+      endReason: "errored",
+      errorMessage,
+    });
+  }
+
+  /**
+   * Workspace events are small and fixed in shape, so they need no
+   * shrinking. What a repository decides (its default branch, its commits'
+   * names) is checked before the clone is reported, and a clone that could
+   * not be reported fails, saying why, so one that breaks the protocol here
+   * would be a fault in the supervisor itself.
+   */
   #sendWorkspaceEvent(event: WorkspaceEvent): void {
     const validation = workspaceEventSchema.safeParse(event);
     if (!validation.success) {
@@ -278,7 +316,7 @@ export class Supervisor {
       supervisorToken: this.#configuration.supervisorToken,
       logger: this.#logger,
     }).catch((error: unknown) => {
-      const reason = error instanceof Error ? error.message : "The bundle could not be made.";
+      const reason = describeBundleFailure(error);
       this.#logger.warn(
         { publicationId: message.publicationId, reason },
         "Could not send the bundle",
@@ -390,5 +428,23 @@ export class Supervisor {
     await deliveredUserMessages.noteHandingOver(sequence);
     this.#harness.deliverUserMessage({ messageId, text: message.text });
     this.#connection.acknowledgeUserMessages(sequence);
+  }
+}
+
+/** What the user is told was left out, in words. */
+function describeAgentEvent(event: AgentEvent): string {
+  switch (event.type) {
+    case "assistant_message":
+      return "a message from the agent";
+    case "tool_execution_started":
+      return "the start of a tool call";
+    case "tool_execution_finished":
+      return "the result of a tool call";
+    case "agent_failed":
+      return "the agent's report that it failed";
+    case "agent_run_started":
+      return "the start of the agent's run";
+    case "agent_run_settled":
+      return "the end of the agent's run";
   }
 }
