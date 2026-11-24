@@ -2,7 +2,7 @@
   "name": "@barrack/mock-model-server",
   "version": "0.0.0",
   "private": true,
-  "description": "A stand-in for an OpenAI-compatible model, so tests can run the real Pi agent with no network and no API key.",
+  "description": "A stand-in for a model provider speaking OpenAI's Chat Completions and Responses and Anthropic's Messages, so tests can run the real Pi agent, and the model proxy, with no network and no API key.",
   "license": "MIT",
   "type": "module",
   "exports": {

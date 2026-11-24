@@ -4,6 +4,7 @@ The model providers and models the pinned [Pi](https://github.com/earendil-works
 
 - [`model-catalogue.json`](model-catalogue.json) is generated, never edited by hand. Its shape is `ModelCatalogue` in [`@barrack/protocol`](../protocol/src/model-access.ts).
 - [`src/index.ts`](src/index.ts) reads and checks it once: `modelCatalogue`, and `findCatalogueProvider(providerId)`.
+- [`src/relayed-providers.ts`](src/relayed-providers.ts) is the one list of providers whose traffic the control plane's model proxy relays, so their keys stay on the server, with each one's wire formats and own addresses; `modelCatalogue` marks every provider `kept_on_server` or `placed_in_sandbox` from it. [`scripts/relayed-providers-match-pinned-agent.test.ts`](scripts/relayed-providers-match-pinned-agent.test.ts) checks every listed provider's models, as the pinned Pi lists them, against it.
 - [`scripts/read-agent-catalogue.ts`](scripts/read-agent-catalogue.ts) builds it from Pi's own model runtime, running each provider's key login with made-up answers to learn what it asks for. Pi is a development dependency only, so nothing that depends on this package at run time installs it.
 
 ## Regenerating it
