@@ -1,6 +1,8 @@
 import type {
   AgentEvent,
   AgentFailedEvent,
+  RepositoryPublicationFailedEvent,
+  RepositoryPublishedEvent,
   ThreadEvent,
   UserMessageEvent,
 } from "@barrack/protocol";
@@ -401,6 +403,91 @@ export function describeThreadEventLogContract(
         openedBySupervisorInstanceId: "instance-2",
       });
       expect(await log.readNewestSequence("thread-a")).toBe(3);
+    });
+  });
+
+  describe(`${implementationName} as a record of the thread's repository`, () => {
+    const published: RepositoryPublishedEvent = {
+      type: "repository_published",
+      workBranch: "barrack/thread-a",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      branchUrl: "https://github.com/octo/app/tree/barrack/thread-a",
+      pullRequest: null,
+      isPullRequestNew: false,
+    };
+    const failed: RepositoryPublicationFailedEvent = {
+      type: "repository_publication_failed",
+      errorMessage: "GitHub refused the push",
+    };
+
+    it("records a publication's outcome once however often it is appended, leaving no gap", async () => {
+      const log = await createEmptyLog();
+
+      const first = await log.appendPublicationOutcome("thread-a", published, "publication-1");
+      const again = await log.appendPublicationOutcome("thread-a", published, "publication-1");
+      const otherOutcome = await log.appendPublicationOutcome("thread-a", failed, "publication-1");
+      const next = await recordTestEvent(log, "thread-a", userMessageNumbered(1));
+
+      expect(first).toMatchObject({ isAlreadyRecorded: false, recordedEvent: { sequence: 1 } });
+      expect(again).toEqual({ isAlreadyRecorded: true });
+      expect(otherOutcome).toEqual({ isAlreadyRecorded: true });
+      expect(next.sequence).toBe(2);
+    });
+
+    it("records one outcome of a publication appended concurrently", async () => {
+      const log = await createEmptyLog();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          log.appendPublicationOutcome("thread-a", published, "publication-1"),
+        ),
+      );
+
+      expect(outcomes.filter((outcome) => !outcome.isAlreadyRecorded)).toHaveLength(1);
+      expect(await log.readNewestSequence("thread-a")).toBe(1);
+    });
+
+    it("tells apart publications, and the same publication in different threads", async () => {
+      const log = await createEmptyLog();
+
+      await log.appendPublicationOutcome("thread-a", published, "publication-1");
+      const second = await log.appendPublicationOutcome("thread-a", published, "publication-2");
+      const otherThread = await log.appendPublicationOutcome("thread-b", failed, "publication-1");
+
+      expect(second.isAlreadyRecorded).toBe(false);
+      expect(otherThread.isAlreadyRecorded).toBe(false);
+    });
+
+    it("leaves the open run alone while recording the clone's events and publications", async () => {
+      const log = await createEmptyLog();
+      const instance = "instance-1";
+      await log.appendSupervisorEvent(
+        "thread-a",
+        {
+          type: "repository_clone_started",
+          repositoryUrl: "https://github.com/octo/app",
+          baseBranch: null,
+        },
+        { supervisorInstanceId: instance, eventNumber: 1 },
+      );
+      const beforeAnyRun = await log.readOpenRun("thread-a");
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "agent_run_started" },
+        { supervisorInstanceId: instance, eventNumber: 2 },
+      );
+      await log.appendSupervisorEvent(
+        "thread-a",
+        { type: "repository_clone_failed", errorMessage: "The repository went away" },
+        { supervisorInstanceId: instance, eventNumber: 3 },
+      );
+      await log.appendPublicationOutcome("thread-a", failed, "publication-1");
+
+      expect(beforeAnyRun).toBeUndefined();
+      expect(await log.readOpenRun("thread-a")).toEqual({ openedBySupervisorInstanceId: instance });
+      expect(
+        (await log.readSupervisorResumePoint("thread-a", instance)).lastRecordedEventNumber,
+      ).toBe(3);
     });
   });
 
