@@ -25,3 +25,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm build
+
+  # pnpm check skips the tests that run real containers, because they need
+  # the sandbox image built from the current sources. This job builds it and
+  # runs them: the Docker provider's contract and a thread end to end in a
+  # Docker sandbox. GitHub's Ubuntu runners come with Docker.
+  docker-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:docker
+      - name: Check that no test left a sandbox container behind
+        if: always()
+        run: test -z "$(docker ps --all --quiet --filter label=barrack.sandbox)"

@@ -107,6 +107,9 @@ importers:
 
   packages/sandbox-providers:
     dependencies:
+      '@barrack/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@daytona/sdk':
         specifier: 2.1.0
         version: 2.1.0(@opentelemetry/api@1.10.0)
@@ -114,9 +117,6 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
-      '@barrack/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       '@types/ws':
         specifier: 8.18.2
         version: 8.18.2
@@ -129,6 +129,9 @@ importers:
       '@barrack/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@barrack/sandbox-providers':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-providers
       '@types/ws':
         specifier: 8.18.2
         version: 8.18.2

@@ -17,14 +17,15 @@ export type RunningControlPlane = {
 /**
  * Starts the real control plane on a port the operating system picks, so
  * test runs never collide with each other or with `pnpm dev`, and reads the
- * port back from its log.
+ * port back from its log. It listens on loopback unless given the address of
+ * another interface, such as the one Docker containers reach the host on.
  */
-export async function startControlPlane(): Promise<RunningControlPlane> {
+export async function startControlPlane(host = "127.0.0.1"): Promise<RunningControlPlane> {
   const supervisorToken = randomBytes(32).toString("hex");
   const controlPlane = new ServiceProcess("apps/control-plane/src/main.ts", {
     PATH: searchPath,
     BARRACK_SUPERVISOR_TOKEN: supervisorToken,
-    BARRACK_CONTROL_PLANE_HOST: "127.0.0.1",
+    BARRACK_CONTROL_PLANE_HOST: host,
     BARRACK_CONTROL_PLANE_PORT: "0",
     BARRACK_ALLOWED_CLIENT_ORIGINS: testClientOrigin,
   });
@@ -33,7 +34,7 @@ export async function startControlPlane(): Promise<RunningControlPlane> {
     ({ msg }) => msg === "Control plane listening",
   );
   return {
-    webSocketBaseUrl: `ws://127.0.0.1:${String(port)}`,
+    webSocketBaseUrl: `ws://${host}:${String(port)}`,
     supervisorToken,
     process: controlPlane,
   };
