@@ -6,3 +6,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Temporary checkouts created by coding-agent tooling
+.claude/worktrees/
