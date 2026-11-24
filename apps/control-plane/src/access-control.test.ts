@@ -199,6 +199,7 @@ describe("each user's threads", () => {
         { type: "supervisor_welcome", lastRecordedEventNumber: 0 },
         { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
         { type: "configure_model_access", model: null, credential: null },
+        { type: "desktop_control", holder: "agent" },
       ]);
     },
   );
@@ -236,6 +237,7 @@ describe("each user's threads", () => {
       "replay_announcement",
       "supervisor_connection_status",
       "user_message_delivery_status",
+      "desktop_control_status",
     ]);
   });
 

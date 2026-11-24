@@ -69,7 +69,7 @@ const attemptsPerRequest = 3;
 export class SandboxLifecycle {
   readonly #options: SandboxLifecycleOptions;
   /** When each thread's agent activity was last written, so it is written at most once an interval. */
-  readonly #agentActivityRecordedAt = new Map<string, number>();
+  readonly #activityRecordedAt = new Map<string, number>();
 
   constructor(options: SandboxLifecycleOptions) {
     this.#options = options;
@@ -161,7 +161,7 @@ export class SandboxLifecycle {
       };
     });
     if (outcome.kind === "accepted") {
-      this.#agentActivityRecordedAt.delete(threadId);
+      this.#activityRecordedAt.delete(threadId);
     }
     return outcome;
   }
@@ -239,18 +239,35 @@ export class SandboxLifecycle {
    * logged and not fatal: at worst the sandbox stops while the agent is
    * quiet, never while it has a run open.
    */
-  async recordAgentActivity(threadId: string): Promise<void> {
+  recordAgentActivity(threadId: string): Promise<void> {
+    return this.#recordActivity(threadId, "the agent");
+  }
+
+  /**
+   * Notes that the user, holding the thread's desktop, typed or moved its
+   * mouse, which keeps the sandbox from being stopped as idle, as a message
+   * would. A viewer only watching does not: a forgotten tab would keep a
+   * sandbox running all night. Written as seldom as the agent's activity.
+   */
+  recordUserDesktopInput(threadId: string): Promise<void> {
+    return this.#recordActivity(threadId, "the user on the desktop");
+  }
+
+  async #recordActivity(threadId: string, actor: string): Promise<void> {
     const now = this.#options.clock();
-    const lastRecordedAt = this.#agentActivityRecordedAt.get(threadId);
+    const lastRecordedAt = this.#activityRecordedAt.get(threadId);
     const interval = this.#options.timing.agentActivityRecordingIntervalInMilliseconds;
     if (lastRecordedAt !== undefined && now.getTime() - lastRecordedAt < interval) {
       return;
     }
+    // Noted before the write, so input arriving many times a second
+    // during one write does not start more.
+    this.#activityRecordedAt.set(threadId, now.getTime());
     try {
       await this.#options.threadStore.recordActivity(threadId, now);
-      this.#agentActivityRecordedAt.set(threadId, now.getTime());
     } catch (error) {
-      this.#options.logger.error({ err: error, threadId }, "Could not record the agent's activity");
+      this.#activityRecordedAt.delete(threadId);
+      this.#options.logger.error({ err: error, threadId, actor }, "Could not record activity");
     }
   }
 

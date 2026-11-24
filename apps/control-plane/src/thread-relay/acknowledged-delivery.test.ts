@@ -181,6 +181,7 @@ describe("agent events from a supervisor", () => {
       { type: "supervisor_welcome", lastRecordedEventNumber: 1 },
       { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
       { type: "configure_model_access", model: null, credential: null },
+      { type: "desktop_control", holder: "agent" },
       { type: "agent_events_recorded", throughEventNumber: 1 },
     ]);
   });
@@ -232,10 +233,11 @@ describe("user messages sent while no supervisor is connected", () => {
       () => supervisor.deliveredUserMessages.length === 3,
     );
 
-    expect(client.inbox.messages.map((message) => message.type).slice(0, 5)).toEqual([
+    expect(client.inbox.messages.map((message) => message.type).slice(0, 6)).toEqual([
       "replay_announcement",
       "supervisor_connection_status",
       "user_message_delivery_status",
+      "desktop_control_status",
       "thread_event",
       "thread_event",
     ]);

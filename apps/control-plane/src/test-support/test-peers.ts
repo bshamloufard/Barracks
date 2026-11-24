@@ -7,6 +7,7 @@ import {
   type ControlPlaneToClientMessage,
   type ControlPlaneToSupervisorMessage,
   type DeliverUserMessage,
+  type DesktopAvailability,
   parseControlPlaneToClientMessage,
   parseControlPlaneToSupervisorMessage,
   type RecordedThreadEvent,
@@ -85,6 +86,11 @@ export class FakeSupervisor {
 
   sendRawFrame(frameText: string): void {
     this.#socket.sendRawFrame(frameText);
+  }
+
+  /** Says whether its sandbox has a desktop, as a supervisor does after its welcome. */
+  reportDesktop(availability: Omit<DesktopAvailability, "type">): void {
+    this.#socket.sendMessage({ type: "desktop_availability", ...availability });
   }
 
   close(): Promise<void> {

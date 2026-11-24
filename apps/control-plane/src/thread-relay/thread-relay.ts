@@ -4,12 +4,15 @@ import type {
   ClientCommand,
   ClientMessageRejected,
   ConfigureModelAccess,
+  ControlPlaneDesktopMessage,
   ControlPlaneToClientMessage,
   ControlPlaneWorkspaceMessage,
+  DesktopControlStatus,
   RecordedThreadEvent,
   SendUserMessage,
   StreamFragmentMessage,
   SupervisorConnectionStatus,
+  SupervisorDesktopMessage,
   SupervisorHello,
   SupervisorToControlPlaneMessage,
   SupervisorWorkspaceMessage,
@@ -33,6 +36,11 @@ import { findMissedRange, type MissedRange, readMissedEvents } from "./read-miss
 import { SerialTaskQueue } from "./serial-task-queue.js";
 import { SupervisorBacklog, supervisorMessagesBacklogLimit } from "./supervisor-backlog.js";
 import type { ThreadActivity } from "./thread-activity.js";
+import {
+  isSupervisorDesktopMessage,
+  noThreadDesktops,
+  type ThreadDesktopState,
+} from "./thread-desktop-state.js";
 import { noThreadModelAccess, type ThreadModelAccess } from "./thread-model-access.js";
 import {
   emptyThreadWorkspaces,
@@ -99,6 +107,8 @@ export type ThreadRelayOptions = {
   workspaces?: ThreadWorkspaces;
   /** The thread's model and its owner's key; none when omitted. */
   modelAccess?: ThreadModelAccess;
+  /** Who holds threads' desktops, and where desktop reports go; none when omitted. */
+  desktops?: ThreadDesktopState;
   logger: Logger;
   /**
    * Called whenever the relay is left with no supervisor, no clients and no
@@ -136,6 +146,7 @@ export class ThreadRelay {
   readonly #threadActivity: ThreadActivity;
   readonly #workspaces: ThreadWorkspaces;
   readonly #modelAccess: ThreadModelAccess;
+  readonly #desktops: ThreadDesktopState;
   readonly #logger: Logger;
   readonly #whenUnused: () => void;
   readonly #queue = new SerialTaskQueue();
@@ -157,6 +168,7 @@ export class ThreadRelay {
     this.#threadActivity = options.threadActivity;
     this.#workspaces = options.workspaces ?? emptyThreadWorkspaces;
     this.#modelAccess = options.modelAccess ?? noThreadModelAccess;
+    this.#desktops = options.desktops ?? noThreadDesktops;
     this.#logger = options.logger;
     this.#whenUnused = options.whenUnused;
   }
@@ -213,6 +225,10 @@ export class ThreadRelay {
   ): void {
     if (message.type === "stream_fragment") {
       this.#queueStreamFragment(connection, message.fragment, frameLength);
+      return;
+    }
+    if (isSupervisorDesktopMessage(message)) {
+      this.#receiveDesktopReport(connection, message);
       return;
     }
     if (isSupervisorWorkspaceMessage(message)) {
@@ -447,6 +463,24 @@ export class ThreadRelay {
   }
 
   /**
+   * Sends a desktop request to the attached supervisor; returns false if
+   * there is none, or its connection is closing.
+   */
+  sendDesktopMessage(message: ControlPlaneDesktopMessage): boolean {
+    return this.#supervisor?.connection.send(message) ?? false;
+  }
+
+  /** Whether a supervisor has said hello and been welcomed, and is still here. */
+  get isSupervisorAttached(): boolean {
+    return this.#supervisor !== undefined;
+  }
+
+  /** Tells every client who holds the desktop now. */
+  broadcastDesktopControlStatus(): void {
+    this.#broadcast(this.#desktopControlStatus());
+  }
+
+  /**
    * Records how a publication the control plane carried out ended, in
    * sequence with everything else. A publication's outcome is recorded at
    * most once, however often this is called for it (see
@@ -524,6 +558,7 @@ export class ThreadRelay {
     for (const fragment of this.#inProgressText.toCoalescedFragments()) {
       connection.send({ type: "stream_fragment", fragment });
     }
+    connection.send(this.#desktopControlStatus());
     this.#logger.info(
       { replayedEventCount: range.lastSequence - range.afterSequence },
       "Client caught up and is live",
@@ -586,6 +621,10 @@ export class ThreadRelay {
     if (!(await this.#describeModelAccess(supervisor))) {
       return;
     }
+    supervisor.connection.send({
+      type: "desktop_control",
+      holder: this.#desktops.controlHolderOf(this.threadId),
+    });
     this.#advanceUserMessagesDeliveredThrough(resumePoint.userMessagesDeliveredThrough);
     if (claimedDelivery > resumePoint.userMessagesDeliveredThrough) {
       await this.#recordUserMessagesDelivered(claimedDelivery);
@@ -689,6 +728,24 @@ export class ThreadRelay {
     this.#workspaces.handleSupervisorRequest(this.threadId, message, (answer) =>
       connection.send(answer),
     );
+  }
+
+  /**
+   * Desktop reports need no ordering with the thread's events, so they skip
+   * the queue; each is small and replaces the last, so they need no bound
+   * beyond the frame's.
+   */
+  #receiveDesktopReport(connection: SupervisorConnection, message: SupervisorDesktopMessage): void {
+    if (this.#supervisor?.connection !== connection) {
+      this.#ignoreUnattachedSupervisorMessage(connection, message.type);
+      return;
+    }
+    if (message.type === "desktop_stream_failed") {
+      this.#desktops.noteStreamFailed(this.threadId, message.streamId, message.reason);
+      return;
+    }
+    const { type: _type, ...availability } = message;
+    this.#desktops.noteAvailability(this.threadId, availability);
   }
 
   async #readResumePoint(
@@ -896,6 +953,7 @@ export class ThreadRelay {
 
   #forgetSupervisor(): void {
     this.#supervisor = undefined;
+    this.#desktops.noteSupervisorDetached(this.threadId);
     this.#broadcastSupervisorConnectionStatus();
   }
 
@@ -1135,6 +1193,13 @@ export class ThreadRelay {
     return {
       type: "supervisor_connection_status",
       isSupervisorConnected: this.#supervisor !== undefined,
+    };
+  }
+
+  #desktopControlStatus(): DesktopControlStatus {
+    return {
+      type: "desktop_control_status",
+      controllingViewerId: this.#desktops.controllingViewerOf(this.threadId),
     };
   }
 

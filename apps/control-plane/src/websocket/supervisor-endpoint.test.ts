@@ -107,6 +107,7 @@ describe("the supervisor endpoint", () => {
       "supervisor_welcome",
       "prepare_workspace",
       "configure_model_access",
+      "desktop_control",
     ]);
   });
 
