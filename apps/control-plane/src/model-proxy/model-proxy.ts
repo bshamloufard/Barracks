@@ -60,10 +60,12 @@ export type ModelProxyOptions = {
  * provider's API is relayed at (`relayed-routes.ts`); the caller must
  * present the thread's token for the provider, looked up within the
  * instance's bound on callers not yet authenticated; the thread must be
- * under its own limits (`model-proxy-limits.ts`); and the records must
- * allow it (`ModelProxyAuthorization`). Then the
- * request is rebuilt for the provider's own address with its owner's key
- * (`relay-request.ts`), and the answer streamed back, its usage counted.
+ * under its own limits (`model-proxy-limits.ts`); the body, read whole,
+ * must pass its checks (`request-body.ts`); and the records must allow it
+ * (`ModelProxyAuthorization`). Then the request is rebuilt for the
+ * provider's own address with its owner's key (`relay-request.ts`), the
+ * answer streamed back, its usage counted, and the records checked again
+ * while it lasts.
  *
  * Only metadata is logged: never a body, a header's value, or a key.
  */
@@ -260,6 +262,11 @@ export class ModelProxy {
     if (authorization.kind === "refused") {
       logger.warn({ reason: authorization.reason }, "Refused a model request");
       sendRefusal(response, route.format, authorization.refusal);
+      return;
+    }
+    if (cancellation.signal.aborted) {
+      // The thread began stopping while the body was read or the records checked.
+      sendRefusal(response, route.format, proxyRefusals.tokenRefused);
       return;
     }
     response.shouldKeepAlive = true;

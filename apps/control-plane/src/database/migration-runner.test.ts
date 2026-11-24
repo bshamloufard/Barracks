@@ -207,6 +207,7 @@ describeWithTestDatabase("the control plane's migrations", () => {
       { name: "github_connections", has_row_security: true },
       { name: "model_credentials", has_row_security: true },
       { name: "model_proxy_tokens", has_row_security: true },
+      { name: "model_switch_allowances", has_row_security: true },
       { name: "model_usage", has_row_security: true },
       { name: "model_usage_caps", has_row_security: true },
       { name: "schema_migrations", has_row_security: true },

@@ -199,10 +199,6 @@ export class RequestBodyBudget {
     this.#limit = limit;
   }
 
-  get held(): number {
-    return this.#held;
-  }
-
   /**
    * Reads the whole body, refusing one larger than `maximumBytes` or one
    * that would take the instance over its budget. A reading that ends in

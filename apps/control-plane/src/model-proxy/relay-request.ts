@@ -49,12 +49,14 @@ export type RelayRequestOptions = {
  *
  * The answer goes through Node's stream pipeline, so the provider is read
  * only as fast as the agent takes it: an agent that stops reading stops the
- * provider being read until the idle limit ends the request. Nothing is buffered beyond the
- * streams' own high-water marks. Node's client never follows a redirect,
- * and a redirect answer is refused rather than passed on, so a request
- * never leaves the provider's own address. Whichever side gives up first,
- * the other is ended too: the agent hanging up cancels the provider's
- * request, which stops it generating.
+ * provider being read until the idle limit ends the request. Nothing of the
+ * answer is buffered beyond the streams' own high-water marks. Node's
+ * client never follows a redirect, and a redirect answer is refused rather
+ * than passed on, so a request never leaves the provider's own address.
+ * Whichever side gives up first, the other is ended too: the agent hanging
+ * up ends the request to the provider, which for a streamed answer
+ * normally stops it generating (no provider promises that; see
+ * `answer-usage.ts` for how what it may have generated is counted).
  */
 export function relayRequest(options: RelayRequestOptions): Promise<RelayOutcome> {
   return new Promise((resolve) => {
