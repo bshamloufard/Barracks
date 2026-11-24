@@ -5,7 +5,6 @@ import type {
   ControlPlaneToClientMessage,
   RecordedThreadEvent,
   ReplayAnnouncement,
-  ThreadSandbox,
   ThreadSummary,
   ToolArguments,
   ToolOutput,
@@ -89,7 +88,18 @@ export type ConnectionState =
 export type ThreadRecordState =
   | { name: "loading" }
   | { name: "not_found" }
-  | { name: "found"; sandbox: ThreadSandbox };
+  | { name: "found"; thread: ThreadSummary };
+
+export type LifecycleAction = "stop" | "resume" | "delete";
+
+/**
+ * Where the user's own request to stop, resume or delete the thread is. A
+ * deletion is confirmed first, since it cannot be undone.
+ */
+export type LifecycleRequestState =
+  | { name: "none" }
+  | { name: "confirming_delete" }
+  | { name: "sending"; action: LifecycleAction };
 
 export type ThreadState = {
   record: ThreadRecordState;
@@ -114,6 +124,7 @@ export type ThreadState = {
   connection: ConnectionState;
   /** Why the control plane refused the last thing this page sent, until the user dismisses it. */
   rejectionReason: string | undefined;
+  lifecycleRequest: LifecycleRequestState;
 };
 
 export type ThreadAction =
@@ -121,7 +132,12 @@ export type ThreadAction =
   | { type: "thread_record_missing" }
   | { type: "message_received"; message: ControlPlaneToClientMessage }
   | { type: "connection_changed"; connection: ConnectionState }
-  | { type: "rejection_dismissed" };
+  | { type: "rejection_dismissed" }
+  | { type: "delete_confirmation_requested" }
+  | { type: "delete_confirmation_cancelled" }
+  | { type: "lifecycle_request_sent"; action: LifecycleAction }
+  | { type: "lifecycle_request_answered"; thread: ThreadSummary }
+  | { type: "lifecycle_request_failed"; reason: string };
 
 export const initialThreadState: ThreadState = {
   record: { name: "loading" },
@@ -133,12 +149,13 @@ export const initialThreadState: ThreadState = {
   hasSeenSupervisorConnected: false,
   connection: { name: "connecting" },
   rejectionReason: undefined,
+  lifecycleRequest: { name: "none" },
 };
 
 export function reduceThreadState(state: ThreadState, action: ThreadAction): ThreadState {
   switch (action.type) {
     case "thread_record_loaded":
-      return { ...state, record: { name: "found", sandbox: action.thread.sandbox } };
+      return applyThreadRecord(state, action.thread);
     case "thread_record_missing":
       return { ...state, record: { name: "not_found" } };
     case "message_received":
@@ -147,7 +164,32 @@ export function reduceThreadState(state: ThreadState, action: ThreadAction): Thr
       return applyConnectionChange(state, action.connection);
     case "rejection_dismissed":
       return { ...state, rejectionReason: undefined };
+    case "delete_confirmation_requested":
+      return { ...state, lifecycleRequest: { name: "confirming_delete" } };
+    case "delete_confirmation_cancelled":
+      return { ...state, lifecycleRequest: { name: "none" } };
+    case "lifecycle_request_sent":
+      return { ...state, lifecycleRequest: { name: "sending", action: action.action } };
+    case "lifecycle_request_answered":
+      return { ...applyThreadRecord(state, action.thread), lifecycleRequest: { name: "none" } };
+    case "lifecycle_request_failed":
+      return { ...state, lifecycleRequest: { name: "none" }, rejectionReason: action.reason };
   }
+}
+
+/**
+ * Until a sandbox that is not running has run again, this page has not seen
+ * its new supervisor, which is starting rather than gone.
+ */
+function applyThreadRecord(state: ThreadState, thread: ThreadSummary): ThreadState {
+  return {
+    ...state,
+    record: { name: "found", thread },
+    hasSeenSupervisorConnected:
+      thread.sandbox.state === "running"
+        ? state.hasSeenSupervisorConnected
+        : state.isSupervisorConnected,
+  };
 }
 
 export function applyControlPlaneMessage(

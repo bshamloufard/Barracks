@@ -1,5 +1,7 @@
 import {
   apiErrorResponseSchema,
+  buildResumeThreadApiPath,
+  buildStopThreadApiPath,
   buildThreadApiPath,
   type ThreadSummary,
   threadListResponseSchema,
@@ -41,16 +43,37 @@ export class ThreadsApi {
     return parseAnswer(threadResponseSchema, await response.json(), "load the thread").thread;
   }
 
-  async createThread(): Promise<ThreadSummary> {
-    const response = await this.#request(threadsApiPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
+  /** Refused when the user already runs as many sandboxes as allowed; the error says which. */
+  createThread(): Promise<ThreadSummary> {
+    return this.#change("POST", threadsApiPath, "create a thread");
+  }
+
+  /** Stops the thread's sandbox, keeping its files; answers with the thread now stopping. */
+  stopThread(threadId: string): Promise<ThreadSummary> {
+    return this.#change("POST", buildStopThreadApiPath(threadId), "stop the thread");
+  }
+
+  /** Starts the thread's sandbox again; answers with the thread now starting. */
+  resumeThread(threadId: string): Promise<ThreadSummary> {
+    return this.#change("POST", buildResumeThreadApiPath(threadId), "resume the thread");
+  }
+
+  /** Deletes the thread, its sandbox and its history for good; answers with the thread now being deleted. */
+  deleteThread(threadId: string): Promise<ThreadSummary> {
+    return this.#change("DELETE", buildThreadApiPath(threadId), "delete the thread");
+  }
+
+  async #change(method: "POST" | "DELETE", path: string, attempt: string): Promise<ThreadSummary> {
+    const response = await this.#request(
+      path,
+      method === "POST"
+        ? { method, headers: { "Content-Type": "application/json" }, body: "{}" }
+        : { method },
+    );
     if (!response.ok) {
-      throw await describeFailure(response, "create a thread");
+      throw await describeFailure(response, attempt);
     }
-    return parseAnswer(threadResponseSchema, await response.json(), "create a thread").thread;
+    return parseAnswer(threadResponseSchema, await response.json(), attempt).thread;
   }
 }
 

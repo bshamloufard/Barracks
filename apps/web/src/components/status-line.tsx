@@ -51,8 +51,16 @@ function describeAvailability(availability: AgentAvailability): string {
       return "Loading the thread…";
     case "starting":
       return "Starting its sandbox…";
+    case "waking":
+      return "Waking the sandbox…";
+    case "stopping":
+      return "Stopping the sandbox…";
+    case "stopped":
+      return "Sandbox stopped";
     case "sandbox_failed":
-      return "Its sandbox could not be created";
+      return availability.canResume ? "Its sandbox failed" : "Its sandbox is gone";
+    case "deleting":
+      return "Deleting…";
     case "connected":
       return "Agent connected";
     case "not_connected":

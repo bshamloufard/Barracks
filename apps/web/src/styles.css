@@ -160,15 +160,67 @@ h1 {
 }
 
 .thread-list-name {
-  font-family: var(--font-code);
-  font-size: 0.85rem;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .thread-list-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-quiet);
+}
+
+.sandbox-state-running,
+.agent-working {
+  color: var(--good);
+}
+
+.sandbox-state-failed {
+  color: var(--error-text);
+}
+
+.sandbox-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  align-items: center;
+  margin-top: 0.4rem;
+}
+
+.sandbox-banner {
+  flex: 1 1 16rem;
+  margin: 0;
   font-size: 0.85rem;
   color: var(--text-quiet);
   overflow-wrap: anywhere;
+}
+
+.sandbox-banner-warning {
+  color: var(--error-text);
+}
+
+.sandbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.deletion-confirmation {
+  flex: 1 1 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--error-background);
+  color: var(--error-text);
+}
+
+.deletion-confirmation > p {
+  margin: 0 0 0.4rem;
+}
+
+.danger-button {
+  color: var(--error-text);
 }
 
 .status-line {

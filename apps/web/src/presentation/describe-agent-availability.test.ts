@@ -12,7 +12,17 @@ function stateWith(
 ): ThreadState {
   return {
     ...initialThreadState,
-    record: { name: "found", sandbox },
+    record: {
+      name: "found",
+      thread: {
+        threadId: "thread-1",
+        createdAt: "2026-11-24T09:00:00.000Z",
+        lastActiveAt: "2026-11-24T09:00:00.000Z",
+        title: null,
+        isAgentWorking: false,
+        sandbox,
+      },
+    },
     connection: { name: "connected" },
     ...supervisor,
   };
@@ -33,42 +43,55 @@ describe("the agent's availability", () => {
     });
   });
 
-  it("is still starting once the sandbox exists, until its supervisor first connects", () => {
-    expect(describeAgentAvailability(stateWith({ state: "ready" }, neverConnected))).toEqual({
+  it("is still starting once the sandbox runs, until its supervisor first connects", () => {
+    expect(describeAgentAvailability(stateWith({ state: "running" }, neverConnected))).toEqual({
       name: "starting",
     });
   });
 
   it("is connected while the supervisor is", () => {
-    expect(describeAgentAvailability(stateWith({ state: "ready" }, connected))).toEqual({
+    expect(describeAgentAvailability(stateWith({ state: "running" }, connected))).toEqual({
       name: "connected",
     });
   });
 
   it("is not connected once a supervisor that had connected goes", () => {
-    expect(describeAgentAvailability(stateWith({ state: "ready" }, wentAway))).toEqual({
+    expect(describeAgentAvailability(stateWith({ state: "running" }, wentAway))).toEqual({
       name: "not_connected",
     });
   });
 
-  it("carries the reason when the sandbox could not be created", () => {
-    const failed = stateWith({ state: "failed", reason: "No quota left" }, neverConnected);
+  it.each([
+    [{ state: "starting" }, "waking"],
+    [{ state: "stopping" }, "stopping"],
+    [{ state: "stopped" }, "stopped"],
+    [{ state: "deleting" }, "deleting"],
+  ] as const)("follows the sandbox while it is %o", (sandbox, name) => {
+    expect(describeAgentAvailability(stateWith(sandbox, wentAway))).toEqual({ name });
+  });
+
+  it("carries the reason when the sandbox failed, and whether it can be resumed", () => {
+    const failed = stateWith(
+      { state: "failed", reason: "No quota left", canResume: true },
+      neverConnected,
+    );
 
     expect(describeAgentAvailability(failed)).toEqual({
       name: "sandbox_failed",
       reason: "No quota left",
+      canResume: true,
     });
   });
 });
 
 describe("why sending is blocked", () => {
   it("is nothing while the agent is connected", () => {
-    expect(describeWhySendingIsBlocked(stateWith({ state: "ready" }, connected))).toBeUndefined();
+    expect(describeWhySendingIsBlocked(stateWith({ state: "running" }, connected))).toBeUndefined();
   });
 
   it("is the page's own connection before anything else", () => {
     const disconnected: ThreadState = {
-      ...stateWith({ state: "ready" }, connected),
+      ...stateWith({ state: "running" }, connected),
       connection: { name: "reconnecting" },
     };
 
@@ -77,15 +100,29 @@ describe("why sending is blocked", () => {
     );
   });
 
-  it("is nothing while the sandbox is starting, since a message waits for the agent", () => {
-    expect(
-      describeWhySendingIsBlocked(stateWith({ state: "creating" }, neverConnected)),
-    ).toBeUndefined();
+  it.each([
+    { state: "creating" },
+    { state: "starting" },
+    { state: "stopping" },
+    { state: "stopped" },
+  ] as const)(
+    "is nothing while the sandbox is %o, since a message waits for the agent or wakes it",
+    (sandbox) => {
+      expect(describeWhySendingIsBlocked(stateWith(sandbox, neverConnected))).toBeUndefined();
+    },
+  );
+
+  it("asks for a failed sandbox to be resumed, and says when it is gone", () => {
+    const resumable = { state: "failed", reason: "x", canResume: true } as const;
+    const gone = { state: "failed", reason: "x", canResume: false } as const;
+
+    expect(describeWhySendingIsBlocked(stateWith(resumable, neverConnected))).toMatch(/Resume it/);
+    expect(describeWhySendingIsBlocked(stateWith(gone, neverConnected))).toMatch(/is gone/);
   });
 
-  it("says when the sandbox could not be created, so no agent will ever read a message", () => {
-    expect(
-      describeWhySendingIsBlocked(stateWith({ state: "failed", reason: "x" }, neverConnected)),
-    ).toMatch(/could not be created/);
+  it("says when the thread is being deleted", () => {
+    expect(describeWhySendingIsBlocked(stateWith({ state: "deleting" }, connected))).toMatch(
+      /being deleted/,
+    );
   });
 });

@@ -1,12 +1,15 @@
 import { threadListAddress } from "../page-address";
+import { threadNameOf } from "../presentation/describe-sandbox";
 import { useThread } from "../use-thread";
 import { AccountBar } from "./account-bar";
 import { Conversation } from "./conversation";
 import { MessageComposer } from "./message-composer";
+import { SandboxControls } from "./sandbox-controls";
 import { StatusLine } from "./status-line";
 
 export function ThreadView({ threadId }: { threadId: string }) {
-  const { state, sendUserMessage, interruptAgent, dismissRejection } = useThread(threadId);
+  const controls = useThread(threadId);
+  const { state } = controls;
   if (state.record.name === "not_found") {
     return (
       <main className="page">
@@ -24,17 +27,25 @@ export function ThreadView({ threadId }: { threadId: string }) {
           <a href={threadListAddress} className="home-link">
             Barrack
           </a>{" "}
-          <span className="thread-name">{threadId}</span>
+          <span className="thread-name">
+            {record.name === "found" ? threadNameOf(record.thread) : ""}
+          </span>
         </h1>
         <StatusLine state={state} />
         <AccountBar />
+        {record.name === "found" && (
+          <SandboxControls
+            thread={record.thread}
+            request={state.lifecycleRequest}
+            onStop={controls.stopThread}
+            onResume={controls.resumeThread}
+            onRequestDeletion={controls.requestDeletion}
+            onConfirmDeletion={controls.confirmDeletion}
+            onCancelDeletion={controls.cancelDeletion}
+          />
+        )}
       </header>
       <main>
-        {record.name === "found" && record.sandbox.state === "failed" && (
-          <p className="error-notice" role="alert">
-            This thread's sandbox could not be created. {record.sandbox.reason}
-          </p>
-        )}
         <Conversation
           entries={state.entries}
           userMessagesDeliveredThroughSequence={state.userMessagesDeliveredThroughSequence}
@@ -44,15 +55,15 @@ export function ThreadView({ threadId }: { threadId: string }) {
         {state.rejectionReason !== undefined && (
           <div className="error-notice rejection" role="alert">
             <span>{state.rejectionReason}</span>
-            <button type="button" className="quiet-button" onClick={dismissRejection}>
+            <button type="button" className="quiet-button" onClick={controls.dismissRejection}>
               Dismiss
             </button>
           </div>
         )}
         <MessageComposer
           state={state}
-          onSendUserMessage={sendUserMessage}
-          onInterruptAgent={interruptAgent}
+          onSendUserMessage={controls.sendUserMessage}
+          onInterruptAgent={controls.interruptAgent}
         />
       </footer>
     </div>
