@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { ConversationEntry } from "../thread-state/thread-state";
+import { type ConversationEntry, isWaitingForAgent } from "../thread-state/thread-state";
 import { AssistantMessage, StreamingAssistantMessage } from "./assistant-message";
 import { ToolExecution } from "./tool-execution";
 import { useStickToBottom } from "./use-stick-to-bottom";
@@ -9,7 +9,7 @@ export function Conversation({
   userMessagesDeliveredThroughSequence,
 }: {
   entries: ConversationEntry[];
-  userMessagesDeliveredThroughSequence: number;
+  userMessagesDeliveredThroughSequence: number | undefined;
 }) {
   const conversationReference = useRef<HTMLDivElement>(null);
   useStickToBottom(conversationReference);
@@ -38,14 +38,14 @@ function ConversationEntryView({
   userMessagesDeliveredThroughSequence,
 }: {
   entry: ConversationEntry;
-  userMessagesDeliveredThroughSequence: number;
+  userMessagesDeliveredThroughSequence: number | undefined;
 }) {
   switch (entry.kind) {
     case "user_message":
       return (
         <>
           <p className="user-message">{entry.text}</p>
-          {entry.sequence > userMessagesDeliveredThroughSequence && (
+          {isWaitingForAgent(userMessagesDeliveredThroughSequence, entry) && (
             <p className="quiet-note">
               Waiting for the agent: it will receive this message as soon as it is connected.
             </p>

@@ -8,7 +8,7 @@ The Barrack web client. Before anything else it asks the control plane how this 
 Then it has two pages, each showing only the signed-in user's own threads, with who is signed in and **Sign out** in the header:
 
 - **The thread list** (`/`): every thread, newest first, with when it was created and whether its sandbox is starting, ready or failed, and a **New thread** button that asks the control plane to create a thread (and its sandbox) and opens it.
-- **A thread** (`/?thread={threadId}`): connects to the control plane, shows the conversation as it streams in, and lets you send the agent messages and interrupt it. Until the agent first connects it says the thread is starting its sandbox; if the sandbox could not be created it shows the reason. Closing the tab, losing the network or reloading the page loses nothing: on reconnect it tells the control plane the last event it holds and is sent exactly what it missed.
+- **A thread** (`/?thread={threadId}`): connects to the control plane, shows the conversation as it streams in, and lets you send the agent messages and interrupt it. Until the agent first connects it says the thread is starting its sandbox; if the sandbox could not be created it shows the reason. A message can be sent while the agent is starting or away: the control plane records it and hands it over once the agent connects, and until then the page marks it as waiting for the agent. Closing the tab, losing the network or reloading the page loses nothing: on reconnect it tells the control plane the last event it holds and is sent exactly what it missed.
 
 It is deliberately bare: React and a small hand-written stylesheet, no UI framework and no router.
 

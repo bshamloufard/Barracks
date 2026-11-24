@@ -99,8 +99,13 @@ export type ThreadState = {
   /** A run has started and has not yet settled or failed. */
   isAgentWorking: boolean;
   isSupervisorConnected: boolean;
-  /** User messages up to this sequence have reached the agent; later ones are waiting for it. */
-  userMessagesDeliveredThroughSequence: number;
+  /**
+   * User messages up to this sequence have reached the agent; later ones are
+   * waiting for it. Unknown until the control plane first says, after the
+   * replay, so that a page catching up does not show every replayed message
+   * as waiting until then.
+   */
+  userMessagesDeliveredThroughSequence: number | undefined;
   /**
    * Whether this page has seen the supervisor connected since it opened.
    * Until it has, a sandbox that exists may still be starting its supervisor.
@@ -124,7 +129,7 @@ export const initialThreadState: ThreadState = {
   entries: [],
   isAgentWorking: false,
   isSupervisorConnected: false,
-  userMessagesDeliveredThroughSequence: 0,
+  userMessagesDeliveredThroughSequence: undefined,
   hasSeenSupervisorConnected: false,
   connection: { name: "connecting" },
   rejectionReason: undefined,
@@ -190,9 +195,21 @@ export function applyReplayAnnouncement(
       entries: [],
       lastSeenSequence: announcement.firstSequence - 1,
       isAgentWorking: false,
+      userMessagesDeliveredThroughSequence: undefined,
     };
   }
   return discardStreamedText(state);
+}
+
+/** Whether the agent has yet to be handed this message, as far as the page knows. */
+export function isWaitingForAgent(
+  userMessagesDeliveredThroughSequence: number | undefined,
+  entry: UserMessageEntry,
+): boolean {
+  return (
+    userMessagesDeliveredThroughSequence !== undefined &&
+    entry.sequence > userMessagesDeliveredThroughSequence
+  );
 }
 
 /** Applies a recorded thread event once; a sequence already seen is ignored. */

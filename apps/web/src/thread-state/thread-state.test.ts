@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   initialThreadState,
+  isWaitingForAgent,
   reduceThreadState,
   type ThreadAction,
   type ThreadState,
@@ -395,14 +396,37 @@ describe("user messages waiting for the agent", () => {
       received({ type: "user_message_delivery_status", deliveredThroughSequence: 1 }),
     );
 
-    const waiting = state.entries.filter(
-      (entry) =>
-        entry.kind === "user_message" &&
-        entry.sequence > state.userMessagesDeliveredThroughSequence,
+    expect(waitingKeys(state)).toEqual(["user:user-2"]);
+  });
+
+  it("are not shown while a page catches up, before the control plane says how far delivery has got", () => {
+    const state = stateAfter(
+      received({ type: "replay_announcement", firstSequence: 1, lastSequence: 1 }),
+      recorded(1, { type: "user_message", messageId: "user-1", text: "Delivered long ago" }),
     );
-    expect(waiting.map((entry) => entry.key)).toEqual(["user:user-2"]);
+
+    expect(waitingKeys(state)).toEqual([]);
+  });
+
+  it("are judged afresh when the control plane replaces the history the page held", () => {
+    const state = stateAfter(
+      recorded(1, { type: "user_message", messageId: "user-1", text: "Old" }),
+      received({ type: "user_message_delivery_status", deliveredThroughSequence: 1 }),
+      received({ type: "replay_announcement", firstSequence: 1, lastSequence: 1 }),
+    );
+
+    expect(state.userMessagesDeliveredThroughSequence).toBeUndefined();
   });
 });
+
+function waitingKeys(state: ThreadState): string[] {
+  return state.entries.flatMap((entry) =>
+    entry.kind === "user_message" &&
+    isWaitingForAgent(state.userMessagesDeliveredThroughSequence, entry)
+      ? [entry.key]
+      : [],
+  );
+}
 
 describe("the thread's record", () => {
   it("is loading until the control plane's record arrives", () => {
