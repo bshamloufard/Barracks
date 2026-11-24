@@ -148,13 +148,40 @@ export function describeModelCredentialStoreContract(
       expect(await rotatingStore.read(ownerA, "anthropic")).toMatchObject({
         secret: "sealed-key-1",
       });
-      expect(await rotatingStore.sealAgainUnderCurrentKey()).toBe(1);
-      expect(await rotatingStore.sealAgainUnderCurrentKey()).toBe(0);
+      expect(await rotatingStore.sealAgainUnderCurrentKey()).toEqual({
+        resealedCount: 1,
+        unreadableCount: 0,
+      });
+      expect(await rotatingStore.sealAgainUnderCurrentKey()).toEqual({
+        resealedCount: 0,
+        unreadableCount: 0,
+      });
 
       const currentOnlyStore = testBed.storeWith(new CredentialKeyring(currentKey));
       expect(await currentOnlyStore.read(ownerA, "anthropic")).toMatchObject({
         secret: "sealed-key-1",
       });
+    });
+
+    it("seals again what it can open and leaves, counted, what was sealed under a key it was not given", async () => {
+      const testBed = await createTestBed();
+      const previousKey = randomBytes(32);
+      await testBed
+        .storeWith(new CredentialKeyring(previousKey))
+        .save(credentialOf(ownerA, "anthropic", "sealed-key-1"));
+      await testBed.storeWith(createKeyring()).save(credentialOf(ownerA, "openai", "sealed-key-2"));
+      const currentKeyring = new CredentialKeyring(randomBytes(32), [previousKey]);
+      const rotatingStore = testBed.storeWith(currentKeyring);
+
+      const outcome = await rotatingStore.sealAgainUnderCurrentKey();
+
+      expect(outcome).toEqual({ resealedCount: 1, unreadableCount: 1 });
+      expect(await rotatingStore.read(ownerA, "anthropic")).toMatchObject({
+        secret: "sealed-key-1",
+      });
+      expect(
+        (await rotatingStore.countByKeyFingerprint()).get(currentKeyring.currentFingerprint),
+      ).toBe(1);
     });
 
     it("refuses to open a sealed key that was altered", async () => {

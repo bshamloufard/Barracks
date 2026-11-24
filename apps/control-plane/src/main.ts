@@ -3,7 +3,7 @@ import { createConfiguredAuthentication } from "./authentication/create-authenti
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
-import { checkCredentialKeys } from "./model-access/credential-key-check.js";
+import { CredentialResealing, checkCredentialKeys } from "./model-access/credential-key-check.js";
 import { CredentialKeyring } from "./model-access/credential-keyring.js";
 import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
@@ -94,7 +94,9 @@ async function main(): Promise<void> {
   // The first sweep reconciles every sandbox with the provider, and takes
   // over operations a control plane that has gone left under way.
   threadServices.sweeps.start();
-  shutDownOnSignal(server, threadServices, storage, logger);
+  const resealing = new CredentialResealing(storage.modelCredentialStore, keyring, logger);
+  resealing.start();
+  shutDownOnSignal(server, threadServices, storage, logger, () => resealing.stop());
 }
 
 /** Says where agents will run and with what, naming credentials but never their values. */
@@ -179,6 +181,7 @@ function shutDownOnSignal(
   threadServices: ThreadServices,
   storage: OpenStorage,
   logger: Logger,
+  stopResealing: () => void,
 ): void {
   let isShuttingDown = false;
   const handleSignal = (signal: NodeJS.Signals): void => {
@@ -188,6 +191,7 @@ function shutDownOnSignal(
     }
     isShuttingDown = true;
     logger.info({ signal }, "Shutting down");
+    stopResealing();
     threadServices.sweeps
       .stop()
       .then(() => server.close())

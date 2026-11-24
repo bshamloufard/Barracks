@@ -70,14 +70,27 @@ export class ModelCredentials {
 
   /**
    * The owner's credential for the provider, opened, for that owner's own
-   * thread alone; undefined if there is none or it cannot be opened, which
-   * is logged without anything of the credential.
+   * thread alone; undefined if there is none, or if it was altered, which is
+   * logged without anything of the credential.
+   *
+   * One sealed under a key this control plane does not hold throws
+   * `UnreadableCredentialError` (`unknown_key`) instead: during a key
+   * rotation's overlap the instance being replaced cannot open what the new
+   * one sealed again, and must leave a sandbox the key it already has
+   * rather than withdraw it as if the user had removed it.
    */
   async read(ownerUserId: string, providerId: string): Promise<ModelCredential | undefined> {
     try {
       return await this.#store.read(ownerUserId, providerId);
     } catch (error) {
       if (!(error instanceof UnreadableCredentialError)) {
+        throw error;
+      }
+      if (error.reason === "unknown_key") {
+        this.#logger.warn(
+          { ownerUserId, providerId },
+          "A user's model credential is sealed under a key this control plane does not hold (another instance rotated it); leaving sandboxes the key they have",
+        );
         throw error;
       }
       this.#logger.error(

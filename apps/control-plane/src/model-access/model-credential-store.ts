@@ -1,5 +1,9 @@
 import type { CredentialSettings } from "@barrack/protocol";
-import type { CredentialKeyring, SealedCredential } from "./credential-keyring.js";
+import {
+  type CredentialKeyring,
+  type SealedCredential,
+  UnreadableCredentialError,
+} from "./credential-keyring.js";
 
 /**
  * Each user's model credentials, one per provider: an API key and any
@@ -32,10 +36,14 @@ export interface ModelCredentialStore {
 
   /**
    * Seals again, under the current key, every credential a previous key
-   * sealed, so that key can then be retired. Returns how many it resealed.
+   * sealed, so that key can then be retired. One it cannot open (sealed
+   * under a key it was not given, or altered) is left as it is and counted,
+   * and the rest are still resealed.
    */
-  sealAgainUnderCurrentKey(): Promise<number>;
+  sealAgainUnderCurrentKey(): Promise<ResealingOutcome>;
 }
+
+export type ResealingOutcome = { resealedCount: number; unreadableCount: number };
 
 export type ModelCredential = {
   secret: string;
@@ -79,6 +87,23 @@ export function sealCredential(
     secretEnding: describeSecretEnding(credential.secret),
     sealed: keyring.seal(plaintext, credential),
   };
+}
+
+/** The credential sealed again under the keyring's current key, or undefined if it cannot be opened. */
+export function sealAgain(
+  keyring: CredentialKeyring,
+  row: SealedModelCredentialRow,
+): SealedModelCredentialRow | undefined {
+  let opened: ModelCredential;
+  try {
+    opened = openCredential(keyring, row);
+  } catch (error) {
+    if (error instanceof UnreadableCredentialError) {
+      return undefined;
+    }
+    throw error;
+  }
+  return sealCredential(keyring, { ...row, ...opened });
 }
 
 export function openCredential(

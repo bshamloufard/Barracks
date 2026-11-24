@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { pino } from "pino";
 import { describe, expect, it } from "vitest";
-import { checkCredentialKeys, UnreadableCredentialsError } from "./credential-key-check.js";
+import {
+  checkCredentialKeys,
+  sealStoredCredentialsAgain,
+  UnreadableCredentialsError,
+} from "./credential-key-check.js";
 import { CredentialKeyring } from "./credential-keyring.js";
 import { InMemoryModelCredentialStore } from "./in-memory-model-credential-store.js";
 import type { SealedModelCredentialRow } from "./model-credential-store.js";
@@ -47,6 +51,36 @@ describe("checking the credential keys at startup", () => {
     await expect(
       checkCredentialKeys(new InMemoryModelCredentialStore(keyring), keyring, logger),
     ).resolves.toBeUndefined();
+  });
+
+  it("seals again, on a later pass, a key saved under the previous key after startup, as the instance being replaced does", async () => {
+    const previousKey = randomBytes(32);
+    const keyring = new CredentialKeyring(randomBytes(32), [previousKey]);
+    const rows = await storeOneCredentialUnder(previousKey);
+    const store = new InMemoryModelCredentialStore(keyring, rows);
+    await checkCredentialKeys(store, keyring, logger);
+    await new InMemoryModelCredentialStore(new CredentialKeyring(previousKey), rows).save({
+      ownerUserId: "user-b",
+      providerId: "openai",
+      secret: "sk-test-saved-during-overlap",
+      settings: {},
+      addedAt: new Date(),
+    });
+    const logLines: string[] = [];
+
+    await sealStoredCredentialsAgain(
+      store,
+      keyring,
+      pino({ level: "info" }, { write: (line: string) => logLines.push(line) }),
+    );
+
+    expect([...rows.values()].map((row) => row.sealed.keyFingerprint)).toEqual([
+      keyring.currentFingerprint,
+      keyring.currentFingerprint,
+    ]);
+    expect(logLines.join("")).toContain(
+      "Every stored model credential is sealed under the current key; previous keys are no longer needed",
+    );
   });
 
   it("seals what a previous key sealed again under the current one", async () => {

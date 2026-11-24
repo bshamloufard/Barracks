@@ -5,7 +5,9 @@ import {
   type ModelCredentialSummary,
   type NewModelCredential,
   openCredential,
+  type ResealingOutcome,
   type SealedModelCredentialRow,
+  sealAgain,
   sealCredential,
   summarise,
 } from "./model-credential-store.js";
@@ -58,17 +60,21 @@ export class InMemoryModelCredentialStore implements ModelCredentialStore {
     return counts;
   }
 
-  async sealAgainUnderCurrentKey(): Promise<number> {
-    let resealedCount = 0;
+  async sealAgainUnderCurrentKey(): Promise<ResealingOutcome> {
+    const outcome = { resealedCount: 0, unreadableCount: 0 };
     for (const [key, row] of this.#rows) {
       if (row.sealed.keyFingerprint === this.#keyring.currentFingerprint) {
         continue;
       }
-      const opened = openCredential(this.#keyring, row);
-      this.#rows.set(key, sealCredential(this.#keyring, { ...row, ...opened }));
-      resealedCount += 1;
+      const resealed = sealAgain(this.#keyring, row);
+      if (resealed === undefined) {
+        outcome.unreadableCount += 1;
+        continue;
+      }
+      this.#rows.set(key, resealed);
+      outcome.resealedCount += 1;
     }
-    return resealedCount;
+    return outcome;
   }
 }
 

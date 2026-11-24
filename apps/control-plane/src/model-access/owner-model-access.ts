@@ -8,6 +8,12 @@ import type { ModelCredentials } from "./model-credentials.js";
  * model, and its owner's credential for that model's provider. A sandbox
  * therefore only ever receives its own thread's owner's key, and only for
  * its own thread's model, whatever its supervisor sends.
+ *
+ * When the credential is sealed under a key this control plane does not
+ * hold, `describe` throws rather than describe no credential: the relay
+ * then leaves an attached supervisor with the key it has, and turns away
+ * one attaching, which reconnects, normally to the instance that holds
+ * the key.
  */
 export class OwnerModelAccess implements ThreadModelAccess {
   readonly #threadStore: ThreadStore;

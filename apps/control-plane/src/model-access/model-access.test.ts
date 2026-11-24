@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   apiErrorResponseSchema,
   buildModelCredentialApiPath,
@@ -19,6 +20,9 @@ import {
   type TestThread,
 } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor } from "../test-support/test-peers.js";
+import { CredentialKeyring } from "./credential-keyring.js";
+import { InMemoryModelCredentialStore } from "./in-memory-model-credential-store.js";
+import type { SealedModelCredentialRow } from "./model-credential-store.js";
 
 /**
  * Each user's own model access, through the real control plane: keys added
@@ -337,6 +341,41 @@ describe("each thread's model access", () => {
     expect(client.threadEvents.map((recorded) => recorded.event.type)).toEqual(["user_message"]);
     expectNoKeyAnywhere();
     expect(JSON.stringify(client.inbox.messages)).not.toContain(adasAnthropicKey);
+  });
+});
+
+describe("rotating the key credentials are sealed under", () => {
+  it("leaves a sandbox the key it has when this control plane cannot open what another sealed again under a newer key", async () => {
+    const oldKey = randomBytes(32);
+    const rows = new Map<string, SealedModelCredentialRow>();
+    await start({
+      modelCredentialStore: new InMemoryModelCredentialStore(new CredentialKeyring(oldKey), rows),
+    });
+    await saveKey("anthropic", adasAnthropicKey, adaToken);
+    const thread = await createThreadOn("anthropic/example-model", adaToken);
+    const supervisor = await controlPlane.connectSupervisor(thread);
+    const client = await controlPlane.connectClient(thread.threadId, 0, adaToken);
+    await waitForModelAccess(supervisor, "the key", () => true);
+
+    const newInstancesStore = new InMemoryModelCredentialStore(
+      new CredentialKeyring(randomBytes(32), [oldKey]),
+      rows,
+    );
+    expect(await newInstancesStore.sealAgainUnderCurrentKey()).toEqual({
+      resealedCount: 1,
+      unreadableCount: 0,
+    });
+    client.sendUserMessage("Still there?");
+    await supervisor.inbox.waitFor(
+      "the message",
+      (message) => message.type === "deliver_user_message",
+    );
+
+    expect(modelAccessMessages(supervisor)).toEqual([
+      expect.objectContaining({
+        credential: expect.objectContaining({ secret: adasAnthropicKey }),
+      }),
+    ]);
   });
 });
 

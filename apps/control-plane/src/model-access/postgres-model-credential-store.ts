@@ -7,7 +7,9 @@ import {
   type ModelCredentialSummary,
   type NewModelCredential,
   openCredential,
+  type ResealingOutcome,
   type SealedModelCredentialRow,
+  sealAgain,
   sealCredential,
   summarise,
 } from "./model-credential-store.js";
@@ -117,18 +119,18 @@ export class PostgresModelCredentialStore implements ModelCredentialStore {
    * Each one is replaced only if it is still as read, so a key the user
    * replaced meanwhile is not overwritten with the old one.
    */
-  async sealAgainUnderCurrentKey(): Promise<number> {
+  async sealAgainUnderCurrentKey(): Promise<ResealingOutcome> {
     const result = await this.#pool.query<CredentialRow>(
       `select ${credentialColumns} from ${this.#table} where key_fingerprint <> $1`,
       [this.#keyring.currentFingerprint],
     );
-    let resealedCount = 0;
+    const outcome = { resealedCount: 0, unreadableCount: 0 };
     for (const row of result.rows) {
-      const sealedRow = toSealedRow(row);
-      const resealed = sealCredential(this.#keyring, {
-        ...sealedRow,
-        ...openCredential(this.#keyring, sealedRow),
-      });
+      const resealed = sealAgain(this.#keyring, toSealedRow(row));
+      if (resealed === undefined) {
+        outcome.unreadableCount += 1;
+        continue;
+      }
       const update = await this.#pool.query(
         `update ${this.#table} set key_fingerprint = $3, nonce = $4, ciphertext = $5
           where user_id = $1 and provider_id = $2 and nonce = $6`,
@@ -141,9 +143,9 @@ export class PostgresModelCredentialStore implements ModelCredentialStore {
           row.nonce,
         ],
       );
-      resealedCount += update.rowCount ?? 0;
+      outcome.resealedCount += update.rowCount ?? 0;
     }
-    return resealedCount;
+    return outcome;
   }
 }
 
