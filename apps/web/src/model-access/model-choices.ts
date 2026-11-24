@@ -74,7 +74,7 @@ export function describeWhyModelCannotRun(
   return `You have no ${keyName}. Add one in Settings to use this model.`;
 }
 
-/** "Claude Fable 5 (anthropic/claude-fable-5)", or the reference alone for a model the catalogue does not list. */
+/** "Model A (anthropic/model-a)", or the reference alone for a model the catalogue does not list. */
 export function describeModel(model: string, catalogue: ModelCatalogue | undefined): string {
   if (!modelReferenceSchema.safeParse(model).success) {
     return model;
