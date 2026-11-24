@@ -384,6 +384,7 @@ export class SandboxOperations {
     sandboxId: string | undefined,
     logger: Logger,
   ): Promise<void> {
+    this.#options.threadRuns.prepareForDeletion(thread.threadId);
     if (sandboxId !== undefined) {
       try {
         await this.#withLease(thread, logger, () =>

@@ -13,6 +13,13 @@ export interface ThreadRuns {
    */
   prepareForStop(threadId: string): void;
 
+  /**
+   * The thread is about to be deleted: work this control plane does for it
+   * outside the relay, such as a publication, is abandoned, and records
+   * nothing more.
+   */
+  prepareForDeletion(threadId: string): void;
+
   /** The stop is over; a supervisor still attached, its stop having failed, gets the messages held back. */
   finishStop(threadId: string): void;
 

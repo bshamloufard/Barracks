@@ -53,6 +53,8 @@ export type IsolatedGitRepositoryOptions = {
   allowPlainHttp: boolean;
   limits: GitChildLimits;
   applicableLimits: ApplicableLimits;
+  /** Aborted when the publication is abandoned: Git is killed, and every command rejects. */
+  signal: AbortSignal;
 };
 
 export class GitCommandError extends Error {
@@ -248,6 +250,7 @@ export class IsolatedGitRepository {
       scratchDirectory: this.#directory,
       limits: this.#options.limits,
       applicable: this.#options.applicableLimits,
+      signal: this.#options.signal,
     });
   }
 

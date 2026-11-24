@@ -27,6 +27,8 @@ export type LimitedGitCommand = {
   scratchDirectory: string;
   limits: GitChildLimits;
   applicable: ApplicableLimits;
+  /** Kills Git once aborted; the command then rejects with the signal's reason. */
+  signal: AbortSignal;
 };
 
 export type LimitedGitOutcome =
@@ -60,6 +62,10 @@ export function runLimitedGit(command: LimitedGitCommand): Promise<LimitedGitOut
         detached: true,
       },
     );
+    if (command.signal.aborted) {
+      reject(command.signal.reason);
+      return;
+    }
     let stoppedFor: StopCause | undefined;
     const killGroup = (cause: StopCause) => {
       stoppedFor ??= cause;
@@ -77,6 +83,8 @@ export function runLimitedGit(command: LimitedGitCommand): Promise<LimitedGitOut
       command.limits.wallTimeInMilliseconds,
     );
     const stopWatchingDisk = watchDisk(command, () => killGroup("disk"));
+    const abandon = () => killGroup("abandoned");
+    command.signal.addEventListener("abort", abandon, { once: true });
     const standardOutput = collect(child.stdout, maximumOutputInBytes, () => killGroup("output"));
     const standardError = collect(child.stderr, maximumErrorOutputInBytes);
     let inputError: Error | undefined;
@@ -90,16 +98,23 @@ export function runLimitedGit(command: LimitedGitCommand): Promise<LimitedGitOut
       child.stdin.on("error", () => undefined);
       command.input.pipe(child.stdin);
     }
-    child.on("error", (error) => {
+    const stopWatching = () => {
       clearTimeout(wallTimer);
       stopWatchingDisk();
+      command.signal.removeEventListener("abort", abandon);
+    };
+    child.on("error", (error) => {
+      stopWatching();
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
-      clearTimeout(wallTimer);
-      stopWatchingDisk();
+      stopWatching();
       if (stoppedFor === "input") {
         reject(inputError);
+        return;
+      }
+      if (stoppedFor === "abandoned") {
+        reject(command.signal.reason);
         return;
       }
       resolve(
@@ -115,11 +130,14 @@ export function runLimitedGit(command: LimitedGitCommand): Promise<LimitedGitOut
   });
 }
 
-/** Why the control plane killed Git: one of its own limits, or what it was given or printed. */
-type StopCause = LimitedResource | "output" | "input";
+/**
+ * Why the control plane killed Git: one of its own limits, what it was
+ * given or printed, or the publication being abandoned.
+ */
+type StopCause = LimitedResource | "output" | "input" | "abandoned";
 
 function decideOutcome(ending: {
-  stoppedFor: Exclude<StopCause, "input"> | undefined;
+  stoppedFor: Exclude<StopCause, "input" | "abandoned"> | undefined;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   standardOutput: string;

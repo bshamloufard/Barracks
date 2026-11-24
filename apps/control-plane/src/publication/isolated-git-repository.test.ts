@@ -55,6 +55,7 @@ async function isolatedRepositoryFor(remoteUrl: string): Promise<IsolatedGitRepo
     allowPlainHttp: true,
     limits: defaultGitChildLimits,
     applicableLimits: findApplicableLimits(),
+    signal: new AbortController().signal,
   });
   repositories.push(repository);
   return repository;

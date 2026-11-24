@@ -23,6 +23,7 @@ import type {
   ThreadRepositoryStore,
 } from "../repositories/thread-repository-store.js";
 import type { PublicationOutcomeEvent } from "../thread-event-log/thread-event-log.js";
+import type { ThreadEndingListener } from "../thread-relay/thread-relay-registry.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 import { maximumBundleHeaderLength, parseBundleHeader } from "./bundle-header.js";
 import {
@@ -36,7 +37,11 @@ import {
   GitLimitExceededError,
   IsolatedGitRepository,
 } from "./isolated-git-repository.js";
-import { type PublicationBundleUploads, PublicationError } from "./publication-bundle-uploads.js";
+import {
+  PublicationAbandonedError,
+  type PublicationBundleUploads,
+  PublicationError,
+} from "./publication-bundle-uploads.js";
 import { describePublishing } from "./publishing-availability.js";
 import { decidePush } from "./push-decision.js";
 
@@ -54,9 +59,10 @@ export type PublishOutcome =
   | { kind: "conflict"; message: string }
   | { kind: "failed"; message: string };
 
-/** How the publisher reaches a thread's supervisor and history. */
+/** How the publisher reaches a thread's supervisor and history, and learns that it is stopping or going. */
 export type PublicationChannel = {
   sendWorkspaceMessage(threadId: string, message: ControlPlaneWorkspaceMessage): boolean;
+  listenForEndings(listener: ThreadEndingListener): void;
   /** Records a publication's outcome; at most once per publication, however often it is called. */
   recordPublicationOutcome(
     threadId: string,
@@ -85,7 +91,12 @@ type Verified = {
   api: GithubApi;
   /** Minted for each publication: names its bundle upload and keys its outcome in history. */
   publicationId: string;
+  /** Aborted once the thread begins being deleted. */
+  abandonment: AbortController;
 };
+
+const stoppingReason =
+  "The thread's sandbox is stopping, so it cannot send the branch's commits. Resume the thread, then publish again.";
 
 /**
  * Publishes a thread's work branch: the control plane, never the sandbox,
@@ -108,14 +119,26 @@ type Verified = {
  * 5. Open a pull request as the App if asked and none is recorded; one is
  *    opened at most once, and later publications update its branch.
  *
- * Every outcome is recorded in the thread's history.
+ * Every outcome is recorded in the thread's history, unless the thread
+ * began being deleted meanwhile: the publication is then abandoned where it
+ * is (Git killed, nothing pushed after that) and records nothing. A sandbox
+ * that begins stopping fails a publication still waiting for its bundle at
+ * once; one that has its bundle carries on without it.
  */
 export class ThreadPublisher {
   readonly #options: ThreadPublisherOptions;
-  readonly #underWay = new Set<string>();
+  readonly #underWay = new Map<string, AbortController>();
 
   constructor(options: ThreadPublisherOptions) {
     this.#options = options;
+    options.channel.listenForEndings((threadId, ending) => {
+      if (ending === "deletion") {
+        this.#underWay.get(threadId)?.abort(new PublicationAbandonedError());
+        options.uploads.abandonThread(threadId, new PublicationAbandonedError().message);
+      } else {
+        options.uploads.abandonThread(threadId, stoppingReason);
+      }
+    });
   }
 
   async publish(
@@ -130,7 +153,7 @@ export class ThreadPublisher {
     if (this.#underWay.has(threadId)) {
       return { kind: "conflict", message: "This thread's branch is already being published." };
     }
-    this.#underWay.add(threadId);
+    this.#underWay.set(threadId, checked.abandonment);
     try {
       return await this.#publishAndRecord(checked, request.openPullRequest);
     } finally {
@@ -165,16 +188,21 @@ export class ThreadPublisher {
           "Its sandbox must be running to publish its branch: resume the thread, or send it a message, first.",
       };
     }
-    return { thread, repository, api, publicationId: randomUUID() };
+    return {
+      thread,
+      repository,
+      api,
+      publicationId: randomUUID(),
+      abandonment: new AbortController(),
+    };
   }
 
   async #publishAndRecord(verified: Verified, openPullRequest: boolean): Promise<PublishOutcome> {
-    const { publicationId } = verified;
     const { threadId } = verified.thread;
-    const { channel, logger } = this.#options;
+    const { logger } = this.#options;
     try {
       const publication = await this.#publish(verified, openPullRequest);
-      await channel.recordPublicationOutcome(threadId, publicationId, publication.event);
+      await this.#recordUnlessDeleted(verified, publication.event);
       logger.info(
         {
           threadId,
@@ -189,15 +217,45 @@ export class ThreadPublisher {
         throw error;
       }
       logger.warn({ err: error, threadId }, "Could not publish the thread's branch");
-      await channel
-        .recordPublicationOutcome(threadId, publicationId, {
-          type: "repository_publication_failed",
-          errorMessage: error.message,
-        })
-        .catch((recordingError: unknown) =>
-          logger.error({ err: recordingError, threadId }, "Could not record a failed publication"),
-        );
+      await this.#recordUnlessDeleted(verified, {
+        type: "repository_publication_failed",
+        errorMessage: error.message,
+      }).catch((recordingError: unknown) =>
+        logger.error({ err: recordingError, threadId }, "Could not record a failed publication"),
+      );
       return { kind: "failed", message: error.message };
+    }
+  }
+
+  /**
+   * Nothing is recorded for a thread whose deletion has begun: on this
+   * control plane the publication was abandoned, and the record says so for
+   * one being deleted through another.
+   */
+  async #recordUnlessDeleted(verified: Verified, event: PublicationOutcomeEvent): Promise<void> {
+    const { threadId } = verified.thread;
+    if (!(await this.#isThreadStillThere(verified))) {
+      this.#options.logger.info(
+        { threadId, publicationId: verified.publicationId },
+        "Recorded nothing of a publication whose thread is being deleted",
+      );
+      return;
+    }
+    await this.#options.channel.recordPublicationOutcome(threadId, verified.publicationId, event);
+  }
+
+  async #isThreadStillThere(verified: Verified): Promise<boolean> {
+    if (verified.abandonment.signal.aborted) {
+      return false;
+    }
+    const thread = await this.#options.threadStore.find(verified.thread.threadId);
+    return thread !== undefined && thread.sandbox.state !== "deleting";
+  }
+
+  /** Throws `PublicationAbandonedError` if the thread has begun being deleted. */
+  async #ensureThreadStillThere(verified: Verified): Promise<void> {
+    if (!(await this.#isThreadStillThere(verified))) {
+      throw new PublicationAbandonedError();
     }
   }
 
@@ -206,6 +264,8 @@ export class ThreadPublisher {
     openPullRequest: boolean,
   ): Promise<{ response: PublishThreadResponse; event: RepositoryPublishedEvent }> {
     const { thread, repository, api } = verified;
+    // Its deletion may have begun before this publication was registered to hear of it.
+    await this.#ensureThreadStillThere(verified);
     const { connection, linked } = await this.#verifyAccess(thread, repository, api);
     const pushToken = await api.createInstallationToken(linked.installationId, linked.id, {
       contents: "write",
@@ -216,9 +276,11 @@ export class ThreadPublisher {
       allowPlainHttp: this.#options.settings.allowPlainHttp,
       limits: this.#gitChildLimits,
       applicableLimits: findApplicableLimits(),
+      signal: verified.abandonment.signal,
     });
     try {
       const { commit, branch } = await this.#pushWorkBranch(verified, isolated);
+      verified.abandonment.signal.throwIfAborted();
       const pullRequest = await this.#ensurePullRequest(
         verified,
         connection,
@@ -343,6 +405,7 @@ export class ThreadPublisher {
       case "already_there":
         return { commit, branch: unchanged };
       case "push": {
+        await this.#ensureThreadStillThere(verified);
         const pushed = await this.#withinLimits("Pushing the branch", () =>
           isolated.push(reference, commit, decision.expectedRemoteCommit),
         );

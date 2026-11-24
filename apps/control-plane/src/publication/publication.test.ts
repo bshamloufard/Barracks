@@ -13,6 +13,8 @@ import {
   apiErrorResponseSchema,
   buildPublicationBundleUploadPath,
   buildPublishThreadApiPath,
+  buildStopThreadApiPath,
+  buildThreadApiPath,
   type CreatePublicationBundle,
   type ThreadEvent,
   threadResponseSchema,
@@ -167,20 +169,30 @@ async function publish(
   bundle: Buffer,
   openPullRequest = true,
 ): Promise<{ status: number; body: unknown }> {
+  const { answer, request } = await askToPublish(thread, openPullRequest);
+  await upload(request, bundle, controlPlane.supervisorTokenGivenFor(thread.threadId));
+  return answer;
+}
+
+/** Asks to publish, and returns the bundle the control plane then asks the supervisor for, and the answer to come. */
+async function askToPublish(
+  thread: PublishingThread,
+  openPullRequest = true,
+): Promise<{
+  answer: Promise<{ status: number; body: unknown }>;
+  request: CreatePublicationBundle;
+}> {
   const requestsBefore = bundleRequests(thread).length;
   const answer = fetch(`${controlPlane.httpBaseUrl}${buildPublishThreadApiPath(thread.threadId)}`, {
     method: "POST",
     headers: browserHeaders(adaToken),
     body: JSON.stringify({ openPullRequest }),
-  });
+  }).then(async (response) => ({ status: response.status, body: await response.json() }));
   await thread.supervisor.inbox.waitUntil(
     "a request for a bundle",
     () => bundleRequests(thread).length > requestsBefore,
   );
-  const request = bundleRequests(thread).at(-1) as CreatePublicationBundle;
-  await upload(request, bundle, controlPlane.supervisorTokenGivenFor(thread.threadId));
-  const response = await answer;
-  return { status: response.status, body: await response.json() };
+  return { answer, request: bundleRequests(thread).at(-1) as CreatePublicationBundle };
 }
 
 function bundleRequests(thread: PublishingThread): CreatePublicationBundle[] {
@@ -589,6 +601,86 @@ describe("publishing a thread's branch", () => {
 
     expect(response.status).toBe(404);
     expect(bundleRequests(thread)).toEqual([]);
+  });
+});
+
+/**
+ * A thread deleted, or its sandbox stopped, while its branch is being
+ * published: nothing is pushed or recorded for a thread being deleted, and
+ * a publication still waiting for a stopping sandbox's bundle fails at once.
+ */
+describe("publishing while the thread ends", () => {
+  async function deleteThread(thread: PublishingThread): Promise<void> {
+    const response = await controlPlane.sendApi(
+      "DELETE",
+      buildThreadApiPath(thread.threadId),
+      adaToken,
+    );
+    expect(response.status).toBe(202);
+    await controlPlane.whenOperationsSettle();
+  }
+
+  it("abandons a publication waiting for its bundle when the thread is deleted, at once, recording nothing", async () => {
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "agent.txt");
+    const { answer, request } = await askToPublish(thread);
+
+    await deleteThread(thread);
+    const lateUpload = await upload(
+      request,
+      await bundleSinceBase(thread),
+      controlPlane.supervisorTokenGivenFor(thread.threadId),
+    );
+
+    expect(errorOf((await answer).body).message).toBe(
+      "This thread is being deleted, so its branch was not published.",
+    );
+    expect(lateUpload.status).toBe(401);
+    expect(await controlPlane.threadStore.find(thread.threadId)).toBeUndefined();
+    expect(await recordedRepositoryEvents(thread.threadId)).toEqual([]);
+    expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
+  });
+
+  it("abandons a publication that has its bundle when the thread is deleted, pushing nothing", async () => {
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "agent.txt");
+    const heldFetch = github.holdNextGitRequest("fetch");
+    const { answer, request } = await askToPublish(thread);
+    await upload(
+      request,
+      await bundleSinceBase(thread),
+      controlPlane.supervisorTokenGivenFor(thread.threadId),
+    );
+    await heldFetch.reached;
+
+    await deleteThread(thread);
+    heldFetch.release();
+
+    expect(errorOf((await answer).body).message).toBe(
+      "This thread is being deleted, so its branch was not published.",
+    );
+    expect(await recordedRepositoryEvents(thread.threadId)).toEqual([]);
+    expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
+  });
+
+  it("fails a publication still waiting for its bundle as soon as the sandbox begins stopping, saying why", async () => {
+    const thread = await startPublishingThread();
+    const { answer } = await askToPublish(thread);
+
+    const stopped = await controlPlane.sendApi(
+      "POST",
+      buildStopThreadApiPath(thread.threadId),
+      adaToken,
+    );
+    await controlPlane.whenOperationsSettle();
+
+    const failure =
+      "The thread's sandbox is stopping, so it cannot send the branch's commits. Resume the thread, then publish again.";
+    expect(stopped.status).toBe(202);
+    expect(errorOf((await answer).body).message).toBe(failure);
+    expect(await recordedRepositoryEvents(thread.threadId)).toEqual([
+      { type: "repository_publication_failed", errorMessage: failure },
+    ]);
   });
 });
 

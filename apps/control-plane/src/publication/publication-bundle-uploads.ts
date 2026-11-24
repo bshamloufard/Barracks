@@ -17,6 +17,14 @@ export class PublicationError extends Error {
   }
 }
 
+/** The thread is being deleted: the publication stops, and nothing of it is recorded. */
+export class PublicationAbandonedError extends PublicationError {
+  constructor() {
+    super("This thread is being deleted, so its branch was not published.");
+    this.name = "PublicationAbandonedError";
+  }
+}
+
 type ExpectedUpload = {
   threadId: string;
   destinationPath: string;
@@ -83,6 +91,15 @@ export class PublicationBundleUploads {
   /** Stops waiting, such as when the request could not be sent. */
   abandon(publicationId: string, reason: string): void {
     this.#settle(publicationId, new PublicationError(reason));
+  }
+
+  /** Stops waiting for every upload of the thread, such as when its sandbox stops. */
+  abandonThread(threadId: string, reason: string): void {
+    for (const [publicationId, expected] of this.#expected) {
+      if (expected.threadId === threadId) {
+        this.#settle(publicationId, new PublicationError(reason));
+      }
+    }
   }
 
   /**

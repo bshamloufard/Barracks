@@ -13,6 +13,11 @@ import type { ThreadModelAccess } from "./thread-model-access.js";
 import { ThreadRelay } from "./thread-relay.js";
 import type { ThreadWorkspaces } from "./thread-workspaces.js";
 
+/** A thread's sandbox began stopping, or the thread began being deleted, on this control plane. */
+export type ThreadEnding = "stop" | "deletion";
+
+export type ThreadEndingListener = (threadId: string, ending: ThreadEnding) => void;
+
 export type ThreadRelayRegistryOptions = {
   threadEventLog: ThreadEventLog;
   threadActivity: ThreadActivity;
@@ -42,6 +47,7 @@ export type ThreadRelayRegistryOptions = {
 export class ThreadRelayRegistry implements ThreadRuns {
   readonly #options: ThreadRelayRegistryOptions;
   readonly #relaysByThreadId = new Map<string, ThreadRelay>();
+  readonly #endingListeners: ThreadEndingListener[] = [];
 
   constructor(options: ThreadRelayRegistryOptions) {
     this.#options = options;
@@ -71,6 +77,20 @@ export class ThreadRelayRegistry implements ThreadRuns {
 
   prepareForStop(threadId: string): void {
     this.#relaysByThreadId.get(threadId)?.prepareForStop();
+    this.#tellEndingListeners(threadId, "stop");
+  }
+
+  prepareForDeletion(threadId: string): void {
+    this.#tellEndingListeners(threadId, "deletion");
+  }
+
+  /**
+   * Calls `listener` whenever a thread's sandbox begins stopping, or a thread
+   * begins being deleted, through this control plane: how work for a thread
+   * outside its relay (a publication) learns to give up.
+   */
+  listenForEndings(listener: ThreadEndingListener): void {
+    this.#endingListeners.push(listener);
   }
 
   finishStop(threadId: string): void {
@@ -113,6 +133,12 @@ export class ThreadRelayRegistry implements ThreadRuns {
     event: PublicationOutcomeEvent,
   ): Promise<void> {
     return this.#relayFor(threadId).recordPublicationOutcome(publicationId, event);
+  }
+
+  #tellEndingListeners(threadId: string, ending: ThreadEnding): void {
+    for (const listener of this.#endingListeners) {
+      listener(threadId, ending);
+    }
   }
 
   #relayFor(threadId: string): ThreadRelay {
