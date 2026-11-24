@@ -27,8 +27,13 @@ const keptShareFromStartOfModelText = 0.75;
 /** The key of the one entry left in tool arguments too large to record. */
 export const omittedArgumentsNoteKey = "barrackNote";
 
+/** The length of the frame carrying `event`, with the longest event number it could ever have. */
 export function measureAgentEventFrame(event: AgentEvent): number {
-  const message: AgentEventMessage = { type: "agent_event", event };
+  const message: AgentEventMessage = {
+    type: "agent_event",
+    eventNumber: Number.MAX_SAFE_INTEGER,
+    event,
+  };
   return JSON.stringify(message).length;
 }
 

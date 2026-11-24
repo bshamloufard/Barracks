@@ -10,6 +10,7 @@ import {
   type ThreadEvent,
   userMessageTextSchema,
 } from "./thread-events.js";
+import { userMessageDeliveryStatusSchema } from "./user-message-delivery-status.js";
 
 /**
  * Messages on the WebSocket between a client and the control plane. A client
@@ -100,6 +101,7 @@ export const controlPlaneToClientMessageSchema = z.discriminatedUnion("type", [
   threadEventMessageSchema,
   streamFragmentMessageSchema,
   supervisorConnectionStatusSchema,
+  userMessageDeliveryStatusSchema,
   clientMessageRejectedSchema,
 ]);
 

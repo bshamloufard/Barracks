@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { maximumFrameLength, parseSupervisorToControlPlaneMessage } from "@barrack/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -28,14 +31,17 @@ vi.mock("./create-agent-harness.js", () => ({
 
 let controlPlane: TestControlPlane;
 let supervisor: Supervisor;
+let supervisorStateDirectory: string;
 
 beforeEach(async () => {
   controlPlane = await startTestControlPlane();
+  supervisorStateDirectory = await mkdtemp(path.join(tmpdir(), "barrack-supervisor-state-"));
   supervisor = new Supervisor({
     configuration: {
       controlPlaneUrl: controlPlane.url,
       threadId: "thread-1",
       supervisorToken: "token-1",
+      supervisorStateDirectory,
       logLevel: "info",
       agentHarness: { kind: "fake" },
     },
@@ -53,6 +59,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await supervisor.stop();
   await controlPlane.close();
+  await rm(supervisorStateDirectory, { recursive: true, force: true });
 });
 
 function currentObserver(): AgentHarnessObserver {
@@ -95,7 +102,11 @@ describe("Supervisor with events too large for one frame", () => {
     await pause(20);
 
     expect(controlPlane.receivedFrames.map((frame) => JSON.parse(frame))).toEqual([
-      { type: "agent_event", event: { type: "agent_run_settled", wasInterrupted: false } },
+      {
+        type: "agent_event",
+        eventNumber: 1,
+        event: { type: "agent_run_settled", wasInterrupted: false },
+      },
     ]);
   });
 });

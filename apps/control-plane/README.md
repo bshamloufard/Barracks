@@ -1,6 +1,6 @@
 # @barrack/control-plane
 
-The service between thread sandboxes and clients. It creates threads: each new thread gets a sandbox of its own from the configured [sandbox provider](../../packages/sandbox-providers), whose supervisor is given a token minted for that thread alone. Each thread's supervisor then connects to the control plane over a WebSocket, and so does each client viewing the thread. The control plane records every agent event in the thread's ordered history before showing it to anyone, relays streamed text live, and passes the user's messages and interrupts to the supervisor.
+The service between thread sandboxes and clients. It creates threads: each new thread gets a sandbox of its own from the configured [sandbox provider](../../packages/sandbox-providers), whose supervisor is given a token minted for that thread alone. Each thread's supervisor then connects to the control plane over a WebSocket, and so does each client viewing the thread. The control plane records every agent event in the thread's ordered history before showing it to anyone, relays streamed text live, and passes the user's messages and interrupts to the supervisor. Delivery between supervisor and control plane is acknowledged both ways, so each agent event is recorded exactly once and each user message reaches the agent exactly once, in order, even across either side being killed (see [the architecture](../../docs/architecture.md#acknowledged-delivery)).
 
 Users sign in with Supabase Auth, and the control plane verifies every access token itself: each user sees and controls only their own threads (see [Signing users in](#signing-users-in)). With Supabase authentication it may listen on any address. In development mode (`BARRACK_AUTHENTICATION=development-single-user`, which `pnpm dev` uses) there is no sign-in and every client is one fixed user, so it refuses to listen anywhere but a loopback address. Either way it checks the `Origin` header of browsers' requests, so other websites cannot use it through your browser.
 
@@ -74,7 +74,7 @@ Threads created before sign-in existed have no owner and are shown to nobody; gi
 | `src/database/`               | Database settings, the connection pool, the migration runner, and waiting for the database at startup (`pg`).                                                |
 | `migrations/`                 | The SQL migrations, applied in name order.                                                                                                                   |
 | `src/thread-event-log/`       | The `ThreadEventLog` interface, which assigns sequences, with its Postgres and in-memory implementations.                                                    |
-| `src/thread-relay/`           | `ThreadRelay`: per-thread ordering of recording, broadcasting, paged replay and in-progress text. No sockets in here.                                        |
+| `src/thread-relay/`           | `ThreadRelay`: per-thread recording, acknowledgements, redelivery, paged replay and in-progress text. No sockets here.                                       |
 | `src/websocket/`              | Upgrade routing, per-thread supervisor tokens, each client's session (authentication, ownership, expiry), frame validation, heartbeats, slow clients (`ws`). |
 | `src/test-support/`           | Fake peers and connections, a pausable event log, the store and log contract suites, test database helpers. Not built.                                       |
 
@@ -136,7 +136,7 @@ Migrations are plain SQL files in [`migrations/`](migrations), named `NNNN_descr
 ### When the database is unavailable
 
 - At startup the control plane waits for the database, retrying with growing delays up to 30 seconds and logging each failure, and does not listen until it has migrated. A deployment that cannot reach its database therefore fails its health check instead of restarting in a loop. Errors that waiting cannot fix, such as a wrong password, an unverifiable certificate or a failing migration, stop it with a message.
-- While running, a query waits at most 10 seconds for a connection and 30 seconds for an answer. An event that cannot be recorded disconnects its supervisor, which reconnects; a client whose history cannot be read is disconnected, and reconnects. Nothing crashes, and once the database answers again everything carries on.
+- While running, a query waits at most 10 seconds for a connection and 30 seconds for an answer. An event that cannot be recorded disconnects its supervisor, which reconnects and sends it again; a client whose history cannot be read is disconnected, and reconnects. Nothing crashes, and once the database answers again everything carries on.
 - `GET /health` reports only that the process is up. A separate readiness check is not needed, because the server does not listen until the database is migrated, and Railway consults the health check only while a deployment starts.
 
 ## Running it

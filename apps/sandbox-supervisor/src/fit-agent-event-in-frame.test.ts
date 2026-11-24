@@ -19,7 +19,9 @@ function assistantMessage(content: AssistantMessageEvent["content"]): AssistantM
 
 /** What the control plane would make of the event's frame. */
 function parseAsControlPlane(event: AgentEvent) {
-  return parseSupervisorToControlPlaneMessage(JSON.stringify({ type: "agent_event", event }));
+  return parseSupervisorToControlPlaneMessage(
+    JSON.stringify({ type: "agent_event", eventNumber: Number.MAX_SAFE_INTEGER, event }),
+  );
 }
 
 describe("fitAgentEventInFrame", () => {

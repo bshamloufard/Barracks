@@ -5,7 +5,7 @@ import {
   type AssistantMessageEvent,
   maximumErrorMessageLength,
   type StreamFragment,
-  type SupervisorToControlPlaneMessage,
+  type StreamFragmentMessage,
 } from "@barrack/protocol";
 import type {
   PiAssistantContentBlock,
@@ -71,9 +71,12 @@ export const initialTranslationState: TranslationState = {
   heldErroredMessage: undefined,
 };
 
+/** What the translation produces, in order: agent events and stream fragments. */
+export type TranslatedMessage = { type: "agent_event"; event: AgentEvent } | StreamFragmentMessage;
+
 export type Translation = {
   state: TranslationState;
-  messages: SupervisorToControlPlaneMessage[];
+  messages: TranslatedMessage[];
   /** Things Pi sent that this translation does not know, for the caller to log. */
   unrecognized: string[];
   /** Model provider errors Pi is retrying, which are not recorded, for the caller to log. */

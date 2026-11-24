@@ -26,6 +26,7 @@ import {
   connectFakeSupervisor,
   connectTestClient,
   type FakeSupervisor,
+  type FakeSupervisorOptions,
   type TestClient,
 } from "./test-peers.js";
 
@@ -202,13 +203,27 @@ export class TestControlPlane {
     return token;
   }
 
-  async connectSupervisor(thread: TestThread): Promise<FakeSupervisor> {
+  /**
+   * Connects a fake supervisor and, unless told otherwise, says its hello
+   * and waits for the welcome, so it is attached when this resolves.
+   */
+  async connectSupervisor(
+    thread: TestThread,
+    options: FakeSupervisorOptions & {
+      sayHello?: boolean;
+      userMessagesDeliveredThroughSequence?: number;
+    } = {},
+  ): Promise<FakeSupervisor> {
     const supervisor = await connectFakeSupervisor(
       this.baseUrl,
       thread.threadId,
       thread.supervisorToken,
+      options,
     );
     this.#peers.push(supervisor);
+    if (options.sayHello ?? true) {
+      await supervisor.sayHello(options.userMessagesDeliveredThroughSequence);
+    }
     return supervisor;
   }
 

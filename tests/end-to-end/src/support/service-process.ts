@@ -84,6 +84,15 @@ export class ServiceProcess {
     clearTimeout(killTimer);
   }
 
+  /** Kills the service outright, giving it no chance to clean up. */
+  async kill(): Promise<void> {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#child.kill("SIGKILL");
+    await this.#exited;
+  }
+
   describeOutput(): string {
     return this.#outputLines.join("\n");
   }

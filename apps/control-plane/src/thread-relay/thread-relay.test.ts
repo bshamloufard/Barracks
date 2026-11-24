@@ -12,6 +12,7 @@ import {
 } from "../test-support/example-agent-events.js";
 import {
   allPendingWorkSettled,
+  attachGreetedSupervisor,
   FakeClientConnection,
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
@@ -82,12 +83,16 @@ function sendAgentEvent(
   supervisor: FakeSupervisorConnection,
   event: AgentEvent,
 ): void {
-  relay.receiveFromSupervisor(supervisor, { type: "agent_event", event });
+  relay.receiveFromSupervisor(supervisor, supervisor.numbered(event));
 }
 
 async function recordedEventTypes(threadEventLog: ControllableThreadEventLog): Promise<string[]> {
   const recordedEvents = await readWholeThread(threadEventLog, threadId);
   return recordedEvents.map((recordedEvent) => recordedEvent.event.type);
+}
+
+function isDeliveryStatus(message: ControlPlaneToClientMessage): boolean {
+  return message.type === "user_message_delivery_status";
 }
 
 function isSupervisorStatus(isSupervisorConnected: boolean) {
@@ -97,24 +102,25 @@ function isSupervisorStatus(isSupervisorConnected: boolean) {
 }
 
 describe("a client connecting to a thread", () => {
-  it("is announced an empty replay and then told the supervisor status when the thread has no history", async () => {
+  it("is announced an empty replay and then told the supervisor and delivery statuses when the thread has no history", async () => {
     const client = await controlPlane.connectClient(threadId);
 
-    await client.inbox.waitUntil("two messages arrived", (messages) => messages.length === 2);
+    await client.inbox.waitUntil("three messages arrived", (messages) => messages.length === 3);
 
     expect(client.inbox.messages).toEqual([
       { type: "replay_announcement", firstSequence: 1, lastSequence: 0 },
       { type: "supervisor_connection_status", isSupervisorConnected: false },
+      { type: "user_message_delivery_status", deliveredThroughSequence: 0 },
     ]);
   });
 
-  it("is announced the range it missed, then sent exactly those events, then the supervisor status", async () => {
+  it("is announced the range it missed, then sent exactly those events, then the statuses", async () => {
     const supervisor = await controlPlane.connectSupervisor(thread);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 5);
 
     const client = await controlPlane.connectClient(threadId, 2);
-    await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
+    await client.inbox.waitFor("the delivery status", isDeliveryStatus);
 
     expect(client.inbox.messages[0]).toEqual({
       type: "replay_announcement",
@@ -127,6 +133,7 @@ describe("a client connecting to a thread", () => {
       "thread_event",
       "thread_event",
       "supervisor_connection_status",
+      "user_message_delivery_status",
     ]);
     expect(sequencesOf(client)).toEqual([3, 4, 5]);
   });
@@ -183,6 +190,7 @@ describe("a client connecting to a thread", () => {
 
     expect(client.inbox.messages.slice(3)).toEqual([
       { type: "supervisor_connection_status", isSupervisorConnected: false },
+      { type: "user_message_delivery_status", deliveredThroughSequence: 0 },
       {
         type: "stream_fragment",
         fragment: {
@@ -199,7 +207,7 @@ describe("a client connecting to a thread", () => {
   it("is sent nothing more once it detaches in the middle of its replay", async () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     sendAgentEvent(relay, supervisor, agentRunStarted);
     await allPendingWorkSettled();
     const readGates = threadEventLog.holdNextNewestSequenceRead();
@@ -261,6 +269,7 @@ describe("a client connecting to a thread", () => {
     expect(messageTypesOf(client)).toEqual([
       "replay_announcement",
       "supervisor_connection_status",
+      "user_message_delivery_status",
       "supervisor_connection_status",
       "supervisor_connection_status",
     ]);
@@ -308,7 +317,7 @@ describe("a client connecting to a thread", () => {
   it("is sent an event once when the log acknowledges recording it only after the client has replayed it", async () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     sendAgentEvent(relay, supervisor, agentRunStarted);
     await allPendingWorkSettled();
     const appendGates = threadEventLog.holdNextAppend();
@@ -336,7 +345,7 @@ describe("a live client", () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     relay.attachClient(client, 0);
     sendAgentEvent(relay, supervisor, agentRunStarted);
     await allPendingWorkSettled();
@@ -401,7 +410,7 @@ describe("agent events from the supervisor", () => {
   it("stop being recorded from a supervisor once one of its events could not be", async () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     sendAgentEvent(relay, supervisor, agentRunStarted);
     await allPendingWorkSettled();
 
@@ -418,7 +427,7 @@ describe("agent events from the supervisor", () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     relay.attachClient(client, 0);
     await allPendingWorkSettled();
 
@@ -456,9 +465,9 @@ describe("agent events from the supervisor", () => {
     const { relay, threadEventLog } = createRelayWithControllableLog();
     const supersededSupervisor = new FakeSupervisorConnection();
     const newerSupervisor = new FakeSupervisorConnection();
-    relay.attachSupervisor(supersededSupervisor);
+    attachGreetedSupervisor(relay, supersededSupervisor);
 
-    relay.attachSupervisor(newerSupervisor);
+    attachGreetedSupervisor(relay, newerSupervisor);
     sendAgentEvent(relay, supersededSupervisor, toolExecutionStarted("call-from-superseded"));
     sendAgentEvent(relay, newerSupervisor, agentRunStarted);
     await allPendingWorkSettled();
@@ -538,10 +547,11 @@ describe("stream fragments from the supervisor", () => {
       "replay_announcement",
       "thread_event",
       "supervisor_connection_status",
+      "user_message_delivery_status",
       "stream_fragment",
       "stream_fragment",
     ]);
-    expect(joiner.inbox.messages.slice(3)).toEqual([
+    expect(joiner.inbox.messages.slice(4)).toEqual([
       {
         type: "stream_fragment",
         fragment: {
@@ -584,13 +594,14 @@ describe("stream fragments from the supervisor", () => {
       await observer.waitForSequence(2);
 
       const joiner = await controlPlane.connectClient(threadId);
-      await joiner.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
+      await joiner.inbox.waitFor("the delivery status", isDeliveryStatus);
 
       expect(messageTypesOf(joiner)).toEqual([
         "replay_announcement",
         "thread_event",
         "thread_event",
         "supervisor_connection_status",
+        "user_message_delivery_status",
       ]);
     },
   );
@@ -608,12 +619,13 @@ describe("stream fragments from the supervisor", () => {
     await observer.waitForSequence(1);
 
     const joiner = await controlPlane.connectClient(threadId);
-    await joiner.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
+    await joiner.inbox.waitFor("the delivery status", isDeliveryStatus);
 
     expect(messageTypesOf(joiner)).toEqual([
       "replay_announcement",
       "thread_event",
       "supervisor_connection_status",
+      "user_message_delivery_status",
     ]);
   });
 });
@@ -627,7 +639,7 @@ describe("user messages from a client", () => {
 
     client.sendUserMessage("Please say hello");
     await appendGates.beforeRecording.reached;
-    const deliveriesWhileRecording = supervisor.inbox.messages.length;
+    const deliveriesWhileRecording = supervisor.deliveredUserMessages.length;
     appendGates.beforeRecording.release();
     appendGates.afterRecording.release();
     const delivery = await supervisor.inbox.waitFor(
@@ -645,43 +657,9 @@ describe("user messages from a client", () => {
     });
     expect(delivery).toEqual({
       type: "deliver_user_message",
+      sequence: 1,
       messageId: recordedEvent?.type === "user_message" ? recordedEvent.messageId : undefined,
       text: "Please say hello",
-    });
-  });
-
-  it("are rejected and not recorded when no supervisor is connected", async () => {
-    const client = await controlPlane.connectClient(threadId);
-
-    client.sendUserMessage("Is anyone there?");
-    const rejection = await client.inbox.waitFor(
-      "a rejection",
-      (message) => message.type === "client_message_rejected",
-    );
-
-    expect(rejection).toEqual({
-      type: "client_message_rejected",
-      reason: expect.stringContaining("No agent is connected"),
-    });
-    expect(await readWholeThread(controlPlane.threadEventLog, threadId)).toEqual([]);
-  });
-
-  it("are recorded, and the sender told they were not delivered, when the supervisor's connection is closing", async () => {
-    const { relay, threadEventLog } = createRelayWithControllableLog();
-    const supervisor = new FakeSupervisorConnection();
-    const client = new FakeClientConnection();
-    relay.attachSupervisor(supervisor);
-    relay.attachClient(client, 0);
-    await allPendingWorkSettled();
-    supervisor.isAcceptingMessages = false;
-
-    relay.receiveFromClient(client, { type: "send_user_message", text: "Are you there?" });
-    await allPendingWorkSettled();
-
-    expect(await recordedEventTypes(threadEventLog)).toEqual(["user_message"]);
-    expect(client.inbox.messages.at(-1)).toEqual({
-      type: "client_message_rejected",
-      reason: expect.stringContaining("was recorded but could not be delivered to the agent"),
     });
   });
 });
@@ -721,7 +699,7 @@ describe("interrupts from a client", () => {
     const { relay } = createRelayWithControllableLog();
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
-    relay.attachSupervisor(supervisor);
+    attachGreetedSupervisor(relay, supervisor);
     relay.attachClient(client, 0);
     await allPendingWorkSettled();
     supervisor.isAcceptingMessages = false;

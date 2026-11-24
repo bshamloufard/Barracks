@@ -35,7 +35,10 @@ export function ThreadView({ threadId }: { threadId: string }) {
             This thread's sandbox could not be created. {record.sandbox.reason}
           </p>
         )}
-        <Conversation entries={state.entries} />
+        <Conversation
+          entries={state.entries}
+          userMessagesDeliveredThroughSequence={state.userMessagesDeliveredThroughSequence}
+        />
       </main>
       <footer className="page-footer">
         {state.rejectionReason !== undefined && (

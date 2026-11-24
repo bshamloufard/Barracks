@@ -90,13 +90,7 @@ Each entry records a decision, what the project plan said about it, what we actu
 
 - **What the plan said:** Nothing specific; the protocol's close code says reconnecting will not help.
 - **What we did:** The supervisor logs an error and reconnects anyway.
-- **Why:** The offending frame is already gone, and exiting would strand an agent that is still working; the logged error points at the bug.
-
-## 2026-11-24: A bounded outage backlog that fails loudly
-
-- **What the plan said:** Every agent event is recorded in order; nothing should be lost silently.
-- **What we did:** While the control plane is unreachable, the supervisor keeps agent events in a backlog of at most 32 Mi characters of serialized frames and sends them in order on reconnect. If it fills, the supervisor exits with an error rather than drop durable events. Events in flight when a connection drops can still be lost; acknowledged delivery is deferred to Milestone 2.
-- **Why:** An unbounded backlog could exhaust the sandbox's memory, and a silent gap in history is worse than a visible failure.
+- **Why:** Exiting would strand an agent that is still working; the logged error points at the bug. Since delivery is acknowledged, an agent event the control plane refused is sent again after every reconnection, so such a bug stops the thread's history at that event, loudly, rather than leaving a gap. The supervisor checks every event against the protocol before sending it, so only a control plane and supervisor that disagree about the protocol can get there.
 
 ## 2026-11-24: Truncated tool output keeps its start and its end
 
@@ -137,8 +131,8 @@ Each entry records a decision, what the project plan said about it, what we actu
 ## 2026-11-24: A user's message is recorded before it is delivered
 
 - **What the plan said:** Every event is recorded in order before it is shown.
-- **What we did:** The control plane records a `user_message` and broadcasts it before sending it to the supervisor; if it cannot be sent, the sender is told it was recorded but not delivered.
-- **Why:** A message the agent acted on but history lacks could never be repaired, while one recorded but undelivered is visible, reported, and can be redelivered once delivery is acknowledged.
+- **What we did:** The control plane records a `user_message` and broadcasts it before sending it to the supervisor. One that cannot be sent waits in history and is delivered when a supervisor next attaches (see acknowledged delivery below).
+- **Why:** A message the agent acted on but history lacks could never be repaired, while one recorded but undelivered is visible and is redelivered.
 
 ## 2026-11-24: Streamed text is shown only for the message being produced
 
@@ -167,14 +161,8 @@ Each entry records a decision, what the project plan said about it, what we actu
 ## 2026-11-24: Every run the agent starts ends exactly once
 
 - **What the plan said:** Thread status and sandbox shutdown depend on Pi's run lifecycle.
-- **What we did:** The Pi harness guarantees that every `agent_run_started` is followed by exactly one `agent_run_settled` or `agent_failed`, including when Pi crashes or is stopped mid-run.
+- **What we did:** The Pi harness guarantees that every `agent_run_started` is followed by exactly one `agent_run_settled` or `agent_failed`, including when Pi crashes or is stopped mid-run. When the supervisor process itself dies mid-run, the control plane records the `agent_failed` (see below).
 - **Why:** Clients and, later, idle shutdown can then trust a run's end instead of guessing from silence.
-
-## 2026-11-24: Acknowledged delivery is deferred
-
-- **What the plan said:** Every event is recorded in order; nothing should be lost silently.
-- **What we did:** Messages are not yet acknowledged in either direction, so a message accepted by a half-open connection can be lost: an agent event on its way to the control plane, or a user message on its way to the supervisor, which the thread then shows as sent.
-- **Why:** It needs a resume protocol on both hops (acknowledgements and a supervisor hello), planned for the rest of Milestone 2; until then the outage backlog and record-before-deliver keep losses rare and visible.
 
 ## 2026-11-24: Each thread's supervisor gets a token of its own, stored as a digest
 
@@ -361,3 +349,45 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Nothing specific; the App Store requires in-app account deletion once the native apps let people create accounts.
 - **What we did:** Nothing yet. A user deleted in Supabase keeps their rows and running sandboxes here, and their last access token stays valid until it expires (at most an hour by default).
 - **Why:** Deletion must stop and destroy the user's sandboxes, delete their threads and history, delete the Supabase user with a secret key the control plane does not otherwise need, and close their connections. It is needed before the native apps (Milestone 8).
+
+## 2026-11-24: Acknowledged delivery between supervisor and control plane
+
+- **What the plan said:** Every agent event is recorded in order before it is shown; the control plane must recover when it restarts mid-task (Milestone 7).
+- **What we did:** Protocol version 2. Every supervisor connection opens with a hello naming the supervisor process (a fresh identifier per process) and how far the agent has been handed user messages; the welcome says which of that process's numbered agent events are recorded. Events stay with the supervisor until confirmed and are resent after every welcome; user messages carry their sequence and are acknowledged. This replaces the earlier best-effort delivery and its outage backlog. Borrowed from Open-Inspect's acknowledgement and resend of critical events and OpenHands' resumable event stream, reduced to two positions per direction.
+- **Why:** Railway gives a stopping service no grace by default, so a control plane can vanish with events in flight, and a half-open socket accepts writes that never arrive. Plain acknowledgements and positions are the least that makes delivery exact; nothing here touches stream fragments.
+
+## 2026-11-24: Idempotent recording is enforced by the event log
+
+- **What the plan said:** Nothing specific.
+- **What we did:** Supervisor events are stored with their process identifier and number, under a unique index (migration `0010`). A second insert of the same event fails inside the append statement, rolling its sequence back with it, and is reported as already recorded. The in-memory log keeps the same rule.
+- **Why:** A supervisor resends anything unconfirmed, and two control plane instances can record one thread for a moment during a deploy; only the store sees both. The migration is numbered `0010` so it cannot collide with migrations written alongside it.
+
+## 2026-11-24: Unconfirmed agent events are kept in memory, not on the sandbox's disk
+
+- **What the plan said:** Nothing should be lost silently.
+- **What we did:** The supervisor keeps unconfirmed events in memory only, at most 32 Mi characters of frames. They survive any outage of the control plane, but not the supervisor process dying: what dies with it is the events not yet confirmed, normally a few milliseconds' worth, or everything since a control plane outage began. When the limit is reached the supervisor exits with an error naming how many events it is losing.
+- **Why:** A disk journal would need a write and flush per event, truncation on every confirmation and crash-safe reading, to cover only the rare case of a supervisor dying during a control plane outage. Its effect is visible instead: the run that process left open is closed with a message saying work after the last shown step was lost. At the limit, waiting longer would exhaust memory and dropping events would leave a silent gap; exiting is loud, and the run is closed the same way.
+
+## 2026-11-24: How far the agent has been handed user messages is written before each hand-over
+
+- **What the plan said:** Nothing specific.
+- **What we did:** The supervisor writes the sequence of the message it is about to hand over to `BARRACK_SUPERVISOR_STATE_DIRECTORY` (in the image `/var/lib/barrack/supervisor`, closed to the agent) before handing it over, ignores redeliveries at or before it, and tells the control plane in every hello. The control plane also stores the furthest acknowledged position, and delivers after the larger of the two.
+- **Why:** Pi resumes its session after a supervisor restart, so a message given twice would appear twice in the agent's conversation. Writing first means a supervisor dying between the write and the hand-over loses that one message instead of repeating it. The control plane's own record keeps a fresh sandbox, which has no file, from being handed old messages.
+
+## 2026-11-24: A run left open by a supervisor process that is gone is closed as failed
+
+- **What the plan said:** Clear handling of sandbox failures (Milestone 7).
+- **What we did:** The event log remembers which supervisor process opened the run still open. When a supervisor attaches as a different process, the control plane records `agent_failed`, saying that the process supervising the agent stopped mid-run and was replaced and that work after the last shown step was lost. A supervisor that merely disconnects closes nothing, however long it is away; clients show it as not connected.
+- **Why:** `agent_failed` already ends a run in every client and says why, and the run did not complete, so `agent_run_settled` would be untrue. Identity, not time, decides, so a long outage never closes a run that is still going. A run whose sandbox never comes back stays open until thread lifecycle (Milestone 3) attaches a new supervisor.
+
+## 2026-11-24: Messages are accepted while no agent is connected
+
+- **What the plan said:** Sandboxes stop when idle and wake when there is work.
+- **What we did:** A message sent while no supervisor is connected is recorded instead of refused, and delivered when one attaches. Clients are sent `user_message_delivery_status` after their replay and whenever it advances, and the page shows later user messages as waiting for the agent. Sending is blocked only while the thread is loading or its sandbox could not be created.
+- **Why:** The next milestone lets a sandbox sleep, and a message is what should wake it. A one-off notice to the sender would be missed by every other device and lost on reconnect; a delivery position is replayed like any status.
+
+## 2026-11-24: Interrupts are delivered at most once
+
+- **What the plan said:** The user can interrupt the agent.
+- **What we did:** An interrupt goes only to a supervisor connected at that moment, and is neither stored, acknowledged nor resent; with none connected the user is told so, and that waiting messages will still be delivered.
+- **Why:** An interrupt resent after a reconnection would stop whatever the agent was doing by then, which nobody asked for. One lost to a dying connection shows as a run that keeps going, and the user can press again.

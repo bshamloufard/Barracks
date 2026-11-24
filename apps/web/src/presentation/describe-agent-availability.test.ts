@@ -77,10 +77,13 @@ describe("why sending is blocked", () => {
     );
   });
 
-  it("says the sandbox is starting, or that it could not be created", () => {
-    expect(describeWhySendingIsBlocked(stateWith({ state: "creating" }, neverConnected))).toMatch(
-      /sandbox is starting/,
-    );
+  it("is nothing while the sandbox is starting, since a message waits for the agent", () => {
+    expect(
+      describeWhySendingIsBlocked(stateWith({ state: "creating" }, neverConnected)),
+    ).toBeUndefined();
+  });
+
+  it("says when the sandbox could not be created, so no agent will ever read a message", () => {
     expect(
       describeWhySendingIsBlocked(stateWith({ state: "failed", reason: "x" }, neverConnected)),
     ).toMatch(/could not be created/);

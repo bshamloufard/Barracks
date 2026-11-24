@@ -136,7 +136,9 @@ describe("each user's threads", () => {
       expect(missingThread).toEqual(othersThread);
       const adaClient = await controlPlane.connectClient(adaThread.threadId, 0, adaToken);
       expect(adaClient.threadEvents).toEqual([]);
-      expect(supervisor.inbox.messages).toEqual([]);
+      expect(supervisor.inbox.messages).toEqual([
+        { type: "supervisor_welcome", lastRecordedEventNumber: 0 },
+      ]);
     },
   );
 
@@ -222,8 +224,8 @@ describe("an open connection's tokens", () => {
     client.sendUserMessage("Still here");
 
     await client.inbox.waitFor(
-      "a rejection, since no supervisor is connected",
-      (message) => message.type === "client_message_rejected",
+      "the message, recorded to wait for an agent",
+      (message) => message.type === "thread_event" && message.event.type === "user_message",
     );
   });
 

@@ -96,6 +96,11 @@ export const agentRunSettledEventSchema = z.strictObject({
  * The agent harness itself broke: its process would not start or exited
  * unexpectedly. Model provider failures are not reported this way; they end
  * an assistant message with `endReason: "errored"`.
+ *
+ * The control plane records one too, in place of the agent, to close a run
+ * that can no longer end: one whose supervisor was replaced by a new
+ * supervisor process (the sandbox or its supervisor restarted) before the
+ * run's end was recorded. Its `errorMessage` then says so.
  */
 export const agentFailedEventSchema = z.strictObject({
   type: z.literal("agent_failed"),

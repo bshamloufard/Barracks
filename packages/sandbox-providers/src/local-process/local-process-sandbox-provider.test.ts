@@ -79,6 +79,7 @@ describe("the local-process sandbox provider", () => {
       BARRACK_SUPERVISOR_TOKEN: "secret",
       BARRACK_WORKSPACE_DIRECTORY: workspaceDirectory,
       BARRACK_STATE_DIRECTORY: path.join(path.dirname(workspaceDirectory), "state"),
+      BARRACK_SUPERVISOR_STATE_DIRECTORY: path.join(path.dirname(workspaceDirectory), "supervisor"),
     });
     expect(launch.environment).not.toHaveProperty("DATABASE_PASSWORD");
   });

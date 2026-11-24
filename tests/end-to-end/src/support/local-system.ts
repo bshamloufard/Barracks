@@ -20,7 +20,16 @@ export const testClientOrigin = "http://end-to-end-test.localhost";
  * - `docker`: containers from the sandbox image, with `testDockerSettings`,
  *   which reach the control plane on the host as host.docker.internal.
  */
-export type SandboxChoice = { kind: "local-process" } | { kind: "docker" };
+export type SandboxChoice =
+  | {
+      kind: "local-process";
+      /**
+       * The supervisor command, if not the supervisor itself; see
+       * `restartable-supervisors.ts`.
+       */
+      supervisorCommand?: string[];
+    }
+  | { kind: "docker" };
 
 /**
  * What every sandbox's supervisor runs: the scripted fake agent, or the real
@@ -36,9 +45,14 @@ export type ControlPlaneOptions = {
   agent?: AgentChoice;
   /** The interface to listen on; loopback unless sandboxes must reach it from elsewhere. */
   host?: string;
+  /** A free one unless given, as when a control plane is started again in place of one that died. */
+  port?: number;
+  /** Postgres to keep threads and history in; memory unless given. */
+  databaseUrl?: string;
 };
 
 export type RunningControlPlane = {
+  port: number;
   /** For example `ws://127.0.0.1:41234`. */
   webSocketBaseUrl: string;
   /** For example `http://127.0.0.1:41234`. */
@@ -48,6 +62,11 @@ export type RunningControlPlane = {
   process: ServiceProcess;
   /** Stops the control plane, which stops the supervisors it started, and removes what it left. */
   stop(): Promise<void>;
+  /**
+   * Kills the control plane with SIGKILL, as a host does once its shutdown
+   * grace runs out: no connection is closed and no supervisor is stopped.
+   */
+  kill(): Promise<void>;
 };
 
 /**
@@ -64,7 +83,7 @@ export async function startControlPlane(
   options: ControlPlaneOptions,
 ): Promise<RunningControlPlane> {
   const host = options.host ?? "127.0.0.1";
-  const port = await findFreePort(host);
+  const port = options.port ?? (await findFreePort(host));
   const sandboxes = await sandboxVariables(options.sandboxes, port);
   const authentication = await authenticationFor(host);
   const controlPlane = new ServiceProcess("apps/control-plane/src/main.ts", {
@@ -77,6 +96,7 @@ export async function startControlPlane(
     ...authentication.variables,
     ...agentVariables(options.agent ?? { harness: "fake" }),
     ...sandboxes.variables,
+    ...databaseVariables(options.databaseUrl),
   });
   await controlPlane.waitForLogLine(
     "the control plane to listen",
@@ -84,6 +104,7 @@ export async function startControlPlane(
   );
   const httpBaseUrl = `http://${host}:${port}`;
   return {
+    port,
     webSocketBaseUrl: `ws://${host}:${port}`,
     httpBaseUrl,
     accessToken: await authentication.signIn(httpBaseUrl),
@@ -92,6 +113,9 @@ export async function startControlPlane(
       await controlPlane.stop();
       await authentication.stop();
       await sandboxes.removeLeftovers();
+    },
+    async kill() {
+      await controlPlane.kill();
     },
   };
 }
@@ -138,6 +162,14 @@ async function readDevelopmentAccessToken(httpBaseUrl: string): Promise<string> 
   return authentication.accessToken;
 }
 
+function databaseVariables(databaseUrl: string | undefined): NodeJS.ProcessEnv {
+  if (databaseUrl === undefined) {
+    return {};
+  }
+  // The test database runs on this machine.
+  return { BARRACK_DATABASE_URL: databaseUrl, BARRACK_DATABASE_TLS: "disable" };
+}
+
 function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {
   if (agent.harness === "fake") {
     return { BARRACK_AGENT_HARNESS: "fake" };
@@ -169,12 +201,14 @@ async function sandboxVariables(
       BARRACK_SANDBOX_PROVIDER: "local-process",
       BARRACK_ALLOW_UNISOLATED_SANDBOXES: "development-only",
       BARRACK_LOCAL_SANDBOX_DIRECTORY: sandboxesDirectory,
-      BARRACK_LOCAL_SUPERVISOR_COMMAND: JSON.stringify([
-        process.execPath,
-        "--import",
-        tsxLoaderUrl,
-        path.join(repositoryRoot, "apps/sandbox-supervisor/src/main.ts"),
-      ]),
+      BARRACK_LOCAL_SUPERVISOR_COMMAND: JSON.stringify(
+        sandboxes.supervisorCommand ?? [
+          process.execPath,
+          "--import",
+          tsxLoaderUrl,
+          path.join(repositoryRoot, "apps/sandbox-supervisor/src/main.ts"),
+        ],
+      ),
       BARRACK_SANDBOX_CONTROL_PLANE_URL: `ws://127.0.0.1:${port}`,
     },
     removeLeftovers: () => rm(sandboxesDirectory, { recursive: true, force: true }),

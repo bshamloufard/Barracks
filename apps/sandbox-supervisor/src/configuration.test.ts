@@ -6,6 +6,7 @@ const sharedVariables = {
   BARRACK_CONTROL_PLANE_URL: "ws://127.0.0.1:8787/",
   BARRACK_THREAD_ID: "thread-1",
   BARRACK_SUPERVISOR_TOKEN: "secret-token-value",
+  BARRACK_SUPERVISOR_STATE_DIRECTORY: "/var/lib/barrack/supervisor",
 };
 
 describe("readConfiguration", () => {
@@ -18,6 +19,7 @@ describe("readConfiguration", () => {
         controlPlaneUrl: "ws://127.0.0.1:8787",
         threadId: "thread-1",
         supervisorToken: "secret-token-value",
+        supervisorStateDirectory: "/var/lib/barrack/supervisor",
         logLevel: "info",
         agentHarness: { kind: "fake" },
       },
@@ -90,6 +92,17 @@ describe("readConfiguration", () => {
         "BARRACK_WORKSPACE_DIRECTORY: is required",
         "BARRACK_STATE_DIRECTORY: is required",
       ],
+    });
+  });
+
+  it("requires the supervisor's own state directory, whichever harness runs", () => {
+    const { BARRACK_SUPERVISOR_STATE_DIRECTORY: _, ...withoutStateDirectory } = sharedVariables;
+
+    const result = readConfiguration({ ...withoutStateDirectory, BARRACK_AGENT_HARNESS: "fake" });
+
+    expect(result).toEqual({
+      ok: false,
+      problems: ["BARRACK_SUPERVISOR_STATE_DIRECTORY: is required"],
     });
   });
 

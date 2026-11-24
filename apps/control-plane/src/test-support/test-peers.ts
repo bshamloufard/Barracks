@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   type AssistantTextFragment,
@@ -5,6 +6,7 @@ import {
   buildSupervisorEndpointPath,
   type ControlPlaneToClientMessage,
   type ControlPlaneToSupervisorMessage,
+  type DeliverUserMessage,
   parseControlPlaneToClientMessage,
   parseControlPlaneToSupervisorMessage,
   type RecordedThreadEvent,
@@ -13,13 +15,18 @@ import { openTestSocket, type TestSocket } from "./test-socket.js";
 
 /**
  * A stand-in for a sandbox supervisor that speaks the protocol but runs no
- * agent: the test decides which agent events and fragments it sends.
+ * agent: the test decides which agent events and fragments it sends, and
+ * when it acknowledges what it is sent. Unlike a real supervisor it keeps
+ * nothing for resending; a test resends by calling `sendAgentEventNumbered`.
  */
 export class FakeSupervisor {
+  readonly supervisorInstanceId: string;
   readonly #socket: TestSocket<ControlPlaneToSupervisorMessage>;
+  #nextEventNumber = 1;
 
-  constructor(socket: TestSocket<ControlPlaneToSupervisorMessage>) {
+  constructor(socket: TestSocket<ControlPlaneToSupervisorMessage>, supervisorInstanceId: string) {
     this.#socket = socket;
+    this.supervisorInstanceId = supervisorInstanceId;
   }
 
   get inbox() {
@@ -30,8 +37,43 @@ export class FakeSupervisor {
     return this.#socket.closed;
   }
 
+  /** The user messages it has been handed, in the order they arrived, redeliveries included. */
+  get deliveredUserMessages(): DeliverUserMessage[] {
+    return this.inbox.messages.filter((message) => message.type === "deliver_user_message");
+  }
+
+  /** Says hello and waits for the welcome, after which the control plane treats it as attached. */
+  async sayHello(userMessagesDeliveredThroughSequence = 0): Promise<void> {
+    this.#socket.sendMessage({
+      type: "supervisor_hello",
+      supervisorInstanceId: this.supervisorInstanceId,
+      userMessagesDeliveredThroughSequence,
+    });
+    await this.inbox.waitFor("the welcome", (message) => message.type === "supervisor_welcome");
+  }
+
+  /** Sends `event` with the next event number, as a supervisor sends each new event. */
   sendAgentEvent(event: AgentEvent): void {
-    this.#socket.sendMessage({ type: "agent_event", event });
+    this.sendAgentEventNumbered(this.#nextEventNumber, event);
+    this.#nextEventNumber += 1;
+  }
+
+  sendAgentEventNumbered(eventNumber: number, event: AgentEvent): void {
+    this.#socket.sendMessage({ type: "agent_event", eventNumber, event });
+  }
+
+  acknowledgeUserMessages(throughSequence: number): void {
+    this.#socket.sendMessage({ type: "user_messages_delivered", throughSequence });
+  }
+
+  /** Resolves once the control plane has acknowledged events up to `eventNumber`. */
+  waitUntilRecorded(eventNumber: number): Promise<void> {
+    return this.inbox.waitUntil(`events through ${eventNumber} are acknowledged`, (messages) =>
+      messages.some(
+        (message) =>
+          message.type === "agent_events_recorded" && message.throughEventNumber >= eventNumber,
+      ),
+    );
   }
 
   sendTextFragment(fragment: Omit<AssistantTextFragment, "type">): void {
@@ -102,17 +144,23 @@ export class TestClient {
   }
 }
 
+export type FakeSupervisorOptions = {
+  /** A fresh one by default; reuse one to act as the same supervisor process reconnecting. */
+  supervisorInstanceId?: string;
+};
+
 export async function connectFakeSupervisor(
   baseUrl: string,
   threadId: string,
   supervisorToken: string,
+  options: FakeSupervisorOptions = {},
 ): Promise<FakeSupervisor> {
   const socket = await openTestSocket(
     `${baseUrl}${buildSupervisorEndpointPath({ threadId })}`,
     { Authorization: `Bearer ${supervisorToken}` },
     parseControlPlaneToSupervisorMessage,
   );
-  return new FakeSupervisor(socket);
+  return new FakeSupervisor(socket, options.supervisorInstanceId ?? randomUUID());
 }
 
 /**

@@ -1,23 +1,30 @@
-import type { IncomingMessage } from "node:http";
+import type { ClientRequest, IncomingMessage } from "node:http";
 import {
+  type AgentEvent,
+  type AgentEventMessage,
   buildSupervisorEndpointPath,
   type ControlPlaneToSupervisorMessage,
   closeCodes,
+  type DeliverUserMessage,
+  type InterruptAgentMessage,
   parseControlPlaneToSupervisorMessage,
+  type StreamFragment,
   type SupervisorToControlPlaneMessage,
 } from "@barrack/protocol";
 import WebSocket, { type RawData } from "ws";
 import type { Logger } from "../logger.js";
-import { AgentEventBacklog } from "./agent-event-backlog.js";
 import { computeReconnectDelay, type ReconnectDelaySettings } from "./reconnect-delay.js";
+import { UnconfirmedAgentEvents } from "./unconfirmed-agent-events.js";
 
 export type ConnectionTiming = ReconnectDelaySettings & {
   /** How often the supervisor pings the control plane. */
   heartbeatIntervalInMilliseconds: number;
   /** Silence from the control plane longer than this means the connection is dead. */
   heartbeatTimeoutInMilliseconds: number;
-  /** Agent events kept during an outage, in characters of serialized frames. */
-  backlogMaximumLength: number;
+  /** Agent events kept until the control plane confirms them, in characters of serialized frames. */
+  unconfirmedEventsMaximumLength: number;
+  /** How long closing waits for the control plane to confirm the last events. */
+  closingConfirmationTimeoutInMilliseconds: number;
 };
 
 export const defaultConnectionTiming: ConnectionTiming = {
@@ -28,16 +35,24 @@ export const defaultConnectionTiming: ConnectionTiming = {
   // Tool output, the largest event, is capped at 64 Ki characters, so this
   // holds at least 512 of them: far more than an agent produces while a
   // control plane restarts, and about 64 MB of memory at most.
-  backlogMaximumLength: 32 * 1024 * 1024,
+  unconfirmedEventsMaximumLength: 32 * 1024 * 1024,
+  closingConfirmationTimeoutInMilliseconds: 5_000,
 };
+
+/** What the control plane asks of the agent; the rest of what it sends is handled here. */
+export type AgentRequest = DeliverUserMessage | InterruptAgentMessage;
 
 export type ControlPlaneConnectionSettings = {
   /** For example `ws://127.0.0.1:8787`, without a trailing slash. */
   controlPlaneUrl: string;
   threadId: string;
   supervisorToken: string;
+  /** Identifies this supervisor process to the control plane; minted afresh each time it starts. */
+  supervisorInstanceId: string;
+  /** How far the agent has been handed user messages, told to the control plane on every connection. */
+  readUserMessagesDeliveredThrough: () => number;
   logger: Logger;
-  onMessage: (message: ControlPlaneToSupervisorMessage) => void;
+  onAgentRequest: (request: AgentRequest) => void;
   /** The connection can never succeed again; the supervisor should exit. */
   onFatalError: (error: Error) => void;
   timing?: Partial<ConnectionTiming>;
@@ -52,23 +67,36 @@ export type ControlPlaneConnectionSettings = {
 const retryableClientErrorStatusCodes = [408, 429];
 const handshakeTimeoutInMilliseconds = 10_000;
 const closeTimeoutInMilliseconds = 2_000;
+/** Enough of a refusal's body to say why, such as which protocol version was expected. */
+const maximumRefusalReasonLength = 1024;
 const normalClosureCode = 1000;
 
 /**
  * The supervisor's one connection to the control plane. The supervisor dials
  * out and keeps redialling, so the sandbox needs no inbound networking.
  *
- * While disconnected, agent events wait in a bounded backlog and are sent in
- * order on reconnect; stream fragments are dropped, because the completed
- * message that follows them is the record. Events in flight when a
- * connection drops can be lost: acknowledged delivery comes in Milestone 2.
+ * Every connection starts with the handshake described in
+ * `packages/protocol/src/supervisor-messages.ts`: a hello, then the
+ * welcome, which says which of this process's agent events are recorded.
+ * Each agent event is numbered and kept until the control plane confirms it
+ * is recorded, and everything unconfirmed is sent again, in order, after
+ * each welcome, so an event survives the connection dying, half-open or
+ * not, and the control plane restarting. Stream fragments are sent only on
+ * a welcomed connection and otherwise dropped: the completed message that
+ * follows them is the record.
+ *
+ * Unconfirmed events are kept in memory only. They survive any outage of
+ * the control plane but not this process ending; see the supervisor's README.
  */
 export class ControlPlaneConnection {
   readonly #settings: ControlPlaneConnectionSettings;
   readonly #timing: ConnectionTiming;
   readonly #logger: Logger;
-  readonly #backlog: AgentEventBacklog;
+  readonly #unconfirmedEvents: UnconfirmedAgentEvents;
+  #nextEventNumber = 1;
   #socket: WebSocket | undefined;
+  /** Set once the current socket's hello has been answered; only then may events go out. */
+  #isWelcomed = false;
   #reconnectAttempt = 0;
   #reconnectTimer: NodeJS.Timeout | undefined;
   #heartbeatTimer: NodeJS.Timeout | undefined;
@@ -76,51 +104,75 @@ export class ControlPlaneConnection {
   #droppedFragmentCount = 0;
   #isClosedByUs = false;
   #hasFailed = false;
+  #allConfirmed: PromiseWithResolvers<void> | undefined;
 
   constructor(settings: ControlPlaneConnectionSettings) {
     this.#settings = settings;
     this.#timing = { ...defaultConnectionTiming, ...settings.timing };
     this.#logger = settings.logger;
-    this.#backlog = new AgentEventBacklog(this.#timing.backlogMaximumLength);
+    this.#unconfirmedEvents = new UnconfirmedAgentEvents(
+      this.#timing.unconfirmedEventsMaximumLength,
+    );
   }
 
   open(): void {
     this.#connect();
   }
 
-  send(message: SupervisorToControlPlaneMessage): void {
+  /**
+   * Numbers the event, keeps it until it is confirmed, and sends it now if
+   * the connection is welcomed. If too much is waiting for confirmation, the
+   * connection fails for good, and the supervisor exits, rather than drop an
+   * event or run out of memory.
+   */
+  sendAgentEvent(event: AgentEvent): void {
     // Once closed or failed for good the supervisor is exiting, and the
     // reason has already been logged.
     if (this.#hasFailed || this.#isClosedByUs) {
       return;
     }
+    const eventNumber = this.#nextEventNumber;
+    this.#nextEventNumber += 1;
+    const message: AgentEventMessage = { type: "agent_event", eventNumber, event };
     const frame = JSON.stringify(message);
-    const socket = this.#socket;
-    if (socket !== undefined && socket.readyState === WebSocket.OPEN) {
-      this.#sendFrame(socket, frame);
-      return;
-    }
-    if (message.type === "stream_fragment") {
-      this.#droppedFragmentCount += 1;
-      return;
-    }
-    if (!this.#backlog.add(frame)) {
+    if (!this.#unconfirmedEvents.add({ eventNumber, frame })) {
       this.#fail(
         new Error(
-          `The control plane has been unreachable for too long: more than ${this.#timing.backlogMaximumLength} characters of agent events are waiting to be sent.`,
+          `The control plane has not confirmed this supervisor's agent events for too long: more than ${this.#timing.unconfirmedEventsMaximumLength} characters of them are waiting. The ${this.#unconfirmedEvents.count} unconfirmed events are lost with this supervisor.`,
         ),
       );
+      return;
+    }
+    this.#sendOnWelcomedSocket(frame);
+  }
+
+  sendStreamFragment(fragment: StreamFragment): void {
+    const frame = JSON.stringify({ type: "stream_fragment", fragment });
+    if (!this.#sendOnWelcomedSocket(frame)) {
+      this.#droppedFragmentCount += 1;
     }
   }
 
+  /** Not kept for resending: every new connection's hello says the same. */
+  acknowledgeUserMessages(throughSequence: number): void {
+    this.#sendOnWelcomedSocket(
+      JSON.stringify({ type: "user_messages_delivered", throughSequence }),
+    );
+  }
+
+  /**
+   * Waits a little for the control plane to confirm the last events, so a
+   * supervisor stopping cleanly loses none of them, then closes.
+   */
   async close(): Promise<void> {
+    await this.#waitUntilAllConfirmed();
     this.#isClosedByUs = true;
     clearTimeout(this.#reconnectTimer);
     this.#stopHeartbeat();
-    if (this.#backlog.frameCount > 0) {
-      this.#logger.warn(
-        { eventCount: this.#backlog.frameCount },
-        "Closing with agent events the control plane never received",
+    if (this.#unconfirmedEvents.count > 0) {
+      this.#logger.error(
+        { eventCount: this.#unconfirmedEvents.count },
+        "Closing with agent events the control plane never confirmed; they are lost",
       );
     }
     const socket = this.#socket;
@@ -137,6 +189,19 @@ export class ControlPlaneConnection {
     });
   }
 
+  async #waitUntilAllConfirmed(): Promise<void> {
+    if (this.#unconfirmedEvents.count === 0 || this.#hasFailed) {
+      return;
+    }
+    this.#allConfirmed ??= Promise.withResolvers<void>();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.#timing.closingConfirmationTimeoutInMilliseconds);
+    });
+    await Promise.race([this.#allConfirmed.promise, timedOut]);
+    clearTimeout(timer);
+  }
+
   #connect(): void {
     const url = `${this.#settings.controlPlaneUrl}${buildSupervisorEndpointPath({ threadId: this.#settings.threadId })}`;
     this.#logger.info({ url }, "Connecting to the control plane");
@@ -145,11 +210,14 @@ export class ControlPlaneConnection {
       handshakeTimeout: handshakeTimeoutInMilliseconds,
     });
     this.#socket = socket;
+    this.#isWelcomed = false;
     socket.on("open", () => this.#handleOpen(socket));
     socket.on("message", (data, isBinary) => this.#handleFrame(data, isBinary));
     socket.on("ping", () => this.#noteTraffic());
     socket.on("pong", () => this.#noteTraffic());
-    socket.on("unexpected-response", (_request, response) => this.#handleRefusal(socket, response));
+    socket.on("unexpected-response", (request, response) =>
+      this.#handleRefusal(socket, request, response),
+    );
     socket.on("error", (error) =>
       this.#logger.warn({ err: error }, "Control plane connection error"),
     );
@@ -159,15 +227,86 @@ export class ControlPlaneConnection {
   #handleOpen(socket: WebSocket): void {
     this.#reconnectAttempt = 0;
     this.#startHeartbeat(socket);
-    const backlogFrames = this.#backlog.takeAll();
+    const hello: SupervisorToControlPlaneMessage = {
+      type: "supervisor_hello",
+      supervisorInstanceId: this.#settings.supervisorInstanceId,
+      userMessagesDeliveredThroughSequence: this.#settings.readUserMessagesDeliveredThrough(),
+    };
     this.#logger.info(
-      { backlogEventCount: backlogFrames.length, droppedFragmentCount: this.#droppedFragmentCount },
-      "Connected to the control plane",
+      { userMessagesDeliveredThroughSequence: hello.userMessagesDeliveredThroughSequence },
+      "Connected to the control plane; saying hello",
+    );
+    this.#sendFrame(socket, JSON.stringify(hello));
+  }
+
+  /**
+   * The control plane may have recorded events whose confirmation was lost,
+   * so it says how far it got and those are forgotten before the rest go
+   * out again. It can never be behind what it confirmed earlier unless its
+   * history lost events, which this supervisor cannot repair.
+   */
+  #handleWelcome(lastRecordedEventNumber: number): void {
+    const socket = this.#socket;
+    if (socket === undefined) {
+      return;
+    }
+    const lastConfirmedEventNumber =
+      (this.#unconfirmedEvents.oldestEventNumber ?? this.#nextEventNumber) - 1;
+    const isImpossible =
+      lastRecordedEventNumber < lastConfirmedEventNumber ||
+      lastRecordedEventNumber >= this.#nextEventNumber;
+    if (isImpossible) {
+      this.#fail(
+        new Error(
+          `The control plane says it recorded this supervisor's events through number ${lastRecordedEventNumber}, but it had confirmed them through ${lastConfirmedEventNumber} and only ${this.#nextEventNumber - 1} exist; its history no longer matches what it confirmed.`,
+        ),
+      );
+      socket.terminate();
+      return;
+    }
+    this.#forgetConfirmedEvents(lastRecordedEventNumber);
+    this.#isWelcomed = true;
+    this.#logger.info(
+      {
+        lastRecordedEventNumber,
+        resentEventCount: this.#unconfirmedEvents.count,
+        droppedFragmentCount: this.#droppedFragmentCount,
+      },
+      "Welcomed by the control plane; sending the events it lacks",
     );
     this.#droppedFragmentCount = 0;
-    for (const frame of backlogFrames) {
+    for (const { frame } of this.#unconfirmedEvents.frames) {
       this.#sendFrame(socket, frame);
     }
+  }
+
+  #handleEventsRecorded(throughEventNumber: number): void {
+    if (throughEventNumber >= this.#nextEventNumber) {
+      this.#logger.warn(
+        { throughEventNumber, lastEventNumber: this.#nextEventNumber - 1 },
+        "Ignoring a confirmation of agent events this supervisor never sent",
+      );
+      return;
+    }
+    this.#forgetConfirmedEvents(throughEventNumber);
+  }
+
+  #forgetConfirmedEvents(throughEventNumber: number): void {
+    this.#unconfirmedEvents.forgetThrough(throughEventNumber);
+    if (this.#unconfirmedEvents.count === 0) {
+      this.#allConfirmed?.resolve();
+      this.#allConfirmed = undefined;
+    }
+  }
+
+  /** Returns whether the frame went out, which it does only on a welcomed, open socket. */
+  #sendOnWelcomedSocket(frame: string): boolean {
+    const socket = this.#socket;
+    if (!this.#isWelcomed || socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    this.#sendFrame(socket, frame);
+    return true;
   }
 
   #sendFrame(socket: WebSocket, frame: string): void {
@@ -192,42 +331,71 @@ export class ControlPlaneConnection {
       );
       return;
     }
-    this.#settings.onMessage(parsed.value);
+    this.#handleMessage(parsed.value);
+  }
+
+  #handleMessage(message: ControlPlaneToSupervisorMessage): void {
+    switch (message.type) {
+      case "supervisor_welcome":
+        this.#handleWelcome(message.lastRecordedEventNumber);
+        return;
+      case "agent_events_recorded":
+        this.#handleEventsRecorded(message.throughEventNumber);
+        return;
+      case "deliver_user_message":
+      case "interrupt_agent":
+        this.#settings.onAgentRequest(message);
+        return;
+    }
   }
 
   /**
    * The control plane answered the upgrade with an HTTP error. A refusal
-   * that can never turn into a yes ends the supervisor; anything else (the
-   * control plane starting up, a proxy hiccup) is retried.
+   * that can never turn into a yes ends the supervisor, with the reason the
+   * control plane gave (such as the protocol version it expected); anything
+   * else (the control plane starting up, a proxy hiccup) is retried.
    */
-  #handleRefusal(socket: WebSocket, response: IncomingMessage): void {
+  #handleRefusal(socket: WebSocket, request: ClientRequest, response: IncomingMessage): void {
     const statusCode = response.statusCode ?? 0;
     this.#logger.warn({ statusCode }, "The control plane refused the connection");
-    if (isPermanentRefusal(statusCode)) {
-      this.#fail(
+    if (!isPermanentRefusal(statusCode)) {
+      // Aborts the handshake; `close` follows and schedules a retry.
+      socket.terminate();
+      return;
+    }
+    // Given up at once, so the socket closing while the reason is read
+    // cannot schedule a retry.
+    this.#hasFailed = true;
+    clearTimeout(this.#reconnectTimer);
+    void readRefusalReason(response).then((reason) => {
+      request.destroy();
+      socket.terminate();
+      this.#reportFatalError(
         new Error(
-          `The control plane refused this supervisor's connection (HTTP ${statusCode}), and retrying cannot change that.`,
+          `The control plane refused this supervisor's connection (HTTP ${statusCode}: ${reason}), and retrying cannot change that.`,
         ),
       );
-    }
-    // Aborts the handshake; `close` follows and decides whether to retry.
-    socket.terminate();
+    });
   }
 
   #handleClose(code: number, reason: string): void {
     this.#stopHeartbeat();
     this.#socket = undefined;
+    this.#isWelcomed = false;
     if (this.#isClosedByUs || this.#hasFailed) {
       return;
     }
-    this.#logger.warn({ code, reason }, "Disconnected from the control plane");
+    this.#logger.warn(
+      { code, reason, unconfirmedEventCount: this.#unconfirmedEvents.count },
+      "Disconnected from the control plane",
+    );
     if (code === closeCodes.supersededByNewerSupervisor) {
       this.#fail(new Error("A newer supervisor connected for this thread, so this one must stop."));
       return;
     }
     if (code === closeCodes.invalidMessage) {
-      // The frame is gone either way, and leaving would strand the agent, so
-      // the supervisor reconnects; the error points at the bug to fix.
+      // Leaving would strand the agent, so the supervisor reconnects; the
+      // error points at the bug to fix.
       this.#logger.error({ reason }, "The control plane rejected a message from this supervisor");
     }
     this.#scheduleReconnect();
@@ -275,6 +443,11 @@ export class ControlPlaneConnection {
     }
     this.#hasFailed = true;
     clearTimeout(this.#reconnectTimer);
+    this.#reportFatalError(error);
+  }
+
+  #reportFatalError(error: Error): void {
+    this.#allConfirmed?.resolve();
     this.#logger.error({ err: error }, "The control plane connection failed for good");
     this.#settings.onFatalError(error);
   }
@@ -283,4 +456,19 @@ export class ControlPlaneConnection {
 function isPermanentRefusal(statusCode: number): boolean {
   const isClientError = statusCode >= 400 && statusCode < 500;
   return isClientError && !retryableClientErrorStatusCodes.includes(statusCode);
+}
+
+/** The first line of the refusal's body, which the control plane fills with the reason. */
+function readRefusalReason(response: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = "";
+    const finish = () => resolve(body.trim().split("\n")[0] || "no reason given");
+    response.setEncoding("utf8");
+    response.on("data", (chunk: string) => {
+      body = (body + chunk).slice(0, maximumRefusalReasonLength);
+    });
+    response.once("end", finish);
+    response.once("error", finish);
+    response.once("close", finish);
+  });
 }

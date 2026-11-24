@@ -19,6 +19,7 @@ const sharedVariablesSchema = z.object({
     .transform((url) => url.replace(/\/+$/, "")),
   BARRACK_THREAD_ID: threadIdSchema,
   BARRACK_SUPERVISOR_TOKEN: z.string().min(1),
+  BARRACK_SUPERVISOR_STATE_DIRECTORY: absoluteDirectorySchema,
   BARRACK_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -48,6 +49,12 @@ type SharedConfiguration = {
   threadId: string;
   /** Proves to the control plane that this supervisor belongs to the thread. Never logged. */
   supervisorToken: string;
+  /**
+   * Where the supervisor keeps what must survive its own restart (how far
+   * the agent has been handed user messages). Only the supervisor's user
+   * should be able to write to it.
+   */
+  supervisorStateDirectory: string;
   logLevel: LogLevel;
 };
 
@@ -91,6 +98,7 @@ function toConfiguration(variables: Variables): SupervisorConfiguration {
     controlPlaneUrl: variables.BARRACK_CONTROL_PLANE_URL,
     threadId: variables.BARRACK_THREAD_ID,
     supervisorToken: variables.BARRACK_SUPERVISOR_TOKEN,
+    supervisorStateDirectory: variables.BARRACK_SUPERVISOR_STATE_DIRECTORY,
     logLevel: variables.BARRACK_LOG_LEVEL,
     agentHarness:
       variables.BARRACK_AGENT_HARNESS === "fake"

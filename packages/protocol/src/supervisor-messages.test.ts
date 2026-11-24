@@ -71,7 +71,7 @@ function supervisorRejectionOf(message: unknown): string {
 
 describe("supervisor to control plane messages", () => {
   it.each(everyAgentEvent)("carry the $type agent event unchanged", (event) => {
-    const message: SupervisorToControlPlaneMessage = { type: "agent_event", event };
+    const message: SupervisorToControlPlaneMessage = { type: "agent_event", eventNumber: 1, event };
 
     expect(parseSupervisorToControlPlaneMessage(frameOf(message))).toEqual({
       ok: true,
@@ -100,6 +100,7 @@ describe("supervisor to control plane messages", () => {
   it("cannot carry a user message, which only the control plane records", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: { type: "user_message", messageId: "user-1", text: "Hello" },
     });
 
@@ -112,13 +113,18 @@ describe("supervisor to control plane messages", () => {
 
   it("reject an unknown event type", () => {
     expect(
-      supervisorRejectionOf({ type: "agent_event", event: { type: "turn_started" } }),
+      supervisorRejectionOf({
+        type: "agent_event",
+        eventNumber: 1,
+        event: { type: "turn_started" },
+      }),
     ).toContain("event.type");
   });
 
   it("reject properties the protocol does not define", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: { type: "agent_run_settled", wasInterrupted: false, willRetry: false },
     });
 
@@ -127,13 +133,18 @@ describe("supervisor to control plane messages", () => {
 
   it("reject an event with a missing field", () => {
     expect(
-      supervisorRejectionOf({ type: "agent_event", event: { type: "agent_run_settled" } }),
+      supervisorRejectionOf({
+        type: "agent_event",
+        eventNumber: 1,
+        event: { type: "agent_run_settled" },
+      }),
     ).toContain("event.wasInterrupted");
   });
 
   it("reject an empty identifier", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: { type: "assistant_message", messageId: "", content: [], endReason: "completed" },
     });
 
@@ -143,6 +154,7 @@ describe("supervisor to control plane messages", () => {
   it("reject an identifier longer than the limit", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: {
         type: "tool_execution_started",
         toolCallId: "x".repeat(maximumIdentifierLength + 1),
@@ -157,6 +169,7 @@ describe("supervisor to control plane messages", () => {
   it("reject tool output the supervisor should have truncated", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: {
         type: "tool_execution_finished",
         toolCallId: "call-1",
@@ -176,6 +189,7 @@ describe("supervisor to control plane messages", () => {
   it("reject tool arguments that are not a JSON object", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: {
         type: "tool_execution_started",
         toolCallId: "call-1",
@@ -190,6 +204,7 @@ describe("supervisor to control plane messages", () => {
   it("reject an errored assistant message without an error message", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: { type: "assistant_message", messageId: "a", content: [], endReason: "errored" },
     });
 
@@ -199,6 +214,7 @@ describe("supervisor to control plane messages", () => {
   it("reject an error message on an assistant message that did not error", () => {
     const errorMessage = supervisorRejectionOf({
       type: "agent_event",
+      eventNumber: 1,
       event: {
         type: "assistant_message",
         messageId: "a",
@@ -227,9 +243,77 @@ describe("supervisor to control plane messages", () => {
   });
 });
 
+describe("the supervisor's acknowledgement messages", () => {
+  const everyMessage: SupervisorToControlPlaneMessage[] = [
+    {
+      type: "supervisor_hello",
+      supervisorInstanceId: "a5f1c0de-0000-4000-8000-000000000001",
+      userMessagesDeliveredThroughSequence: 0,
+    },
+    { type: "user_messages_delivered", throughSequence: 7 },
+  ];
+
+  it.each(everyMessage)("carry $type unchanged", (message) => {
+    expect(parseSupervisorToControlPlaneMessage(frameOf(message))).toEqual({
+      ok: true,
+      value: message,
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "reject an agent event numbered %d",
+    (eventNumber) => {
+      const errorMessage = supervisorRejectionOf({
+        type: "agent_event",
+        eventNumber,
+        event: { type: "agent_run_started" },
+      });
+
+      expect(errorMessage).toContain("eventNumber");
+    },
+  );
+
+  it("reject an agent event without a number", () => {
+    expect(
+      supervisorRejectionOf({ type: "agent_event", event: { type: "agent_run_started" } }),
+    ).toContain("eventNumber");
+  });
+
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    "reject a hello claiming user messages delivered through %d",
+    (userMessagesDeliveredThroughSequence) => {
+      const errorMessage = supervisorRejectionOf({
+        type: "supervisor_hello",
+        supervisorInstanceId: "instance-1",
+        userMessagesDeliveredThroughSequence,
+      });
+
+      expect(errorMessage).toContain("userMessagesDeliveredThroughSequence");
+    },
+  );
+
+  it("reject a hello whose instance identifier is longer than the limit", () => {
+    const errorMessage = supervisorRejectionOf({
+      type: "supervisor_hello",
+      supervisorInstanceId: "x".repeat(maximumIdentifierLength + 1),
+      userMessagesDeliveredThroughSequence: 0,
+    });
+
+    expect(errorMessage).toContain("supervisorInstanceId");
+  });
+
+  it("reject an acknowledgement of user messages through sequence 0", () => {
+    expect(
+      supervisorRejectionOf({ type: "user_messages_delivered", throughSequence: 0 }),
+    ).toContain("throughSequence");
+  });
+});
+
 describe("control plane to supervisor messages", () => {
   const everyMessage: ControlPlaneToSupervisorMessage[] = [
-    { type: "deliver_user_message", messageId: "user-1", text: "Please say hello" },
+    { type: "supervisor_welcome", lastRecordedEventNumber: 0 },
+    { type: "agent_events_recorded", throughEventNumber: 12 },
+    { type: "deliver_user_message", sequence: 3, messageId: "user-1", text: "Please say hello" },
     { type: "interrupt_agent" },
   ];
 
@@ -242,15 +326,31 @@ describe("control plane to supervisor messages", () => {
 
   it("reject a user message with no text", () => {
     const result = parseControlPlaneToSupervisorMessage(
-      frameOf({ type: "deliver_user_message", messageId: "user-1", text: "" }),
+      frameOf({ type: "deliver_user_message", sequence: 1, messageId: "user-1", text: "" }),
     );
 
     expect(result).toEqual({ ok: false, errorMessage: expect.stringContaining("text") });
   });
 
+  it("reject a user message without its sequence", () => {
+    const result = parseControlPlaneToSupervisorMessage(
+      frameOf({ type: "deliver_user_message", messageId: "user-1", text: "Hello" }),
+    );
+
+    expect(result).toEqual({ ok: false, errorMessage: expect.stringContaining("sequence") });
+  });
+
+  it("reject an acknowledgement of agent events through number 0", () => {
+    const result = parseControlPlaneToSupervisorMessage(
+      frameOf({ type: "agent_events_recorded", throughEventNumber: 0 }),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
   it("reject messages meant for the control plane", () => {
     const result = parseControlPlaneToSupervisorMessage(
-      frameOf({ type: "agent_event", event: { type: "agent_run_started" } }),
+      frameOf({ type: "agent_event", eventNumber: 1, event: { type: "agent_run_started" } }),
     );
 
     expect(result.ok).toBe(false);

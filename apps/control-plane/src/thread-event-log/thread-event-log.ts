@@ -1,9 +1,16 @@
-import type { RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
+import type { AgentEvent, RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
 
 /**
  * The durable, ordered history of every thread. It is the only place that
  * assigns sequences, so it is what makes "a reconnecting client receives
  * exactly what it missed" true.
+ *
+ * It also keeps the few positions that acknowledged delivery between a
+ * thread's supervisor and the control plane rests on (see the handshake in
+ * `packages/protocol/src/supervisor-messages.ts`), next to the history they
+ * describe, so each changes in the same step as the events it is about:
+ * which supervisor events are recorded, which supervisor started the run
+ * still open, and how far user messages have been handed to the agent.
  *
  * Reads are bounded: a long thread holds tens of thousands of events, some
  * of them tool output tens of kilobytes long, so history is read a page at a
@@ -11,12 +18,26 @@ import type { RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
  */
 export interface ThreadEventLog {
   /**
-   * Stores an event as the thread's next one. The log assigns its sequence (1
-   * for a thread's first event, then one more each time, with no gaps) and the
-   * time it was recorded. Concurrent appends to one thread each get a distinct
-   * sequence; the order between them is whichever the log processes first.
+   * Stores an event the control plane itself originates (a user's message,
+   * or the end of a run nobody else can end) as the thread's next one. The
+   * log assigns its sequence (1 for a thread's first event, then one more
+   * each time, with no gaps) and the time it was recorded. Concurrent
+   * appends to one thread each get a distinct sequence; the order between
+   * them is whichever the log processes first.
    */
   append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent>;
+
+  /**
+   * Stores an agent event a supervisor sent, exactly once: an event with the
+   * same origin is never stored twice, however often it is appended, even
+   * by two control planes at once. The second and later appends store
+   * nothing and report that it was already recorded.
+   */
+  appendSupervisorEvent(
+    threadId: string,
+    event: AgentEvent,
+    origin: SupervisorEventOrigin,
+  ): Promise<SupervisorEventAppendOutcome>;
 
   /**
    * The sequence of the thread's newest event, or 0 if it has none. Every
@@ -31,10 +52,51 @@ export interface ThreadEventLog {
    * order, starting with the first of them.
    */
   readEvents(threadId: string, page: ThreadEventPage): Promise<RecordedThreadEvent[]>;
+
+  /** What a supervisor instance connecting to the thread must be told, and what it must be checked against. */
+  readSupervisorResumePoint(
+    threadId: string,
+    supervisorInstanceId: string,
+  ): Promise<SupervisorResumePoint>;
+
+  /**
+   * How far the thread's user messages have been handed to an agent: the
+   * largest sequence ever passed to `recordUserMessagesDelivered`, or 0.
+   */
+  readUserMessagesDeliveredThrough(threadId: string): Promise<number>;
+
+  /** Notes that every user message up to `throughSequence` was handed to an agent. It never moves back. */
+  recordUserMessagesDelivered(threadId: string, throughSequence: number): Promise<void>;
 }
 
 export type ThreadEventPage = {
   afterSequence: number;
   throughSequence: number;
   limit: number;
+};
+
+/**
+ * Identifies an agent event by where it came from: the supervisor process
+ * that sent it (an identifier minted each time a supervisor starts) and its
+ * number among that process's events.
+ */
+export type SupervisorEventOrigin = { supervisorInstanceId: string; eventNumber: number };
+
+export type SupervisorEventAppendOutcome =
+  | { isAlreadyRecorded: false; recordedEvent: RecordedThreadEvent }
+  | { isAlreadyRecorded: true };
+
+export type SupervisorResumePoint = {
+  /** As `readNewestSequence`. */
+  newestSequence: number;
+  /** The largest event number recorded from this supervisor instance, or 0 for none. */
+  lastRecordedEventNumber: number;
+  /** As `readUserMessagesDeliveredThrough`. */
+  userMessagesDeliveredThrough: number;
+  /**
+   * The instance whose `agent_run_started` is the last run boundary in the
+   * thread's history, if no `agent_run_settled` or `agent_failed` follows
+   * it; undefined when no run is open.
+   */
+  openRunSupervisorInstanceId: string | undefined;
 };

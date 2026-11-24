@@ -253,6 +253,7 @@ export class LocalProcessSandboxProvider implements SandboxProvider {
       ...environment,
       BARRACK_WORKSPACE_DIRECTORY: workspaceDirectoryIn(sandbox.directory),
       BARRACK_STATE_DIRECTORY: stateDirectoryIn(sandbox.directory),
+      BARRACK_SUPERVISOR_STATE_DIRECTORY: supervisorStateDirectoryIn(sandbox.directory),
       ...sandbox.supervisorEnvironment,
     };
   }
@@ -274,6 +275,11 @@ function stateDirectoryIn(sandboxDirectory: string): string {
   return path.join(sandboxDirectory, "state");
 }
 
+/** What the supervisor keeps for itself across its own restarts; see the supervisor's README. */
+function supervisorStateDirectoryIn(sandboxDirectory: string): string {
+  return path.join(sandboxDirectory, "supervisor");
+}
+
 /**
  * The workspace is made a Git repository of its own. On a real provider it
  * is a directory on a fresh computer, inside no repository; here it may well
@@ -284,6 +290,7 @@ async function prepareDirectories(sandboxDirectory: string): Promise<void> {
   const workspaceDirectory = workspaceDirectoryIn(sandboxDirectory);
   await mkdir(workspaceDirectory, { recursive: true });
   await mkdir(stateDirectoryIn(sandboxDirectory), { recursive: true });
+  await mkdir(supervisorStateDirectoryIn(sandboxDirectory), { recursive: true });
   await promisify(execFile)("git", ["init", "--quiet"], { cwd: workspaceDirectory });
 }
 
