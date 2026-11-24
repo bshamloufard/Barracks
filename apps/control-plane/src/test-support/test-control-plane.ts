@@ -249,6 +249,7 @@ export class TestControlPlane {
     const isModelRequired = options.isModelRequired ?? false;
     const modelProxyTokens = new ModelProxyTokens(
       options.modelProxyTokenStore ?? new InMemoryModelProxyTokenStore(),
+      options.clock,
     );
     const modelSwitchAllowances = new ModelSwitchAllowances({
       store: options.modelSwitchAllowanceStore ?? new InMemoryModelSwitchAllowanceStore(),

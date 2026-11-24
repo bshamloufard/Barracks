@@ -282,9 +282,11 @@ export class ModelProxy {
    * authenticated are bounded for the whole instance, so nobody who lacks
    * the token can use up a thread's allowance or make the database work
    * without limit. A token a lookup accepted in the last 30 seconds is
-   * accepted again without one, outside that bound, so strangers using it
-   * up cannot keep a working agent out. The refusal is the same whether
-   * the thread exists or not.
+   * accepted again without one, outside that bound, and one accepted more
+   * than 15 seconds ago is looked up again outside it too (only a caller
+   * holding a remembered token gets that far), so strangers using the
+   * bound up cannot keep a working agent out however long it works. The
+   * refusal is the same whether the thread exists or not.
    */
   async #authenticate(exchange: ProxyExchange): Promise<string | undefined> {
     const { request, response, route, target, logger } = exchange;
@@ -293,8 +295,13 @@ export class ModelProxy {
       sendRefusal(response, route.format, proxyRefusals.tokenRefused);
       return undefined;
     }
-    if (this.#options.authorization.isRecentlyAuthenticated(target, presentedToken)) {
-      return presentedToken;
+    switch (this.#options.authorization.recallAuthentication(target, presentedToken)) {
+      case "fresh":
+        return presentedToken;
+      case "due_for_renewal":
+        return this.#lookUpToken(exchange, presentedToken);
+      case "not_remembered":
+        break;
     }
     const lookup = this.#authentications.enter();
     if (lookup.kind === "busy") {
@@ -302,6 +309,16 @@ export class ModelProxy {
       sendRefusal(response, route.format, proxyRefusals.proxyBusy);
       return undefined;
     }
+    try {
+      return await this.#lookUpToken(exchange, presentedToken);
+    } finally {
+      lookup.leave();
+    }
+  }
+
+  /** The token, if the store accepts it for the request's thread and provider; otherwise refuses the request. */
+  async #lookUpToken(exchange: ProxyExchange, presentedToken: string): Promise<string | undefined> {
+    const { response, route, target, logger } = exchange;
     try {
       if (await this.#options.authorization.authenticate(target, presentedToken)) {
         return presentedToken;
@@ -312,8 +329,6 @@ export class ModelProxy {
       logger.error({ err: error }, "Could not check a model request's token");
       sendRefusal(response, route.format, proxyRefusals.cannotDecide);
       return undefined;
-    } finally {
-      lookup.leave();
     }
   }
 

@@ -5,7 +5,7 @@ import { UnreadableCredentialError } from "../model-access/credential-keyring.js
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import { describeReachedCap, type ModelUsage } from "../model-usage/model-usage.js";
 import type { ThreadStore } from "../threads/thread-store.js";
-import type { ModelProxyTokens } from "./model-proxy-tokens.js";
+import type { ModelProxyTokens, RememberedAcceptance } from "./model-proxy-tokens.js";
 import type { ModelSwitchAllowances } from "./model-switch-allowances.js";
 import {
   credentialMissingRefusal,
@@ -84,12 +84,15 @@ export class ModelProxyAuthorization {
   }
 
   /**
-   * Whether the token was accepted by a lookup moments ago, from memory
-   * alone (see `ModelProxyTokens.isRecentlyAccepted`); if not, it must be
-   * looked up.
+   * What this instance remembers of the token, from memory alone (see
+   * `ModelProxyTokens.recallAcceptance`): unless `fresh`, it must be looked
+   * up.
    */
-  isRecentlyAuthenticated(request: ProxyAuthorizationRequest, presentedToken: string): boolean {
-    return this.#options.tokens.isRecentlyAccepted(
+  recallAuthentication(
+    request: ProxyAuthorizationRequest,
+    presentedToken: string,
+  ): RememberedAcceptance {
+    return this.#options.tokens.recallAcceptance(
       request.threadId,
       request.providerId,
       presentedToken,

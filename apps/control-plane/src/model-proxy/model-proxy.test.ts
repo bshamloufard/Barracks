@@ -581,6 +581,53 @@ describe("the model proxy", () => {
     expect(afterTheStop.status).not.toBe(200);
   });
 
+  it("keeps letting in an agent at work while strangers spend the lookups, however long it works", async () => {
+    const clock = new ControllableClock();
+    await start({
+      clock: clock.now,
+      modelProxyLimits: { authenticationBurst: 1, authenticationsPerSecond: 0.001 },
+    });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const statuses: number[] = [];
+
+    // A request every ten seconds for most of a minute, strangers spending the lookups between them.
+    for (let step = 0; step < 6; step += 1) {
+      const response = await callModelProxy(controlPlane, access, anthropic, "Hi");
+      await readWholeAnswer(response);
+      statuses.push(response.status);
+      const stranger = await callModelProxy(
+        controlPlane,
+        { ...access, token: "A".repeat(43) },
+        anthropic,
+        "Hi",
+      );
+      await stranger.arrayBuffer();
+      clock.advanceBy(10_000);
+    }
+
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
+  });
+
+  it("refuses a token remembered here once a lookup no longer finds it, as when the other instance revoked it", async () => {
+    const clock = new ControllableClock();
+    const tokenStore = new InMemoryModelProxyTokenStore();
+    await start({ clock: clock.now, modelProxyTokenStore: tokenStore });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const first = await callModelProxy(controlPlane, access, anthropic, "Hi");
+    await readWholeAnswer(first);
+
+    await tokenStore.revokeThread(thread.threadId);
+    clock.advanceBy(16_000);
+    const afterwards = await callModelProxy(controlPlane, access, anthropic, "Hi again");
+    await afterwards.arrayBuffer();
+
+    expect([first.status, afterwards.status]).toEqual([200, 403]);
+  });
+
   it("bounds how many token lookups callers not yet authenticated cause, whatever thread they name", async () => {
     await start({ modelProxyLimits: { authenticationBurst: 5, authenticationsPerSecond: 1 } });
     const statuses: number[] = [];
