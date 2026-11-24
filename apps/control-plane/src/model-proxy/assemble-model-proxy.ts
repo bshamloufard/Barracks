@@ -4,7 +4,7 @@ import type { Logger } from "../logger.js";
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
-import type { ThreadEndingListener } from "../thread-relay/thread-relay-registry.js";
+import type { ThreadEndingListener } from "../thread-relay/thread-endings.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { UserStore } from "../users/user-store.js";
 import { ModelProxy } from "./model-proxy.js";

@@ -11,14 +11,10 @@ import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import type { ThreadActivity } from "./thread-activity.js";
 import type { ThreadDesktopState } from "./thread-desktop-state.js";
+import { type ThreadEndingListener, ThreadEndings } from "./thread-endings.js";
 import type { ThreadModelAccess } from "./thread-model-access.js";
 import { ThreadRelay } from "./thread-relay.js";
 import type { ThreadWorkspaces } from "./thread-workspaces.js";
-
-/** A thread's sandbox began stopping, or the thread began being deleted, on this control plane. */
-export type ThreadEnding = "stop" | "deletion";
-
-export type ThreadEndingListener = (threadId: string, ending: ThreadEnding) => void;
 
 export type ThreadRelayRegistryOptions = {
   threadEventLog: ThreadEventLog;
@@ -44,13 +40,18 @@ export type ThreadRelayRegistryOptions = {
  * attaches the peer in one synchronous step. A relay is therefore never
  * dropped between being handed out and having its peer attached.
  *
- * It is also how the sandbox lifecycle reaches a thread's run (`ThreadRuns`),
- * so that what the lifecycle records is in sequence with everything else.
+ * Everything else that reaches a thread's supervisor or clients goes
+ * through here too, by thread: the sandbox lifecycle (`ThreadRuns`), so
+ * that what it records is in sequence with everything else; the desktops
+ * (`DesktopSupervisorChannel`); publications; and changes to model access.
+ * Each finds the thread's relay here, or knows from its absence that nobody
+ * is attached to this control plane. Endings are announced here as well
+ * (`ThreadEndings`), since they begin with the lifecycle's calls.
  */
 export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel {
   readonly #options: ThreadRelayRegistryOptions;
   readonly #relaysByThreadId = new Map<string, ThreadRelay>();
-  readonly #endingListeners: ThreadEndingListener[] = [];
+  readonly #endings = new ThreadEndings();
 
   constructor(options: ThreadRelayRegistryOptions) {
     this.#options = options;
@@ -78,22 +79,17 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
     return relay;
   }
 
+  /*
+   * For the sandbox lifecycle (`ThreadRuns`).
+   */
+
   prepareForStop(threadId: string): void {
     this.#relaysByThreadId.get(threadId)?.prepareForStop();
-    this.#tellEndingListeners(threadId, "stop");
+    this.#endings.announce(threadId, "stop");
   }
 
   prepareForDeletion(threadId: string): void {
-    this.#tellEndingListeners(threadId, "deletion");
-  }
-
-  /**
-   * Calls `listener` whenever a thread's sandbox begins stopping, or a thread
-   * begins being deleted, through this control plane: how work for a thread
-   * outside its relay (a publication) learns to give up.
-   */
-  listenForEndings(listener: ThreadEndingListener): void {
-    this.#endingListeners.push(listener);
+    this.#endings.announce(threadId, "deletion");
   }
 
   finishStop(threadId: string): void {
@@ -115,6 +111,20 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
     return relay.forgetDeletedThread();
   }
 
+  /*
+   * For work done for a thread outside its relay: publications, the model
+   * proxy and changes to model access.
+   */
+
+  /**
+   * Calls `listener` whenever a thread's sandbox begins stopping, or a thread
+   * begins being deleted, through this control plane: how work for a thread
+   * outside its relay (a publication) learns to give up.
+   */
+  listenForEndings(listener: ThreadEndingListener): void {
+    this.#endings.listen(listener);
+  }
+
   /**
    * Tells the thread's attached supervisor its model access again, if it
    * has changed. A thread with no relay here has no supervisor attached
@@ -129,6 +139,19 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
     return this.#relaysByThreadId.get(threadId)?.sendWorkspaceMessage(message) ?? false;
   }
 
+  /** A relay is made for this if nobody is connected, and dropped again once it is done. */
+  recordPublicationOutcome(
+    threadId: string,
+    publicationId: string,
+    event: PublicationOutcomeEvent,
+  ): Promise<void> {
+    return this.#relayFor(threadId).recordPublicationOutcome(publicationId, event);
+  }
+
+  /*
+   * For the desktops (`DesktopSupervisorChannel`, and the viewers' sessions).
+   */
+
   /** Sends to the thread's attached supervisor; false if none is attached here. */
   sendDesktopMessage(threadId: string, message: ControlPlaneDesktopMessage): boolean {
     return this.#relaysByThreadId.get(threadId)?.sendDesktopMessage(message) ?? false;
@@ -142,21 +165,6 @@ export class ThreadRelayRegistry implements ThreadRuns, DesktopSupervisorChannel
   /** Whether the thread's supervisor is attached to this control plane, welcomed. */
   isSupervisorAttached(threadId: string): boolean {
     return this.#relaysByThreadId.get(threadId)?.isSupervisorAttached ?? false;
-  }
-
-  /** A relay is made for this if nobody is connected, and dropped again once it is done. */
-  recordPublicationOutcome(
-    threadId: string,
-    publicationId: string,
-    event: PublicationOutcomeEvent,
-  ): Promise<void> {
-    return this.#relayFor(threadId).recordPublicationOutcome(publicationId, event);
-  }
-
-  #tellEndingListeners(threadId: string, ending: ThreadEnding): void {
-    for (const listener of this.#endingListeners) {
-      listener(threadId, ending);
-    }
   }
 
   #relayFor(threadId: string): ThreadRelay {

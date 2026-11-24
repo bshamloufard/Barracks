@@ -24,7 +24,7 @@ import type {
 } from "../repositories/thread-repository-store.js";
 import type { Clock } from "../sandbox-lifecycle/lifecycle-settings.js";
 import type { PublicationOutcomeEvent } from "../thread-event-log/thread-event-log.js";
-import type { ThreadEndingListener } from "../thread-relay/thread-relay-registry.js";
+import type { ThreadEndingListener } from "../thread-relay/thread-endings.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 import { maximumBundleHeaderLength, parseBundleHeader } from "./bundle-header.js";
 import {
