@@ -1,14 +1,19 @@
+import {
+  type AgentAvailability,
+  describeAgentAvailability,
+} from "../presentation/describe-agent-availability";
 import type { ConnectionState, ThreadState } from "../thread-state/thread-state";
 
 export function StatusLine({ state }: { state: ThreadState }) {
   const isConnected = state.connection.name === "connected";
+  const availability = describeAgentAvailability(state);
   return (
     <p className="status-line" aria-live="polite">
       <StatusItem isGood={isConnected} label={describeConnection(state.connection)} />
       {isConnected && (
         <StatusItem
-          isGood={state.isSupervisorConnected}
-          label={state.isSupervisorConnected ? "Agent connected" : "Agent not connected"}
+          isGood={availability.name === "connected"}
+          label={describeAvailability(availability)}
         />
       )}
       {isConnected && state.isSupervisorConnected && (
@@ -37,5 +42,20 @@ function describeConnection(connection: ConnectionState): string {
       return "Reconnecting…";
     case "stopped":
       return connection.reason;
+  }
+}
+
+function describeAvailability(availability: AgentAvailability): string {
+  switch (availability.name) {
+    case "loading":
+      return "Loading the thread…";
+    case "starting":
+      return "Starting its sandbox…";
+    case "sandbox_failed":
+      return "Its sandbox could not be created";
+    case "connected":
+      return "Agent connected";
+    case "not_connected":
+      return "Agent not connected";
   }
 }

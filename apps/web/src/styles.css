@@ -81,6 +81,61 @@ h1 {
 .thread-name {
   color: var(--text-quiet);
   font-weight: normal;
+  overflow-wrap: anywhere;
+}
+
+.home-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.home-link:hover {
+  text-decoration: underline;
+}
+
+.thread-list-header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.thread-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+}
+
+.thread-list-item:hover,
+.thread-list-item:focus-visible {
+  border-color: var(--accent);
+}
+
+.thread-list-name {
+  font-family: var(--font-code);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.thread-list-details {
+  font-size: 0.85rem;
+  color: var(--text-quiet);
+  overflow-wrap: anywhere;
 }
 
 .status-line {
@@ -243,6 +298,10 @@ h1 {
   background: var(--error-background);
   color: var(--error-text);
   overflow-wrap: anywhere;
+}
+
+.page > main > .error-notice {
+  margin-bottom: 0.75rem;
 }
 
 .rejection {
