@@ -64,6 +64,9 @@ export async function startControlPlaneServer(
 ): Promise<RunningControlPlaneServer> {
   const { configuration, threadStore, logger } = options;
   const allowedClientOrigins = new Set(configuration.allowedClientOrigins);
+  // Taken from the authentication in effect, not configured separately, so
+  // no caller can run development mode without it.
+  const acceptOnlyLoopbackHosts = options.clientAuthentication.method === "development-single-user";
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: maximumPayloadInBytes,
@@ -74,6 +77,7 @@ export async function startControlPlaneServer(
     allowedClientOrigins,
     threads: { threadStore, threadCreator: options.threadCreator, logger },
     webClientDirectory: configuration.webClientDirectory,
+    acceptOnlyLoopbackHosts,
   });
   // Hono's adapter would otherwise replace the global Request and Response
   // classes with faster ones; nothing here needs that, so globals are left alone.
@@ -92,6 +96,7 @@ export async function startControlPlaneServer(
         options.clientAuthenticationTimeoutInMilliseconds ??
         defaultClientAuthenticationTimeoutInMilliseconds,
       allowedClientOrigins,
+      acceptOnlyLoopbackHosts,
       heartbeatIntervalInMilliseconds:
         options.heartbeatIntervalInMilliseconds ?? defaultHeartbeatIntervalInMilliseconds,
       logger,

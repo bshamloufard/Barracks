@@ -18,6 +18,8 @@ export type UpgradeDependencies = {
   /** How long a new client connection has to authenticate before it is closed. */
   clientAuthenticationTimeoutInMilliseconds: number;
   allowedClientOrigins: ReadonlySet<string>;
+  /** Accept only upgrades addressed to loopback, as development mode must. */
+  acceptOnlyLoopbackHosts: boolean;
   heartbeatIntervalInMilliseconds: number;
   logger: Logger;
 };

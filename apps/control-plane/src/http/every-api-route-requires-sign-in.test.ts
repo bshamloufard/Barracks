@@ -30,6 +30,7 @@ function createApp() {
       userStore: new InMemoryUserStore(),
       logger,
     }),
+    acceptOnlyLoopbackHosts: false,
     clientAuthentication: {
       method: "development-single-user",
       accessToken: developmentAccessToken,

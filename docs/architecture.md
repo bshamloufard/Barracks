@@ -32,7 +32,7 @@ The **control plane verifies every token itself** ([`authentication/`](../apps/c
 
 The supervisor endpoint is unchanged: a sandbox proves itself with its thread's token, not a user's.
 
-For local work, an explicit **development mode** (`BARRACK_AUTHENTICATION=development-single-user`, which `pnpm dev` sets) has one fixed user whose token the control plane hands to any client. It is refused unless the control plane listens on a loopback address; with Supabase it may listen anywhere.
+For local work, an explicit **development mode** (`BARRACK_AUTHENTICATION=development-single-user`, which `pnpm dev` sets) has one fixed user whose token the control plane hands to any client. It is refused unless the control plane listens on a loopback address, and then answers only requests and upgrades whose `Host` is a loopback name or address, so a web page that rebinds its own domain to 127.0.0.1 is refused; with Supabase it may listen anywhere, under any name.
 
 ## Creating a thread
 

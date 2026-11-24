@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
+import { forbiddenHostExplanation, isAddressedToLoopback } from "../loopback-host.js";
 import { acceptClientUpgrade } from "./client-endpoint.js";
 import { rejectUpgrade } from "./reject-upgrade.js";
 import { acceptSupervisorUpgrade } from "./supervisor-endpoint.js";
@@ -22,6 +23,13 @@ export function createUpgradeRouter(
         "A connection failed while upgrading to a WebSocket",
       ),
     );
+    // Both endpoints, the supervisor's included: in development mode the
+    // control plane listens only on loopback, so its sandboxes reach it there.
+    if (dependencies.acceptOnlyLoopbackHosts && !isAddressedToLoopback(request.headers.host)) {
+      dependencies.logger.warn("Refused a WebSocket upgrade not addressed to loopback");
+      rejectUpgrade(socket, 403, forbiddenHostExplanation);
+      return;
+    }
     const pathname = URL.parse(request.url ?? "", "http://placeholder.invalid")?.pathname ?? "";
     if (pathname.endsWith("/supervisor")) {
       void acceptSupervisorUpgrade(request, socket, head, dependencies);

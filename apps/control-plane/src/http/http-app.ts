@@ -7,7 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Authenticator } from "../authentication/authenticator.js";
 import { respondWithApiError } from "./api-error.js";
-import { refuseDisallowedOrigins } from "./request-guards.js";
+import { refuseDisallowedOrigins, refuseHostsOtherThanLoopback } from "./request-guards.js";
 import { requireSignedInUser, type SignedInEnvironment } from "./require-signed-in-user.js";
 import { addThreadsRoutes, type ThreadsRoutesDependencies } from "./threads-routes.js";
 
@@ -19,6 +19,8 @@ export type HttpAppOptions = {
   threads: ThreadsRoutesDependencies;
   /** Where the built web client is; when set, it is served from `/`. */
   webClientDirectory: string | undefined;
+  /** Answer only requests addressed to loopback, as development mode must. */
+  acceptOnlyLoopbackHosts: boolean;
 };
 
 /**
@@ -32,12 +34,17 @@ export const publicApiPaths: ReadonlySet<string> = new Set([clientConfigurationP
  * The plain HTTP routes. WebSocket upgrades never reach this app; they are
  * handled on the server's `upgrade` event (see `websocket/route-upgrade.ts`).
  *
- * The order matters: the origin check and the authentication middleware are
- * mounted on all of `/api/*` before any API route, so every API route, those
- * added later included, is behind them unless listed in `publicApiPaths`.
+ * The order matters: the loopback check, when on, comes before every route,
+ * the web client's files included; the origin check and the authentication
+ * middleware are mounted on all of `/api/*` before any API route, so every
+ * API route, those added later included, is behind them unless listed in
+ * `publicApiPaths`.
  */
 export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment> {
   const app = new Hono<SignedInEnvironment>();
+  if (options.acceptOnlyLoopbackHosts) {
+    app.use("*", refuseHostsOtherThanLoopback());
+  }
   app.get("/health", (context) => context.json({ status: "ok" }));
   app.use("/api/*", refuseDisallowedOrigins(options.allowedClientOrigins));
   app.use("/api/*", requireSignedInUser(options.authenticator, publicApiPaths));

@@ -65,6 +65,8 @@ export const threadListResponseSchema = z.strictObject({
  *   expired. Refresh the session, or sign in again.
  * - `not_allowed` (403): signed in, but this installation does not let the
  *   user use it. Signing in again as the same user will not help.
+ * - `forbidden_host` (403): a control plane in development mode was reached
+ *   by a name other than localhost, 127.0.0.1 or [::1].
  */
 export const apiErrorResponseSchema = z.strictObject({
   error: z.strictObject({
@@ -73,6 +75,7 @@ export const apiErrorResponseSchema = z.strictObject({
       "not_allowed",
       "bad_request",
       "forbidden_origin",
+      "forbidden_host",
       "unsupported_media_type",
       "payload_too_large",
       "not_found",

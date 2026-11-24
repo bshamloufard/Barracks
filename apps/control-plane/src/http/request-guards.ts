@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { forbiddenHostExplanation, isAddressedToLoopback } from "../loopback-host.js";
 import { respondWithApiError } from "./api-error.js";
 
 /**
@@ -10,8 +11,9 @@ import { respondWithApiError } from "./api-error.js";
  *
  * The access token is what stops other websites acting through the user's
  * browser: it is not sent automatically, as a cookie would be. This check is
- * a second fence, and the one that matters in development mode, whose token
- * is no secret.
+ * a second fence. In development mode, whose token is no secret, it stops
+ * other origins, and `refuseHostsOtherThanLoopback` stops a page that makes
+ * itself the same origin by DNS rebinding.
  */
 export function refuseDisallowedOrigins(allowedOrigins: ReadonlySet<string>): MiddlewareHandler {
   return async (context, next) => {
@@ -23,6 +25,23 @@ export function refuseDisallowedOrigins(allowedOrigins: ReadonlySet<string>): Mi
         "forbidden_origin",
         `Origin "${origin}" is not allowed to make this request.`,
       );
+    }
+    await next();
+    return undefined;
+  };
+}
+
+/**
+ * Refuses a request not addressed to the loopback interface by name or
+ * address. Development mode answers any request as its one user, so it must
+ * answer only programs on this machine, and a web page that rebinds its own
+ * domain to 127.0.0.1 is not one (see `isAddressedToLoopback`); nor is
+ * anything reaching it through a proxy that keeps the original `Host`.
+ */
+export function refuseHostsOtherThanLoopback(): MiddlewareHandler {
+  return async (context, next) => {
+    if (!isAddressedToLoopback(context.req.header("host"))) {
+      return respondWithApiError(context, 403, "forbidden_host", forbiddenHostExplanation);
     }
     await next();
     return undefined;
