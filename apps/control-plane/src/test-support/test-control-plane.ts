@@ -26,6 +26,7 @@ import { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
 import { ModelCredentials } from "../model-access/model-credentials.js";
 import { OwnerModelAccess } from "../model-access/owner-model-access.js";
+import type { GitChildLimits } from "../publication/git-child-limits.js";
 import {
   assembleRepositoryServices,
   type RepositoryServices,
@@ -113,6 +114,8 @@ export type TestControlPlaneOptions = {
   github?: GithubSettings;
   credentialRequestLimits?: CredentialRequestLimits;
   maximumBundleSizeInBytes?: number;
+  /** What each Git process publishing may use; the production limits by default. */
+  gitChildLimits?: GitChildLimits;
   /** Defaults to an empty controllable log. */
   threadEventLog?: ControllableThreadEventLog;
   /** Defaults to a fake provider, which runs no supervisor of its own. */
@@ -201,6 +204,7 @@ export class TestControlPlane {
       ...(options.maximumBundleSizeInBytes === undefined
         ? {}
         : { maximumBundleSizeInBytes: options.maximumBundleSizeInBytes }),
+      ...(options.gitChildLimits === undefined ? {} : { gitChildLimits: options.gitChildLimits }),
     });
     const modelCredentials = new ModelCredentials({
       store:

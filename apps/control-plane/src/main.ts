@@ -8,6 +8,11 @@ import { CredentialKeyring } from "./model-access/credential-keyring.js";
 import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
 import { OwnerModelAccess } from "./model-access/owner-model-access.js";
+import {
+  defaultGitChildLimits,
+  describeUnapplicableLimits,
+  findApplicableLimits,
+} from "./publication/git-child-limits.js";
 import { assembleRepositoryServices } from "./repositories/assemble-repository-services.js";
 import {
   assembleThreadServices,
@@ -135,11 +140,30 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
       "Repository URLs may use plain http://, for tests and local development only; never set BARRACK_ALLOW_PLAIN_HTTP_REPOSITORIES in a deployment.",
     );
   }
+  if (github.app !== undefined) {
+    describePublicationLimits(logger);
+  }
   if (supervisorEnvironment.agent.harness === "pi") {
     logger.warn(
       "Model provider keys in this environment are forwarded to every thread's sandbox, where the agent can read them. This stands in for per-user model access until it is built.",
     );
   }
+}
+
+/** Publishing runs Git on untrusted input; says which of its limits this machine cannot apply. */
+function describePublicationLimits(logger: Logger): void {
+  const unapplicable = describeUnapplicableLimits(findApplicableLimits());
+  if (unapplicable.length === 0) {
+    logger.info(
+      { gitChildLimits: defaultGitChildLimits },
+      "Git commands that publish threads run with limits on memory, processor time, wall time and disk",
+    );
+    return;
+  }
+  logger.warn(
+    { gitChildLimits: defaultGitChildLimits, unapplicable },
+    "This machine cannot limit Git commands that publish threads in every way: a hostile sandbox's bundle can use as much of what is not limited as it likes. Run the control plane on Linux for every limit.",
+  );
 }
 
 /**

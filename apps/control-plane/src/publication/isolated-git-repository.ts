@@ -1,8 +1,15 @@
-import { execFile, spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { Readable } from "node:stream";
+import {
+  type ApplicableLimits,
+  boundedGitSettings,
+  type GitChildLimits,
+  type LimitedResource,
+} from "./git-child-limits.js";
+import { runLimitedGit } from "./run-limited-git.js";
 
 /**
  * A bare repository the control plane makes for one publication and throws
@@ -19,7 +26,11 @@ import path from "node:path";
  * - every object received is checked (`fsckObjects`), which refuses trees
  *   that would plant `.git` directories, hooks or configuration in a
  *   checkout, among other malformed objects;
- * - nothing is ever checked out.
+ * - nothing is ever checked out;
+ * - every command runs under the publication's limits on memory, processor
+ *   time, wall time and disk (`GitChildLimits`), since both the bundle and
+ *   the repository's history are someone else's to make as large as they
+ *   like.
  *
  * The write-capable token reaches Git only through a credential helper that
  * reads it from the environment of Git's own process. It is never in a URL,
@@ -29,21 +40,31 @@ import path from "node:path";
 /** Git is found where the control plane finds its other programs. */
 const { PATH: searchPath } = process.env;
 
-const commandTimeoutInMilliseconds = 120_000;
-const maximumOutputInBytes = 1024 * 1024;
-
 export type RepositoryCredentials = { username: string; password: string };
 
 export type IsolatedGitRepositoryOptions = {
   remoteUrl: string;
   credentials: RepositoryCredentials;
   allowPlainHttp: boolean;
+  limits: GitChildLimits;
+  applicableLimits: ApplicableLimits;
 };
 
 export class GitCommandError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GitCommandError";
+  }
+}
+
+/** A Git command was stopped for going over one of the publication's limits. */
+export class GitLimitExceededError extends GitCommandError {
+  readonly resource: LimitedResource;
+
+  constructor(command: string, resource: LimitedResource) {
+    super(`git ${command} went over the publication's limit on ${resource.replace("_", " ")}`);
+    this.name = "GitLimitExceededError";
+    this.resource = resource;
   }
 }
 
@@ -102,10 +123,9 @@ export class IsolatedGitRepository {
    * even when told to (Git 2.43), so this is done separately.
    */
   async checkBundleObjects(bundlePath: string, packOffset: number): Promise<void> {
-    await this.#pipeIntoRepository(
-      ["index-pack", "--stdin", "--fix-thin", "--fsck-objects"],
-      createReadStream(bundlePath, { start: packOffset }),
-    );
+    await this.#runInRepository(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"], {
+      input: createReadStream(bundlePath, { start: packOffset }),
+    });
   }
 
   /** Takes in the work branch from the bundle, and only that. */
@@ -158,65 +178,33 @@ export class IsolatedGitRepository {
 
   #runInRepository(
     gitArguments: string[],
-    options: { allowBundleFile?: boolean } = {},
+    options: { allowBundleFile?: boolean; input?: Readable } = {},
   ): Promise<string> {
     return this.#run(gitArguments, this.#repositoryPath, options);
   }
 
-  #run(
+  async #run(
     gitArguments: string[],
     workingDirectory: string,
-    options: { allowBundleFile?: boolean } = {},
+    options: { allowBundleFile?: boolean; input?: Readable } = {},
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      execFile(
-        "git",
-        gitArguments,
-        {
-          cwd: workingDirectory,
-          env: this.#environment(options.allowBundleFile ?? false),
-          timeout: commandTimeoutInMilliseconds,
-          maxBuffer: maximumOutputInBytes,
-        },
-        (error, standardOutput, standardError) => {
-          if (error === null) {
-            resolve(standardOutput);
-            return;
-          }
-          reject(this.#describeFailure(gitArguments, standardError));
-        },
-      );
+    const outcome = await runLimitedGit({
+      gitArguments,
+      workingDirectory,
+      environment: this.#environment(options.allowBundleFile ?? false),
+      ...(options.input === undefined ? {} : { input: options.input }),
+      scratchDirectory: this.#directory,
+      limits: this.#options.limits,
+      applicable: this.#options.applicableLimits,
     });
-  }
-
-  #pipeIntoRepository(gitArguments: string[], input: NodeJS.ReadableStream): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const child = spawn("git", gitArguments, {
-        cwd: this.#repositoryPath,
-        env: this.#environment(false),
-        stdio: ["pipe", "ignore", "pipe"],
-        timeout: commandTimeoutInMilliseconds,
-      });
-      let standardError = "";
-      child.stderr.on("data", (chunk: Buffer) => {
-        if (standardError.length < maximumOutputInBytes) {
-          standardError += chunk.toString();
-        }
-      });
-      input.on("error", reject);
-      // Git stops reading as soon as it refuses the pack, and writing on
-      // then fails with EPIPE; its exit status, below, says why.
-      child.stdin.on("error", () => undefined);
-      input.pipe(child.stdin);
-      child.on("error", reject);
-      child.on("close", (exitCode) => {
-        if (exitCode === 0) {
-          resolve();
-          return;
-        }
-        reject(this.#describeFailure(gitArguments, standardError));
-      });
-    });
+    switch (outcome.kind) {
+      case "succeeded":
+        return outcome.standardOutput;
+      case "limit_exceeded":
+        throw new GitLimitExceededError(gitArguments[0] ?? "", outcome.resource);
+      case "failed":
+        throw this.#describeFailure(gitArguments, outcome.standardError);
+    }
   }
 
   /**
@@ -237,6 +225,7 @@ export class IsolatedGitRepository {
       ...(allowBundleFile ? [["protocol.file.allow", "always"] as [string, string]] : []),
       ["transfer.fsckObjects", "true"],
       ["fetch.fsckObjects", "true"],
+      ...boundedGitSettings,
       ["credential.helper", ""],
       [
         "credential.helper",
@@ -249,6 +238,8 @@ export class IsolatedGitRepository {
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_TERMINAL_PROMPT: "0",
+      // Each allocator arena reserves address space; Git here runs one thread.
+      MALLOC_ARENA_MAX: "1",
       BARRACK_GIT_USERNAME: this.#options.credentials.username,
       BARRACK_GIT_PASSWORD: this.#options.credentials.password,
       GIT_CONFIG_COUNT: String(settings.length),

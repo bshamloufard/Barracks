@@ -97,6 +97,8 @@ type UserRecord = FakeGithubUser & {
   readRepositoryIds: Set<number>;
 };
 type CodeRecord = { login: string; codeChallenge: string | undefined };
+type GitRequestKind = "fetch" | "push";
+type HeldGitRequest = { reached: PromiseWithResolvers<void>; released: Promise<void> };
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> };
 
 const appPermissions: Permissions = {
@@ -130,6 +132,7 @@ export class FakeGithub {
   readonly #installations = new Map<number, Set<number>>();
   readonly #codes = new Map<string, CodeRecord>();
   readonly #userTokens = new Map<string, string>();
+  readonly #heldGitRequests = new Map<GitRequestKind, HeldGitRequest>();
   #nextIdentifier = 1000;
 
   private constructor(server: Server, baseUrl: string, repositoriesDirectory: string) {
@@ -261,6 +264,18 @@ export class FakeGithub {
     return repository;
   }
 
+  /**
+   * Holds the next Git request of that kind (a fetch or clone, or a push)
+   * until `release` is called, so a test can act while Git waits on the
+   * server; `reached` resolves once the request has arrived.
+   */
+  holdNextGitRequest(kind: GitRequestKind): { reached: Promise<void>; release: () => void } {
+    const reached = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    this.#heldGitRequests.set(kind, { reached, released: released.promise });
+    return { reached: reached.promise, release: () => released.resolve() };
+  }
+
   readBranch(repository: FakeRepository, branch: string): Promise<string | undefined> {
     return readBranch(repository.directory, branch);
   }
@@ -283,7 +298,7 @@ export class FakeGithub {
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", this.webUrl);
     if (/\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.test(url.pathname)) {
-      this.#handleGit(request, response, url);
+      await this.#handleGit(request, response, url);
       return;
     }
     const body = await readBody(request);
@@ -301,12 +316,18 @@ export class FakeGithub {
     response.end(answer.body === undefined ? undefined : JSON.stringify(answer.body));
   }
 
-  #handleGit(request: IncomingMessage, response: ServerResponse, url: URL): void {
+  async #handleGit(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const fullName = url.pathname.replace(/^\//, "").replace(/\.git\/.*$/, "");
     const repository = this.#repositories.find((candidate) => candidate.fullName === fullName);
     const isPush =
       url.searchParams.get("service") === "git-receive-pack" ||
       url.pathname.endsWith("/git-receive-pack");
+    const held = this.#heldGitRequests.get(isPush ? "push" : "fetch");
+    if (held !== undefined) {
+      this.#heldGitRequests.delete(isPush ? "push" : "fetch");
+      held.reached.resolve();
+      await held.released;
+    }
     const token = readBasicPassword(request.headers.authorization);
     const decision = this.#decideGitAccess(repository, isPush, token);
     this.requests.push({

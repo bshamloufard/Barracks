@@ -3,6 +3,7 @@ import type { GithubConnectionStore } from "../github/github-connection-store.js
 import { GithubConnections } from "../github/github-connections.js";
 import type { GithubSettings } from "../github/github-settings.js";
 import type { Logger } from "../logger.js";
+import type { GitChildLimits } from "../publication/git-child-limits.js";
 import { PublicationBundleUploads } from "../publication/publication-bundle-uploads.js";
 import { type PublicationChannel, ThreadPublisher } from "../publication/thread-publisher.js";
 import type { Clock } from "../sandbox-lifecycle/lifecycle-settings.js";
@@ -21,6 +22,7 @@ export type RepositoryServicesOptions = {
   clock?: Clock;
   credentialRequestLimits?: CredentialRequestLimits;
   maximumBundleSizeInBytes?: number;
+  gitChildLimits?: GitChildLimits;
 };
 
 /**
@@ -94,6 +96,7 @@ export function assembleRepositoryServices(options: RepositoryServicesOptions): 
         ...(options.maximumBundleSizeInBytes === undefined
           ? {}
           : { maximumBundleSizeInBytes: options.maximumBundleSizeInBytes }),
+        ...(options.gitChildLimits === undefined ? {} : { gitChildLimits: options.gitChildLimits }),
       }),
   };
 }

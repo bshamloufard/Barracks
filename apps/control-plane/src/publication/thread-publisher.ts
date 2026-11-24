@@ -24,7 +24,17 @@ import type {
 import type { PublicationOutcomeEvent } from "../thread-event-log/thread-event-log.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 import { maximumBundleHeaderLength, parseBundleHeader } from "./bundle-header.js";
-import { GitCommandError, IsolatedGitRepository } from "./isolated-git-repository.js";
+import {
+  defaultGitChildLimits,
+  findApplicableLimits,
+  type GitChildLimits,
+  type LimitedResource,
+} from "./git-child-limits.js";
+import {
+  GitCommandError,
+  GitLimitExceededError,
+  IsolatedGitRepository,
+} from "./isolated-git-repository.js";
 import { type PublicationBundleUploads, PublicationError } from "./publication-bundle-uploads.js";
 import { describePublishing } from "./publishing-availability.js";
 
@@ -63,6 +73,8 @@ export type ThreadPublisherOptions = {
   channel: PublicationChannel;
   logger: Logger;
   maximumBundleSizeInBytes?: number;
+  /** What each Git process may use; `defaultGitChildLimits` unless a test needs tighter ones. */
+  gitChildLimits?: GitChildLimits;
 };
 
 type Verified = {
@@ -199,6 +211,8 @@ export class ThreadPublisher {
       remoteUrl: repository.url,
       credentials: { username: "x-access-token", password: pushToken.token },
       allowPlainHttp: this.#options.settings.allowPlainHttp,
+      limits: this.#gitChildLimits,
+      applicableLimits: findApplicableLimits(),
     });
     try {
       const commit = await this.#pushWorkBranch(verified, isolated);
@@ -279,11 +293,20 @@ export class ThreadPublisher {
         "The thread's base branch is not known, so it cannot be published.",
       );
     }
-    await isolated.fetchBaseBranch(repository.baseBranch);
-    await this.#checkBundle(isolated, bundlePath, header.value.packOffset);
-    await isolated.fetchBranchFromBundle(bundlePath, reference);
+    const { baseBranch } = repository;
+    await this.#withinLimits("Fetching the base branch's history", () =>
+      isolated.fetchBaseBranch(baseBranch),
+    );
+    await this.#withinLimits("Checking the branch's commits", () =>
+      this.#checkBundle(isolated, bundlePath, header.value.packOffset),
+    );
+    await this.#withinLimits("Taking in the branch's commits", () =>
+      isolated.fetchBranchFromBundle(bundlePath, reference),
+    );
     const commit = header.value.tipCommit;
-    const remoteCommit = await isolated.readRemoteBranch(reference);
+    const remoteCommit = await this.#withinLimits("Reading the branch in the repository", () =>
+      isolated.readRemoteBranch(reference),
+    );
     // A branch already at the commit being published needs nothing: an
     // earlier publication pushed it but could not record that it did, or
     // another control plane published the same commit a moment ago.
@@ -297,15 +320,39 @@ export class ThreadPublisher {
       );
     }
     if (remoteCommit !== commit) {
-      await isolated.push(reference, commit, remoteCommit);
+      await this.#withinLimits("Pushing the branch", () =>
+        isolated.push(reference, commit, remoteCommit),
+      );
     }
     return commit;
+  }
+
+  get #gitChildLimits(): GitChildLimits {
+    return this.#options.gitChildLimits ?? defaultGitChildLimits;
+  }
+
+  /** Runs a step, turning a Git command stopped by a limit into a failure that says which. */
+  async #withinLimits<Result>(step: string, work: () => Promise<Result>): Promise<Result> {
+    try {
+      return await work();
+    } catch (error) {
+      if (!(error instanceof GitLimitExceededError)) {
+        throw error;
+      }
+      this.#options.logger.warn({ err: error, step }, "A publication went over a limit");
+      throw new PublicationError(
+        `${step} ${describeExceededLimit(error.resource, this.#gitChildLimits)}, so the branch cannot be published.`,
+      );
+    }
   }
 
   async #checkBundle(isolated: IsolatedGitRepository, bundlePath: string, packOffset: number) {
     try {
       await isolated.verifyBundle(bundlePath);
-    } catch {
+    } catch (error) {
+      if (error instanceof GitLimitExceededError) {
+        throw error;
+      }
       throw new PublicationError(
         "The branch's commits build on history the repository's base branch does not have (was the base branch rewritten?), so they cannot be published.",
       );
@@ -313,6 +360,9 @@ export class ThreadPublisher {
     try {
       await isolated.checkBundleObjects(bundlePath, packOffset);
     } catch (error) {
+      if (error instanceof GitLimitExceededError) {
+        throw error;
+      }
       this.#options.logger.warn({ err: error }, "A sandbox's bundle failed Git's object checks");
       throw new PublicationError(
         "The branch's commits contain objects Git refuses (such as a directory named .git), so they cannot be published.",
@@ -374,6 +424,20 @@ export class ThreadPublisher {
         );
       });
     }
+  }
+}
+
+function describeExceededLimit(resource: LimitedResource, limits: GitChildLimits): string {
+  const mebibytes = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MiB`;
+  switch (resource) {
+    case "memory":
+      return `needed more memory than a publication may use (${mebibytes(limits.addressSpaceInBytes)})`;
+    case "processor_time":
+      return `needed more processor time than a publication may use (${limits.processorSeconds} seconds)`;
+    case "wall_time":
+      return `took longer than a publication may take (${Math.round(limits.wallTimeInMilliseconds / 1000)} seconds)`;
+    case "disk":
+      return `needed more disk space than a publication may use (${mebibytes(limits.diskInBytes)})`;
   }
 }
 

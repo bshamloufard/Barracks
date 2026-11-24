@@ -22,8 +22,14 @@ import {
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { githubSettingsFor, linkGithub } from "../test-support/github-test-setup.js";
-import { browserHeaders, TestControlPlane } from "../test-support/test-control-plane.js";
+import { buildDeltaBombPack, wrapPackInBundle } from "../test-support/hostile-packs.js";
+import {
+  browserHeaders,
+  TestControlPlane,
+  type TestControlPlaneOptions,
+} from "../test-support/test-control-plane.js";
 import type { FakeSupervisor } from "../test-support/test-peers.js";
+import { defaultGitChildLimits, type GitChildLimits } from "./git-child-limits.js";
 
 /**
  * Publishing a thread's work branch, through the real control plane against
@@ -73,15 +79,27 @@ beforeEach(async () => {
   github.addUser({ login: "octocat", name: "Octo Cat", push: [repository] });
   github.installApp([repository]);
   issuer = await TestIdentityIssuer.start();
+  adaToken = await issuer.mintAccessToken(ada);
+  await startControlPlane();
+  scratch = await mkdtemp(path.join(tmpdir(), "barrack-publication-test-"));
+});
+
+/** A control plane linked to Ada's GitHub account, with `options` beside the usual ones. */
+async function startControlPlane(options: Partial<TestControlPlaneOptions> = {}): Promise<void> {
   controlPlane = await TestControlPlane.start({
     authentication: { kind: "test-issuer", issuer },
     github: githubSettingsFor(github),
     maximumBundleSizeInBytes,
+    ...options,
   });
-  adaToken = await issuer.mintAccessToken(ada);
   await linkGithub(controlPlane, github, "octocat", adaToken);
-  scratch = await mkdtemp(path.join(tmpdir(), "barrack-publication-test-"));
-});
+}
+
+/** Replaces the test's control plane with one publishing under `gitChildLimits`. */
+async function restartWithLimits(gitChildLimits: Partial<GitChildLimits>): Promise<void> {
+  await controlPlane.close();
+  await startControlPlane({ gitChildLimits: { ...defaultGitChildLimits, ...gitChildLimits } });
+}
 
 afterEach(async () => {
   await controlPlane.close();
@@ -493,6 +511,87 @@ describe("publishing a thread's branch", () => {
 
     expect(response.status).toBe(404);
     expect(bundleRequests(thread)).toEqual([]);
+  });
+});
+
+/**
+ * What a hostile bundle or repository can make the control plane's Git use
+ * is bounded, and going over a bound fails the publication, saying which,
+ * and nothing else.
+ */
+describe("publishing within limits", () => {
+  const isLinux = process.platform === "linux";
+  const someCommit = "1".repeat(40);
+
+  it.skipIf(!isLinux)(
+    "refuses a pack of a few kilobytes that would make Git build a 2 GiB object in memory, at once",
+    async () => {
+      const thread = await startPublishingThread();
+      const pack = buildDeltaBombPack(2 * 1024 * 1024 * 1024);
+      const startedAt = Date.now();
+
+      const answer = await publish(
+        thread,
+        wrapPackInBundle(`refs/heads/${thread.workBranch}`, someCommit, pack),
+      );
+
+      expect(pack.length).toBeLessThan(maximumBundleSizeInBytes);
+      expect(errorOf(answer.body)).toMatchObject({
+        code: "publication_failed",
+        message: expect.stringContaining("needed more memory than a publication may use"),
+      });
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+      expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
+    },
+  );
+
+  it("stops Git once it has used its processor time, on deltas each costly to rebuild", async () => {
+    await restartWithLimits({ processorSeconds: 1 });
+    const thread = await startPublishingThread();
+    const pack = buildDeltaBombPack(256 * 1024 * 1024, 8);
+
+    const answer = await publish(
+      thread,
+      wrapPackInBundle(`refs/heads/${thread.workBranch}`, someCommit, pack),
+    );
+
+    expect(errorOf(answer.body).message).toContain(
+      "needed more processor time than a publication may use (1 seconds)",
+    );
+    expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
+  }, 60_000);
+
+  it("stops Git writing more than the publication's disk allows", async () => {
+    await restartWithLimits({ diskInBytes: 16 * 1024 });
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "random.bin", randomBytes(24 * 1024).toString("base64"));
+
+    const answer = await publish(
+      thread,
+      await bundleOf(thread.clone, [`${thread.baseCommit}..${thread.workBranch}`]),
+    );
+
+    expect(errorOf(answer.body).message).toContain(
+      "needed more disk space than a publication may use",
+    );
+    expect(await github.readBranch(repository, thread.workBranch)).toBeUndefined();
+  });
+
+  it("stops a Git command that takes longer than allowed, such as a fetch from a server that does not answer", async () => {
+    await restartWithLimits({ wallTimeInMilliseconds: 1_000 });
+    const thread = await startPublishingThread();
+    await commit(thread.clone, "agent.txt");
+    const held = github.holdNextGitRequest("fetch");
+
+    const answer = await publish(
+      thread,
+      await bundleOf(thread.clone, [`${thread.baseCommit}..${thread.workBranch}`]),
+    );
+    held.release();
+
+    expect(errorOf(answer.body).message).toBe(
+      "Fetching the base branch's history took longer than a publication may take (1 seconds), so the branch cannot be published.",
+    );
   });
 });
 
