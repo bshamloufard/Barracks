@@ -129,6 +129,16 @@ describe("the headers that cross the proxy", () => {
     });
   });
 
+  it("says the body is JSON in UTF-8, whatever the agent said, or if it said nothing", () => {
+    for (const contentType of ["application/json; charset=utf-7", "text/plain", undefined]) {
+      expect(
+        buildUpstreamHeaders("openai_chat_completions", { "content-type": contentType }, secret)[
+          "content-type"
+        ],
+      ).toBe("application/json");
+    }
+  });
+
   it("passes back only what the agent's client reads, and never a value holding the key", () => {
     expect(
       buildDownstreamHeaders(
