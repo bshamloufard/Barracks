@@ -1,0 +1,17 @@
+{
+  "name": "@barrack/test-identity-issuer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A stand-in for Supabase Auth's token issuer, so tests can sign users in and exercise the control plane's real token verification with no Supabase project.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/test-identity-issuer.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "jose": "6.2.18"
+  }
+}
