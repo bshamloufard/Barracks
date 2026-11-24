@@ -102,6 +102,24 @@ describe("what the proxy changes in a request's body", () => {
   });
 });
 
+describe("what the proxy reads from a request's body", () => {
+  function maximumOutputOf(format: Parameters<typeof inspectWholeBody>[0], body: object) {
+    const inspection = inspectWholeBody(format, { model: "m", ...body });
+    return inspection.kind === "relayable" ? inspection.body.maximumOutputTokens : inspection.kind;
+  }
+
+  it("takes the larger of Chat Completions' two maximums, since some hosts honour only max_tokens", () => {
+    const chat = "openai_chat_completions";
+
+    expect(maximumOutputOf(chat, { max_completion_tokens: 1, max_tokens: 100_000 })).toBe(100_000);
+    expect(maximumOutputOf(chat, { max_completion_tokens: 100_000, max_tokens: 1 })).toBe(100_000);
+    expect(maximumOutputOf(chat, { max_tokens: 50 })).toBe(50);
+    expect(maximumOutputOf(chat, { max_completion_tokens: 50, max_tokens: "lots" })).toBe(50);
+    expect(maximumOutputOf("anthropic_messages", { max_tokens: 7, max_output_tokens: 9 })).toBe(7);
+    expect(maximumOutputOf("openai_responses", { max_tokens: 7, max_output_tokens: 9 })).toBe(9);
+  });
+});
+
 describe("the headers that cross the proxy", () => {
   it("takes the agent's token from either header its clients use", () => {
     expect(readPresentedToken({ "x-api-key": "token-a" })).toBe("token-a");

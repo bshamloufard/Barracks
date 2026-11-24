@@ -199,18 +199,26 @@ function readFallbackModels(
   return models;
 }
 
-/** Each format's own field for the most output to generate; Chat Completions has two. */
+/**
+ * Each format's own field for the most output to generate. Chat
+ * Completions has two, `max_completion_tokens` and the older `max_tokens`,
+ * and some of the hosts relayed honour only the older one, so the larger
+ * of those given counts.
+ */
 function readMaximumOutputTokens(
   format: ProviderApiFormat,
   fields: RequestFields,
 ): number | undefined {
   const stated =
     format === "anthropic_messages"
-      ? fields.max_tokens
+      ? [fields.max_tokens]
       : format === "openai_responses"
-        ? fields.max_output_tokens
-        : (fields.max_completion_tokens ?? fields.max_tokens);
-  return Number.isSafeInteger(stated) && (stated as number) >= 0 ? (stated as number) : undefined;
+        ? [fields.max_output_tokens]
+        : [fields.max_completion_tokens, fields.max_tokens];
+  const counts = stated.filter(
+    (value): value is number => Number.isSafeInteger(value) && (value as number) >= 0,
+  );
+  return counts.length === 0 ? undefined : Math.max(...counts);
 }
 
 function refused(refusal: ProxyRefusal, reason: string): BodyInspection {
