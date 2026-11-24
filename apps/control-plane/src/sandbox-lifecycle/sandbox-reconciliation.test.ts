@@ -528,6 +528,36 @@ describe("a sandbox whose supervisor never connects", () => {
     expect((await fetchThread(controlPlane, threadId)).sandbox).toEqual({ state: "running" });
   });
 
+  it("is failed after a quick stop and resume, though the stopped sandbox's connection is still attached", async () => {
+    const controlPlane = await startWithoutSupervisors();
+    const thread = await controlPlane.createThread();
+    // The first sandbox's supervisor, whose connection outlives its stop.
+    await controlPlane.connectSupervisor(thread);
+    await expect
+      .poll(
+        async () =>
+          (await recordedSandboxOf(controlPlane, thread.threadId)).awaitingSupervisorSince,
+      )
+      .toBeUndefined();
+    await controlPlane.sendApi("POST", `${buildThreadApiPath(thread.threadId)}/stop`);
+    await controlPlane.whenOperationsSettle();
+    clock.advanceBy(1_000);
+    await controlPlane.sendApi("POST", `${buildThreadApiPath(thread.threadId)}/resume`);
+    await controlPlane.whenOperationsSettle();
+    expect(controlPlane.threadServices.relays.isSupervisorAttached(thread.threadId)).toBe(true);
+
+    await reconcile(controlPlane, false);
+    const awaitingAfterTheFirstCheck = (await recordedSandboxOf(controlPlane, thread.threadId))
+      .awaitingSupervisorSince;
+    clock.advanceBy(deadline);
+    await reconcile(controlPlane, false);
+
+    expect(awaitingAfterTheFirstCheck).toBeDefined();
+    expect((await fetchThread(controlPlane, thread.threadId)).sandbox).toMatchObject({
+      state: "failed",
+    });
+  });
+
   it("is given the whole deadline again when resumed", async () => {
     const controlPlane = await startWithoutSupervisors();
     const { threadId } = await controlPlane.createThread();

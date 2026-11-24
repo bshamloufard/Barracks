@@ -73,6 +73,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
     ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
     ...(options.modelAccess === undefined ? {} : { modelAccess: options.modelAccess }),
     desktops,
+    clock,
     logger,
   });
   const operations = new SandboxOperations({
