@@ -6,7 +6,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { developmentAccessToken } from "../authentication/development-single-user.js";
+import {
+  developmentAccessToken,
+  developmentUserId,
+} from "../authentication/development-single-user.js";
 import {
   callModelProxy,
   type ProxyAccess,
@@ -14,6 +17,7 @@ import {
   waitForProxyAccess,
 } from "../test-support/model-proxy-peers.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
+import type { ModelProxyLimits } from "./model-proxy-limits.js";
 import { redactedSecretMarker } from "./secret-redaction.js";
 
 /**
@@ -23,7 +27,7 @@ import { redactedSecretMarker } from "./secret-redaction.js";
  * agent's upload, echo the key it was sent, or redirect elsewhere.
  */
 
-const ownersKey = "sk-ant-owner-real-key-0000000001";
+const ownersKey = "fake-anthropic-key-of-the-owner-0001";
 
 type UpstreamHandler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -48,8 +52,14 @@ async function startUpstream(handler: UpstreamHandler): Promise<string> {
 }
 
 /** A control plane relaying to the stand-in, and a thread on Anthropic with its token. */
-async function startThreadRelayingTo(upstreamOrigin: string): Promise<ProxyAccess> {
-  const started = await TestControlPlane.start({ modelProxyUpstreamOrigin: upstreamOrigin });
+async function startThreadRelayingTo(
+  upstreamOrigin: string,
+  modelProxyLimits: Partial<ModelProxyLimits> = {},
+): Promise<ProxyAccess> {
+  const started = await TestControlPlane.start({
+    modelProxyUpstreamOrigin: upstreamOrigin,
+    modelProxyLimits,
+  });
   controlPlane = started;
   await started.saveModelCredential("anthropic", ownersKey);
   const thread = await started.createThread(developmentAccessToken, "anthropic/a-model");
@@ -59,6 +69,11 @@ async function startThreadRelayingTo(upstreamOrigin: string): Promise<ProxyAcces
 
 function pause(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** The thread a proxy address is for: `/threads/{threadId}/model-proxy/{providerId}`. */
+function threadIdOf(access: ProxyAccess): string {
+  return access.basePath.split("/")[2] ?? "";
 }
 
 describe("the model proxy as a streaming path", () => {
@@ -98,11 +113,13 @@ describe("the model proxy as a streaming path", () => {
     expect(answer.length).toBe(chunk.length * chunkCount);
   });
 
-  it("streams the agent's upload to the provider as it arrives", async () => {
+  it("reads the agent's upload whole, then sends the provider exactly the JSON it checked", async () => {
+    let receivedBody = "";
     let firstBytesArrivedAt: number | undefined;
     const upstreamOrigin = await startUpstream((request, response) => {
-      request.once("data", () => {
-        firstBytesArrivedAt = Date.now();
+      request.on("data", (chunk: Buffer) => {
+        firstBytesArrivedAt ??= Date.now();
+        receivedBody += chunk.toString("utf8");
       });
       request.on("end", () => {
         response.writeHead(200, { "content-type": "application/json" });
@@ -114,10 +131,10 @@ describe("the model proxy as a streaming path", () => {
     const encoder = new TextEncoder();
     const slowUpload = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode('{"model":"m","messages":['));
-        await pause(800);
+        controller.enqueue(encoder.encode('{"model":"another-model","model":"a-model",'));
+        await pause(500);
         lastBytesSentAt = Date.now();
-        controller.enqueue(encoder.encode("]}"));
+        controller.enqueue(encoder.encode('"max_tokens":5,  "messages":[]}'));
         controller.close();
       },
     });
@@ -132,8 +149,97 @@ describe("the model proxy as a streaming path", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(firstBytesArrivedAt).toBeDefined();
-    expect(firstBytesArrivedAt ?? Number.POSITIVE_INFINITY).toBeLessThan(lastBytesSentAt);
+    expect(firstBytesArrivedAt ?? 0).toBeGreaterThanOrEqual(lastBytesSentAt);
+    expect(receivedBody).toBe('{"model":"a-model","max_tokens":5,"messages":[]}');
+  });
+
+  it.each([
+    ["is not JSON", "not json"],
+    ["is not an object", "[1]"],
+    ["names no model", '{"max_tokens":5,"messages":[]}'],
+  ])("refuses a body that %s, sending the provider nothing", async (_description, body) => {
+    let upstreamRequests = 0;
+    const upstreamOrigin = await startUpstream((_request, response) => {
+      upstreamRequests += 1;
+      response.end();
+    });
+    const access = await startThreadRelayingTo(upstreamOrigin);
+
+    const response = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "",
+      { body },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { type: "invalid_request_error" } });
+    expect(upstreamRequests).toBe(0);
+  });
+
+  it("refuses as busy a body that would take the instance past the request bytes it holds at once", async () => {
+    const upstreamOrigin = await startUpstream((_request, response) => response.end());
+    const access = await startThreadRelayingTo(upstreamOrigin, {
+      maximumRequestBytesHeldInTotal: 1_000,
+    });
+
+    const response = await callModelProxy(
+      requireControlPlane(),
+      access,
+      relayedFormatExamples.anthropic,
+      "x".repeat(2_000),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+  });
+
+  it("counts a request the agent abandons before the provider answers, at the most output it allowed", async () => {
+    let receivedBytes = 0;
+    const upstreamOrigin = await startUpstream((request, response) => {
+      request.on("data", (chunk: Buffer) => {
+        receivedBytes += chunk.length;
+      });
+      // A non-streamed answer: the headers come only once it is all generated.
+      request.on("end", () => {
+        setTimeout(() => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ type: "message", model: "a-model", usage: {} }));
+        }, 1_500);
+      });
+    });
+    const access = await startThreadRelayingTo(upstreamOrigin);
+    const threadId = threadIdOf(access);
+    const conversation = "x".repeat(600_000);
+    const hangUp = new AbortController();
+    setTimeout(() => hangUp.abort(), 700);
+
+    await callModelProxy(requireControlPlane(), access, relayedFormatExamples.anthropic, "", {
+      body: JSON.stringify({
+        model: "a-model",
+        max_tokens: 32_000,
+        messages: [{ role: "user", content: conversation }],
+      }),
+      signal: hangUp.signal,
+    }).catch(() => undefined);
+
+    await expect
+      .poll(() => requireControlPlane().modelUsage.listForThread(developmentUserId, threadId))
+      .toEqual([
+        expect.objectContaining({
+          modelId: "a-model",
+          source: "estimated",
+          outputTokens: 32_000,
+          inputTokens: expect.any(Number),
+        }),
+      ]);
+    const [estimate] = await requireControlPlane().modelUsage.listForThread(
+      developmentUserId,
+      threadId,
+    );
+    expect(receivedBytes).toBeGreaterThan(600_000);
+    expect(estimate?.inputTokens).toBeGreaterThan(150_000);
   });
 
   it("never returns the owner's key, in a header or the body, whatever the provider echoes", async () => {

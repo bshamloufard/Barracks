@@ -3,7 +3,9 @@ import {
   mockModelTriggers,
   startMockModelServer,
 } from "@barrack/mock-model-server";
+import { findCatalogueProvider } from "@barrack/model-catalogue";
 import {
+  type AgentEvent,
   buildResumeThreadApiPath,
   buildStopThreadApiPath,
   buildThreadModelApiPath,
@@ -15,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
+import { ControllableClock } from "../test-support/controllable-clock.js";
 import { ControllableThreadEventLog } from "../test-support/controllable-thread-event-log.js";
 import {
   callModelProxy,
@@ -30,6 +33,7 @@ import {
 import type { FakeSupervisor } from "../test-support/test-peers.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { InMemoryModelProxyTokenStore } from "./in-memory-model-proxy-token-store.js";
+import { previousModelAllowedForInMilliseconds } from "./model-switch-allowances.js";
 
 /**
  * The model proxy through the real control plane, in front of the mock
@@ -43,11 +47,11 @@ const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@exampl
 const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
 
 const keys = {
-  adasAnthropic: "sk-ant-ada-real-key-000000000001",
-  adasOpenAi: "sk-openai-ada-real-key-0000000002",
-  adasGroq: "gsk-ada-real-key-00000000000003",
-  gracesAnthropic: "sk-ant-grace-real-key-0000000004",
-  adasReplacement: "sk-ant-ada-replaced-key-00000005",
+  adasAnthropic: "fake-anthropic-key-of-ada-0001",
+  adasOpenAi: "fake-openai-key-of-ada-0002",
+  adasGroq: "fake-groq-key-of-ada-0003",
+  gracesAnthropic: "fake-anthropic-key-of-grace-0004",
+  adasReplacement: "fake-anthropic-key-of-ada-replaced-0005",
 };
 
 let modelServer: MockModelServer;
@@ -86,6 +90,29 @@ async function startThread(
   const supervisor = await controlPlane.connectSupervisor(thread);
   const providerId = model.split("/")[0] ?? "";
   return { thread, supervisor, access: await waitForProxyAccess(supervisor, providerId) };
+}
+
+/** The thread's owner switches its model, as Settings would. */
+async function switchModel(threadId: string, model: string): Promise<void> {
+  const response = await controlPlane.sendJson(
+    "PUT",
+    buildThreadModelApiPath(threadId),
+    { model },
+    adaToken,
+  );
+  expect(response.status).toBe(200);
+}
+
+/** Sends a supervisor's agent events one at a time, each recorded before the next. */
+function runEventsOf(supervisor: FakeSupervisor) {
+  let eventNumber = 0;
+  return {
+    async send(event: AgentEvent): Promise<void> {
+      eventNumber += 1;
+      supervisor.sendAgentEventNumbered(eventNumber, event);
+      await supervisor.waitUntilRecorded(eventNumber);
+    },
+  };
 }
 
 /** Everything the agent was sent, as bytes, to search for keys in. */
@@ -176,6 +203,64 @@ describe("the model proxy", () => {
     } finally {
       await other.close();
     }
+  });
+
+  it("ends a request in flight here soon after the other control plane stops its thread", async () => {
+    const shared = {
+      threadStore: new InMemoryThreadStore(),
+      modelCredentialStore: new InMemoryModelCredentialStore(
+        new CredentialKeyring(Buffer.alloc(32, 7)),
+      ),
+      modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
+      threadEventLog: new ControllableThreadEventLog(),
+      sandboxProvider: new FakeSandboxProvider(),
+    };
+    await start(shared);
+    const stopping = controlPlane;
+    const relaying = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer },
+      modelProxyUpstreamOrigin: modelServer.origin,
+      modelProxyLimits: { reauthorizationIntervalInMilliseconds: 200 },
+      ...shared,
+    });
+    try {
+      await stopping.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+      const { thread, access } = await startThread(adaToken, "anthropic/a-model");
+      const inFlight = await callModelProxy(
+        relaying,
+        access,
+        relayedFormatExamples.anthropic,
+        `Please ${mockModelTriggers.slowReply}`,
+      );
+      expect(inFlight.status).toBe(200);
+
+      await stopping.sendApi("POST", buildStopThreadApiPath(thread.threadId), adaToken);
+      const startedWaiting = Date.now();
+      await expect(inFlight.text()).rejects.toThrow();
+
+      expect(Date.now() - startedWaiting).toBeLessThan(2_000);
+      await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
+    } finally {
+      await relaying.close();
+    }
+  });
+
+  it("ends a request in flight soon after its owner's key is removed", async () => {
+    await start({ modelProxyLimits: { reauthorizationIntervalInMilliseconds: 200 } });
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const inFlight = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      `Please ${mockModelTriggers.slowReply}`,
+    );
+    expect(inFlight.status).toBe(200);
+
+    await controlPlane.sendJson("DELETE", "/api/model-credentials/anthropic", {}, adaToken);
+
+    await expect(inFlight.text()).rejects.toThrow();
+    await expect.poll(() => modelServer.receivedRequests[0]?.wasAbandoned).toBe(true);
   });
 
   it("rebuilds the request's headers, keeping only what the provider needs", async () => {
@@ -446,6 +531,195 @@ describe("the model proxy", () => {
     });
     expect(JSON.stringify(rejection)).toContain("model usage cap");
     expect(modelServer.receivedRequests).toHaveLength(1);
+  });
+
+  it("lets only the thread's own token spend its allowance, so nobody else can lock its agent out", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const wellFormedButWrong = "A".repeat(43);
+
+    const strangers: number[] = [];
+    for (const token of [...Array(25).fill(""), ...Array(25).fill(wellFormedButWrong)]) {
+      const refused = await callModelProxy(controlPlane, { ...access, token }, anthropic, "Hi");
+      await refused.arrayBuffer();
+      strangers.push(refused.status);
+    }
+    const agents = await callModelProxy(controlPlane, access, anthropic, "Say hello");
+    await readWholeAnswer(agents);
+
+    expect(new Set(strangers)).toEqual(new Set([403]));
+    expect(agents.status).toBe(200);
+  });
+
+  it("bounds how many token lookups callers not yet authenticated cause, whatever thread they name", async () => {
+    await start({ modelProxyLimits: { authenticationBurst: 5, authenticationsPerSecond: 1 } });
+    const statuses: number[] = [];
+
+    for (let index = 0; index < 20; index += 1) {
+      const madeUpThreadId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const response = await fetch(
+        `${controlPlane.httpBaseUrl}/threads/${madeUpThreadId}/model-proxy/anthropic/v1/messages`,
+        { method: "POST", headers: { "x-api-key": "A".repeat(43) }, body: "{}" },
+      );
+      await response.arrayBuffer();
+      statuses.push(response.status);
+    }
+
+    expect(statuses.filter((status) => status === 403).length).toBeLessThanOrEqual(6);
+    expect(statuses.filter((status) => status === 503).length).toBeGreaterThanOrEqual(14);
+  });
+
+  it.each([
+    ["a background response", "openai", { background: true }],
+    ["background options", "openai", { background_options: { completion_window: "8h" } }],
+    ["a deferred completion", "groq", { deferred: true }],
+  ] as const)(
+    "refuses %s, whose output could never be counted, in words the agent shows",
+    async (_description, providerId, detaching) => {
+      await start();
+      const ownersKey = providerId === "openai" ? keys.adasOpenAi : keys.adasGroq;
+      await controlPlane.saveModelCredential(providerId, ownersKey, adaToken);
+      const { access } = await startThread(adaToken, `${providerId}/a-model`);
+      const example = relayedFormatExamples[providerId];
+
+      const response = await callModelProxy(controlPlane, access, example, "Think hard", {
+        body: JSON.stringify({ ...example.body("Think hard"), ...detaching }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: {
+          type: "invalid_request_error",
+          message: expect.stringContaining("does not relay background or deferred requests"),
+        },
+      });
+      expect(modelServer.receivedRequests).toEqual([]);
+    },
+  );
+
+  it("relays only the thread's own model, and fallbacks the agent's catalogue lists for its provider", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    const { access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const asking = (overrides: object) =>
+      callModelProxy(controlPlane, access, anthropic, "Hi", {
+        body: JSON.stringify({ ...anthropic.body("Hi"), ...overrides }),
+      });
+    const listedModel = findCatalogueProvider("anthropic")?.models[0]?.modelId ?? "";
+
+    const otherModel = await asking({ model: "the-dearest-model" });
+    const unlistedFallback = await asking({ fallbacks: [{ model: "the-dearest-model" }] });
+    const listedFallback = await asking({ fallbacks: [{ model: listedModel }] });
+    await readWholeAnswer(listedFallback);
+
+    for (const refused of [otherModel, unlistedFallback]) {
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({
+        error: { message: expect.stringContaining('only for its own model, "anthropic/a-model"') },
+      });
+    }
+    expect(listedFallback.status).toBe(200);
+    expect(modelServer.receivedModels).toEqual(["a-model"]);
+  });
+
+  it("keeps the model before a switch usable for the run then open, and for no later run", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    await controlPlane.saveModelCredential("openai", keys.adasOpenAi, adaToken);
+    const { thread, supervisor, access } = await startThread(adaToken, "anthropic/a-model");
+    const anthropic = relayedFormatExamples.anthropic;
+    const run = runEventsOf(supervisor);
+    await run.send({ type: "agent_run_started" });
+
+    await switchModel(thread.threadId, "openai/a-model");
+    const duringTheRun = await callModelProxy(controlPlane, access, anthropic, "Go on");
+    await readWholeAnswer(duringTheRun);
+    await run.send({ type: "agent_run_settled", wasInterrupted: false });
+    await run.send({ type: "agent_run_started" });
+    const inTheNextRun = await callModelProxy(controlPlane, access, anthropic, "Go on");
+
+    expect(duringTheRun.status).toBe(200);
+    expect(inTheNextRun.status).toBe(403);
+    expect(
+      await controlPlane.modelProxyTokens.isAccepted(thread.threadId, "anthropic", access.token),
+    ).toBe(false);
+  });
+
+  it("retires a provider's tokens at a switch with no run open, and mints new ones on switching back", async () => {
+    await start();
+    await controlPlane.saveModelCredential("anthropic", keys.adasAnthropic, adaToken);
+    await controlPlane.saveModelCredential("openai", keys.adasOpenAi, adaToken);
+    const { thread, supervisor, access } = await startThread(adaToken, "anthropic/a-model");
+
+    await switchModel(thread.threadId, "openai/a-model");
+    const afterSwitching = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+    supervisor.inbox.messages.splice(0);
+    await switchModel(thread.threadId, "anthropic/a-model");
+    const newAccess = await waitForProxyAccess(supervisor, "anthropic");
+    const afterSwitchingBack = await callModelProxy(
+      controlPlane,
+      newAccess,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+    await readWholeAnswer(afterSwitchingBack);
+
+    expect(afterSwitching.status).toBe(403);
+    expect(newAccess.token).not.toBe(access.token);
+    expect(afterSwitchingBack.status).toBe(200);
+  });
+
+  it("never relays a model from before the previous one, nor the previous one past its time", async () => {
+    const clock = new ControllableClock();
+    await start({ clock: clock.now });
+    for (const [providerId, key] of [
+      ["anthropic", keys.adasAnthropic],
+      ["openai", keys.adasOpenAi],
+      ["groq", keys.adasGroq],
+    ] as const) {
+      await controlPlane.saveModelCredential(providerId, key, adaToken);
+    }
+    const { thread, supervisor, access } = await startThread(adaToken, "anthropic/a-model");
+    const run = runEventsOf(supervisor);
+    await run.send({ type: "agent_run_started" });
+    await switchModel(thread.threadId, "openai/a-model");
+    const openAiAccess = await waitForProxyAccess(supervisor, "openai");
+    await run.send({ type: "agent_run_settled", wasInterrupted: false });
+    await run.send({ type: "agent_run_started" });
+
+    await switchModel(thread.threadId, "groq/a-model");
+    const beforeThePrevious = await callModelProxy(
+      controlPlane,
+      access,
+      relayedFormatExamples.anthropic,
+      "Hi",
+    );
+    const previous = await callModelProxy(
+      controlPlane,
+      openAiAccess,
+      relayedFormatExamples.openai,
+      "Hi",
+    );
+    await readWholeAnswer(previous);
+    clock.advanceBy(previousModelAllowedForInMilliseconds + 1);
+    const previousPastItsTime = await callModelProxy(
+      controlPlane,
+      openAiAccess,
+      relayedFormatExamples.openai,
+      "Hi",
+    );
+
+    expect(beforeThePrevious.status).toBe(403);
+    expect(previous.status).toBe(200);
+    expect(previousPastItsTime.status).toBe(403);
   });
 
   it("refuses a second request at once from a thread allowed one", async () => {

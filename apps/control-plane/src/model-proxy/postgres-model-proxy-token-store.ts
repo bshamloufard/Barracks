@@ -54,4 +54,11 @@ export class PostgresModelProxyTokenStore implements ModelProxyTokenStore {
   async revokeThread(threadId: string): Promise<void> {
     await this.#pool.query(`delete from ${this.#table} where thread_id = $1`, [threadId]);
   }
+
+  async retainProviders(threadId: string, keptProviderIds: readonly string[]): Promise<void> {
+    await this.#pool.query(
+      `delete from ${this.#table} where thread_id = $1 and provider_id <> all($2::text[])`,
+      [threadId, keptProviderIds],
+    );
+  }
 }

@@ -34,10 +34,10 @@ import type { SealedModelCredentialRow } from "./model-credential-store.js";
 const ada = { userId: "11111111-1111-4111-8111-111111111111", email: "ada@example.com" };
 const grace = { userId: "22222222-2222-4222-8222-222222222222", email: "grace@example.com" };
 
-const adasGoogleKey = "sk-ant-ada-0000000000000001";
-const adasMistralKey = "sk-mistral-ada-00000000000002";
-const gracesGoogleKey = "sk-ant-grace-000000000000003";
-const adasReplacementKey = "sk-ant-ada-replacement-0004";
+const adasGoogleKey = "fake-google-key-of-ada-0001";
+const adasMistralKey = "fake-mistral-key-of-ada-0002";
+const gracesGoogleKey = "fake-google-key-of-grace-0003";
+const adasReplacementKey = "fake-google-key-of-ada-replaced-0004";
 const everySecret = [adasGoogleKey, adasMistralKey, gracesGoogleKey, adasReplacementKey];
 
 let issuer: TestIdentityIssuer;
@@ -145,7 +145,7 @@ describe("a user's model keys", () => {
   it("are refused when they cannot be keys, or lack or add settings their provider does not take", async () => {
     await start();
 
-    const withSpace = await saveKey("google", "sk-ant has a space", adaToken);
+    const withSpace = await saveKey("google", "fake key with a space", adaToken);
     const withoutAccount = await saveKey("cloudflare-workers-ai", "cf-key-0123456789", adaToken);
     const withStrangeSetting = await saveKey("google", adasGoogleKey, adaToken, {
       ANTHROPIC_BASE_URL: "https://elsewhere.example",

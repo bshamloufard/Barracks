@@ -87,6 +87,13 @@ export interface ThreadEventLog {
   readOpenRun(threadId: string): Promise<OpenRun | undefined>;
 
   /**
+   * The sequence of the `agent_run_started` that began the run open now, or
+   * undefined if none is: what tells that run from any run after it, even
+   * one the same supervisor instance opens.
+   */
+  readOpenRunStart(threadId: string): Promise<number | undefined>;
+
+  /**
    * The sequence of the thread's newest event, or 0 if it has none. Every
    * event up to and including it can be read: an event is never visible
    * here before every event ahead of it is.

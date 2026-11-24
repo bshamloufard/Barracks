@@ -16,8 +16,11 @@ import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-cr
 import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
 import { PostgresModelCredentialStore } from "../model-access/postgres-model-credential-store.js";
 import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
 import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
+import type { ModelSwitchAllowanceStore } from "../model-proxy/model-switch-allowance-store.js";
 import { PostgresModelProxyTokenStore } from "../model-proxy/postgres-model-proxy-token-store.js";
+import { PostgresModelSwitchAllowanceStore } from "../model-proxy/postgres-model-switch-allowance-store.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import type { ModelUsageStore } from "../model-usage/model-usage-store.js";
 import { PostgresModelUsageStore } from "../model-usage/postgres-model-usage-store.js";
@@ -50,6 +53,8 @@ export type OpenStorage = {
   modelProxyTokenStore: ModelProxyTokenStore;
   /** Users' model usage, and the caps they set themselves. */
   modelUsageStore: ModelUsageStore;
+  /** The model before a switch, still relayed for the run open on it. */
+  modelSwitchAllowanceStore: ModelSwitchAllowanceStore;
   /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
@@ -89,6 +94,7 @@ export async function openStorage(
       modelCredentialStore: new InMemoryModelCredentialStore(keyring),
       modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
       modelUsageStore: new InMemoryModelUsageStore(),
+      modelSwitchAllowanceStore: new InMemoryModelSwitchAllowanceStore(),
       close: async () => undefined,
     };
   }
@@ -120,6 +126,7 @@ export async function openStorage(
     modelCredentialStore: new PostgresModelCredentialStore(pool, keyring),
     modelProxyTokenStore: new PostgresModelProxyTokenStore(pool),
     modelUsageStore: new PostgresModelUsageStore(pool),
+    modelSwitchAllowanceStore: new PostgresModelSwitchAllowanceStore(pool),
     close: async () => {
       await keepAlive?.stop();
       await pool.end();

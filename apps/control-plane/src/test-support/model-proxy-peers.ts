@@ -5,7 +5,8 @@ import type { FakeSupervisor } from "./test-peers.js";
 /**
  * What a sandbox's agent does with the model proxy, as a test plays it: the
  * proxy token and address its supervisor was told, and requests in each
- * relayed format, shaped as the agent's own clients send them.
+ * relayed format, shaped as the agent's own clients send them, for a thread
+ * on `<provider>/a-model`.
  */
 
 export type ProxyAccess = { token: string; basePath: string; providerId: string };
@@ -44,7 +45,7 @@ export const relayedFormatExamples = {
     apiPath: "/v1/messages?beta=true",
     credentialHeaders: (token) => ({ "x-api-key": token, "anthropic-version": "2023-06-01" }),
     body: (text) => ({
-      model: "claude-test",
+      model: "a-model",
       max_tokens: 1024,
       stream: true,
       messages: [{ role: "user", content: [{ type: "text", text }] }],
@@ -55,7 +56,7 @@ export const relayedFormatExamples = {
     apiPath: "/responses",
     credentialHeaders: (token) => ({ authorization: `Bearer ${token}` }),
     body: (text) => ({
-      model: "gpt-test",
+      model: "a-model",
       stream: true,
       input: [{ role: "user", content: [{ type: "input_text", text }] }],
     }),
@@ -65,7 +66,7 @@ export const relayedFormatExamples = {
     apiPath: "/chat/completions",
     credentialHeaders: (token) => ({ authorization: `Bearer ${token}` }),
     body: (text) => ({
-      model: "llama-test",
+      model: "a-model",
       stream: true,
       stream_options: { include_usage: true },
       messages: [{ role: "user", content: text }],

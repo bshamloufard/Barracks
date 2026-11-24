@@ -17,6 +17,9 @@ export interface ModelProxyTokenStore {
 
   /** Accepts no token of the thread's any more, for any provider. */
   revokeThread(threadId: string): Promise<void>;
+
+  /** Accepts the thread's tokens for these providers only, retiring the rest. */
+  retainProviders(threadId: string, keptProviderIds: readonly string[]): Promise<void>;
 }
 
 export type AcceptedModelProxyToken = {

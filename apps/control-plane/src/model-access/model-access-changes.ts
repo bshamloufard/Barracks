@@ -1,4 +1,5 @@
-import type { ThreadStore } from "../threads/thread-store.js";
+import type { ModelSwitchAllowances } from "../model-proxy/model-switch-allowances.js";
+import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 
 /** Where a changed key or model is passed on: each thread's relay. */
 export type ModelAccessRefresher = { refreshModelAccess(threadId: string): void };
@@ -14,14 +15,37 @@ export type ModelAccessRefresher = { refreshModelAccess(threadId: string): void 
 export class ModelAccessChanges {
   readonly #threadStore: ThreadStore;
   readonly #relays: ModelAccessRefresher;
+  readonly #modelSwitchAllowances: ModelSwitchAllowances;
 
-  constructor(threadStore: ThreadStore, relays: ModelAccessRefresher) {
+  constructor(
+    threadStore: ThreadStore,
+    relays: ModelAccessRefresher,
+    modelSwitchAllowances: ModelSwitchAllowances,
+  ) {
     this.#threadStore = threadStore;
     this.#relays = relays;
+    this.#modelSwitchAllowances = modelSwitchAllowances;
   }
 
-  threadModelChanged(threadId: string): void {
-    this.#relays.refreshModelAccess(threadId);
+  /**
+   * Switches the owner's thread from `previousModel` (as just read) to
+   * `model`, which applies from the agent's next run. The model proxy is
+   * told first, so the run in progress keeps its model without a gap and
+   * every other provider's tokens are retired; then the thread's record;
+   * then its supervisor. Undefined if the thread is not the owner's.
+   */
+  async switchThreadModel(
+    ownerUserId: string,
+    threadId: string,
+    previousModel: string | undefined,
+    model: string,
+  ): Promise<ThreadRecord | undefined> {
+    await this.#modelSwitchAllowances.noteSwitch(threadId, previousModel, model);
+    const thread = await this.#threadStore.changeModel(ownerUserId, threadId, model);
+    if (thread !== undefined) {
+      this.#relays.refreshModelAccess(threadId);
+    }
+    return thread;
   }
 
   async ownerCredentialsChanged(ownerUserId: string): Promise<void> {

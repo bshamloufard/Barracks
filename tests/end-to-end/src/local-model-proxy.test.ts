@@ -34,8 +34,8 @@ import {
  */
 
 const keys = {
-  anthropic: "sk-ant-real-owner-key-0000000001",
-  openai: "sk-real-owner-openai-key-000002",
+  anthropic: "fake-anthropic-key-of-the-owner-0001",
+  openai: "fake-openai-key-of-the-owner-0002",
 };
 
 let modelServer: MockModelServer;

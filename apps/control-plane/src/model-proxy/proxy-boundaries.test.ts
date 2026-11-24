@@ -3,18 +3,23 @@ import { buffer } from "node:stream/consumers";
 import { describe, expect, it } from "vitest";
 import { digestConfirmedEmailAddress, OwnerAdmission } from "../authentication/owner-admission.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
-import { defaultModelProxyLimits, ModelProxyAdmissions } from "./model-proxy-limits.js";
+import {
+  AuthenticationAllowance,
+  defaultModelProxyLimits,
+  ModelProxyAdmissions,
+} from "./model-proxy-limits.js";
 import {
   buildDownstreamHeaders,
   buildUpstreamHeaders,
   readPresentedToken,
 } from "./proxy-headers.js";
 import { findRelayedRoute } from "./relayed-routes.js";
+import { inspectRequestBody } from "./request-body.js";
 import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
 /** The proxy's parts that decide what crosses it, each on its own. */
 
-const secret = "sk-real-key-0123456789";
+const secret = "fake-key-of-the-owner-0123456789";
 
 describe("where a relayed request may go", () => {
   it("goes only to the provider's own address, at the path its format uses", () => {
@@ -59,6 +64,41 @@ describe("where a relayed request may go", () => {
     expect(lookup.kind === "found" && lookup.route.upstreamUrl.href).toBe(
       "http://127.0.0.1:4010/v1/responses",
     );
+  });
+});
+
+describe("what the proxy changes in a request's body", () => {
+  function relayedJson(format: Parameters<typeof inspectRequestBody>[0], body: object): unknown {
+    const inspection = inspectRequestBody(format, Buffer.from(JSON.stringify(body)));
+    return inspection.kind === "relayable"
+      ? JSON.parse(inspection.body.bytes.toString("utf8"))
+      : inspection.kind;
+  }
+
+  it("asks for a streamed Chat Completions answer's usage, whatever the request said", () => {
+    const streamed = { model: "m", stream: true, messages: [] };
+
+    expect(relayedJson("openai_chat_completions", streamed)).toEqual({
+      ...streamed,
+      stream_options: { include_usage: true },
+    });
+    expect(
+      relayedJson("openai_chat_completions", {
+        ...streamed,
+        stream_options: { include_usage: false, other: 1 },
+      }),
+    ).toEqual({ ...streamed, stream_options: { include_usage: true, other: 1 } });
+    expect(
+      relayedJson("openai_chat_completions", { ...streamed, stream_options: "nonsense" }),
+    ).toEqual({ ...streamed, stream_options: { include_usage: true } });
+  });
+
+  it("changes nothing else, and nothing in other formats or in an answer not streamed", () => {
+    const notStreamed = { model: "m", messages: [], max_tokens: 5 };
+    const anthropic = { model: "m", stream: true, max_tokens: 5, messages: [] };
+
+    expect(relayedJson("openai_chat_completions", notStreamed)).toEqual(notStreamed);
+    expect(relayedJson("anthropic_messages", anthropic)).toEqual(anthropic);
   });
 });
 
@@ -178,6 +218,68 @@ describe("the proxy's limits on one thread", () => {
     now = 1_000;
     expect(startAndFinish()).toBe("admitted");
     expect(startAndFinish()).toBe("thread_busy");
+  });
+
+  it("never forgets a thread whose allowance is still part-spent, however many others it remembers", () => {
+    const now = 0;
+    const admissions = new ModelProxyAdmissions(
+      { ...defaultModelProxyLimits, requestBurstPerThread: 2, requestsPerSecondPerThread: 1 },
+      () => now,
+      3,
+    );
+    const startAndFinish = (threadId: string) => {
+      const admission = admissions.admit(threadId);
+      if (admission.kind === "admitted") {
+        admission.release();
+      }
+      return admission.kind;
+    };
+    startAndFinish("thread-a");
+    startAndFinish("thread-a");
+
+    for (let index = 0; index < 10; index += 1) {
+      startAndFinish(`thread-${index}`);
+    }
+
+    expect(startAndFinish("thread-a")).toBe("thread_busy");
+  });
+});
+
+describe("the proxy's bound on callers not yet authenticated", () => {
+  it("lets only so many token lookups run at once, and so many a second, for the whole instance", () => {
+    let now = 0;
+    const allowance = new AuthenticationAllowance(
+      {
+        ...defaultModelProxyLimits,
+        authenticationsInFlight: 2,
+        authenticationBurst: 3,
+        authenticationsPerSecond: 1,
+      },
+      () => now,
+    );
+
+    const first = allowance.enter();
+    const second = allowance.enter();
+    const third = allowance.enter();
+    if (first.kind === "entered") {
+      first.leave();
+    }
+    const fourth = allowance.enter();
+    const fifth = allowance.enter();
+    now = 1_000;
+    if (second.kind === "entered") {
+      second.leave();
+    }
+    const sixth = allowance.enter();
+
+    expect([first.kind, second.kind, third.kind, fourth.kind, fifth.kind, sixth.kind]).toEqual([
+      "entered",
+      "entered",
+      "busy",
+      "entered",
+      "busy",
+      "entered",
+    ]);
   });
 });
 

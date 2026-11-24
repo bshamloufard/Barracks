@@ -134,6 +134,12 @@ const environmentSchema = z.object({
     })
     .transform((value) => value.slice(developmentOnlyPrefix.length))
     .optional(),
+  BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM: z
+    .literal("development-only", {
+      error:
+        'only for tests outside development mode: "development-only", to let BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN send every user\'s model key to that origin',
+    })
+    .optional(),
   ...databaseEnvironmentShape,
 });
 
@@ -226,6 +232,7 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
   const exposureProblems = [
     describeUnauthenticatedExposure(authentication.configuration, host),
     describeUnisolatedProviderExposure(sandboxProvider.configuration, host),
+    describeUnsafeModelProxyUpstream(authentication.configuration, settings),
   ].filter((problem) => problem !== undefined);
   if (exposureProblems.length > 0) {
     return { ok: false, problems: exposureProblems };
@@ -314,6 +321,26 @@ function describeUnisolatedProviderExposure(
     return undefined;
   }
   return `BARRACK_CONTROL_PLANE_HOST: must be a loopback address (127.0.0.1, localhost or ::1) with the local-process sandbox provider, which runs agents unisolated on this machine`;
+}
+
+/**
+ * Pointing the model proxy at another origin sends every user's key for a
+ * relayed provider there. Development mode has one user, its own; anywhere
+ * else a second, separately named switch must say so too, so the origin
+ * cannot be set by mistake in a deployment that has real users.
+ */
+function describeUnsafeModelProxyUpstream(
+  authentication: AuthenticationConfiguration,
+  settings: Settings,
+): string | undefined {
+  if (
+    settings.BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN === undefined ||
+    authentication.method === "development-single-user" ||
+    settings.BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM !== undefined
+  ) {
+    return undefined;
+  }
+  return "BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: sends every user's model key for a relayed provider to that origin, so it is refused unless BARRACK_AUTHENTICATION=development-single-user or BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM=development-only is also set; never set either in a deployment";
 }
 
 function splitCommaSeparatedList(list: string): string[] {

@@ -1,11 +1,14 @@
 import type { Pool } from "pg";
 import { afterAll, beforeAll } from "vitest";
 import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
+import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
 import { PostgresModelProxyTokenStore } from "../model-proxy/postgres-model-proxy-token-store.js";
+import { PostgresModelSwitchAllowanceStore } from "../model-proxy/postgres-model-switch-allowance-store.js";
 import {
   contractOwnerUserIds,
   contractThreadIds,
   describeModelProxyTokenStoreContract,
+  describeModelSwitchAllowanceStoreContract,
   describeModelUsageStoreContract,
 } from "../test-support/model-proxy-store-contracts.js";
 import { recordTestThread } from "../test-support/record-test-thread.js";
@@ -24,13 +27,18 @@ describeModelProxyTokenStoreContract("InMemoryModelProxyTokenStore", async () =>
   return [store, store];
 });
 
+describeModelSwitchAllowanceStoreContract("InMemoryModelSwitchAllowanceStore", async () => {
+  const store = new InMemoryModelSwitchAllowanceStore();
+  return [store, store];
+});
+
 describeModelUsageStoreContract("InMemoryModelUsageStore", async () => {
   const store = new InMemoryModelUsageStore();
   return [store, store];
 });
 
 /** Two pools on one database stand in for two control plane instances during a redeploy. */
-describeWithTestDatabase("the Postgres model proxy token and usage stores", () => {
+describeWithTestDatabase("the Postgres model proxy and usage stores", () => {
   let firstInstance: Pool;
   let secondInstance: Pool;
   let schemas: TestSchemas;
@@ -65,6 +73,14 @@ describeWithTestDatabase("the Postgres model proxy token and usage stores", () =
     return [
       new PostgresModelProxyTokenStore(firstInstance, schema),
       new PostgresModelProxyTokenStore(secondInstance, schema),
+    ];
+  });
+
+  describeModelSwitchAllowanceStoreContract("PostgresModelSwitchAllowanceStore", async () => {
+    const schema = await createSchemaWithThreads();
+    return [
+      new PostgresModelSwitchAllowanceStore(firstInstance, schema),
+      new PostgresModelSwitchAllowanceStore(secondInstance, schema),
     ];
   });
 

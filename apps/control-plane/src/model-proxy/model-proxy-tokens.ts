@@ -12,6 +12,16 @@ import type { ModelProxyTokenStore } from "./model-proxy-token-store.js";
  */
 const tokenLengthInBytes = 32;
 
+/** What every minted token looks like: 32 bytes in base64url, without padding. */
+const wellFormedToken = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * Compared with a presented token when the thread and provider have none,
+ * so the answer takes as long for a thread that does not exist as for a
+ * wrong token; nothing hashes to it.
+ */
+const noAcceptedDigest = Buffer.alloc(32);
+
 export class ModelProxyTokens {
   readonly #store: ModelProxyTokenStore;
   readonly #clock: () => Date;
@@ -33,10 +43,19 @@ export class ModelProxyTokens {
     return token;
   }
 
+  /**
+   * Whether `presentedToken` could be a token at all; one that could not is
+   * refused without asking the store.
+   */
+  static isWellFormed(presentedToken: string): boolean {
+    return wellFormedToken.test(presentedToken);
+  }
+
   /** Whether `presentedToken` was minted for this thread and provider and not revoked since. */
   async isAccepted(threadId: string, providerId: string, presentedToken: string): Promise<boolean> {
     const presentedDigest = digestToken(presentedToken);
-    const acceptedDigests = await this.#store.listDigests(threadId, providerId);
+    const storedDigests = await this.#store.listDigests(threadId, providerId);
+    const acceptedDigests = storedDigests.length === 0 ? [noAcceptedDigest] : storedDigests;
     // Every digest is compared, in constant time, so the answer's timing
     // says nothing of which, if any, came close.
     let isFound = false;
@@ -50,6 +69,11 @@ export class ModelProxyTokens {
 
   revokeThread(threadId: string): Promise<void> {
     return this.#store.revokeThread(threadId);
+  }
+
+  /** Retires the thread's tokens for every provider but these. */
+  retainProviders(threadId: string, keptProviderIds: readonly string[]): Promise<void> {
+    return this.#store.retainProviders(threadId, keptProviderIds);
   }
 }
 

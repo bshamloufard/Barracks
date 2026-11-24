@@ -18,8 +18,8 @@ import { z } from "zod";
  *   where reported, as the agent itself reads it).
  *   https://platform.openai.com/docs/api-reference/responses-streaming
  * - OpenAI Chat Completions: the last chunk carries `usage` when the request
- *   asked for it (`stream_options.include_usage`, which the agent sends),
- *   whose `prompt_tokens` include the cached ones.
+ *   asked for it (`stream_options.include_usage`, which the proxy sets on
+ *   every streamed request), whose `prompt_tokens` include the cached ones.
  *   https://platform.openai.com/docs/api-reference/chat-streaming
  *
  * Counts are kept apart so they never overlap: input excludes what was read

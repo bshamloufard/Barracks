@@ -95,9 +95,30 @@ describe("the control plane configuration", () => {
     });
   });
 
+  it("points the model proxy elsewhere only in development mode, or when a second switch says so", () => {
+    const inDevelopmentMode = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_AUTHENTICATION: "development-single-user",
+      BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "development-only:http://127.0.0.1:4010",
+    });
+    const withSupabaseAlone = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "development-only:http://127.0.0.1:4010",
+    });
+
+    expect(inDevelopmentMode.ok && inDevelopmentMode.configuration.modelProxyUpstreamOrigin).toBe(
+      "http://127.0.0.1:4010",
+    );
+    expect(withSupabaseAlone).toEqual({
+      ok: false,
+      problems: [expect.stringContaining("BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM")],
+    });
+  });
+
   it("points the model proxy elsewhere only when told it is for development", () => {
     const declared = readConfiguration({
       ...minimalEnvironment,
+      BARRACK_ALLOW_UNSAFE_MODEL_PROXY_UPSTREAM: "development-only",
       BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN: "development-only:http://127.0.0.1:4010",
     });
     const undeclared = readConfiguration({
