@@ -21,13 +21,10 @@ import {
   githubVariableNames,
   readGithubSettings,
 } from "./github/github-settings.js";
+import { parseCredentialKey } from "./model-access/credential-keyring.js";
 import type { SandboxLifecycleSettings } from "./sandbox-lifecycle/lifecycle-settings.js";
-import { readModelCredentials } from "./threads/model-credentials.js";
 import { readPiSettings } from "./threads/pi-settings.js";
-import type {
-  AgentSettings,
-  SupervisorEnvironmentSettings,
-} from "./threads/supervisor-environment.js";
+import type { SupervisorEnvironmentSettings } from "./threads/supervisor-environment.js";
 
 /**
  * The browser origins the web client is served from during local development:
@@ -65,65 +62,78 @@ const defaultRunningSandboxesPerUser = 3;
 /** How often sandboxes are compared with the provider and checked for idleness. */
 const defaultCheckSeconds = 30;
 
-const environmentSchema = z
-  .object({
-    BARRACK_CONTROL_PLANE_HOST: z.string().min(1).default("127.0.0.1"),
-    BARRACK_CONTROL_PLANE_PORT: z.coerce.number().int().min(0).max(65_535).default(8787),
-    BARRACK_SANDBOX_CONTROL_PLANE_URL: z
-      .url({
-        protocol: /^wss?$/,
-        error:
-          "required: the control plane's ws:// or wss:// URL as sandboxes reach it, e.g. ws://host.docker.internal:8787",
-      })
-      .transform((url) => url.replace(/\/+$/, "")),
-    BARRACK_ALLOWED_CLIENT_ORIGINS: z
-      .string()
-      .default(localDevelopmentOrigins.join(","))
-      .transform(splitCommaSeparatedList)
-      .pipe(z.array(z.url().transform(originOf)).min(1)),
-    BARRACK_WEB_CLIENT_DIRECTORY: z
-      .string()
-      .min(1)
-      .refine(existsSync, { error: "must name a directory that exists" })
-      .transform((directory) => resolve(directory))
-      .optional(),
-    BARRACK_LOG_LEVEL: z.enum(logLevels).default("info"),
-    BARRACK_AGENT_HARNESS: z.enum(["pi", "fake"]).default("pi"),
-    BARRACK_MODEL: z
-      .string()
-      .regex(/^[^/\s]+\/\S+$/, 'must be "provider/model", e.g. "openai/example-model"')
-      .optional(),
-    BARRACK_SANDBOX_IDLE_MINUTES: z.coerce
-      .number()
-      .positive()
-      .max(7 * 24 * 60)
-      .default(defaultIdleMinutes),
-    BARRACK_RUNNING_SANDBOXES_PER_USER: z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(1_000)
-      .default(defaultRunningSandboxesPerUser),
-    BARRACK_RUNNING_SANDBOXES_IN_TOTAL: z.coerce.number().int().min(1).max(100_000).optional(),
-    BARRACK_SANDBOX_CHECK_SECONDS: z.coerce
-      .number()
-      .positive()
-      .max(60 * 60)
-      .default(defaultCheckSeconds),
-    ...databaseEnvironmentShape,
-  })
-  .refine((settings) => settings.BARRACK_AGENT_HARNESS === "fake" || settings.BARRACK_MODEL, {
-    path: ["BARRACK_MODEL"],
-    error:
-      'required for the Pi agent, in Pi\'s "provider/model" form; or set BARRACK_AGENT_HARNESS=fake',
-  });
+const environmentSchema = z.object({
+  BARRACK_CONTROL_PLANE_HOST: z.string().min(1).default("127.0.0.1"),
+  BARRACK_CONTROL_PLANE_PORT: z.coerce.number().int().min(0).max(65_535).default(8787),
+  BARRACK_SANDBOX_CONTROL_PLANE_URL: z
+    .url({
+      protocol: /^wss?$/,
+      error:
+        "required: the control plane's ws:// or wss:// URL as sandboxes reach it, e.g. ws://host.docker.internal:8787",
+    })
+    .transform((url) => url.replace(/\/+$/, "")),
+  BARRACK_ALLOWED_CLIENT_ORIGINS: z
+    .string()
+    .default(localDevelopmentOrigins.join(","))
+    .transform(splitCommaSeparatedList)
+    .pipe(z.array(z.url().transform(originOf)).min(1)),
+  BARRACK_WEB_CLIENT_DIRECTORY: z
+    .string()
+    .min(1)
+    .refine(existsSync, { error: "must name a directory that exists" })
+    .transform((directory) => resolve(directory))
+    .optional(),
+  BARRACK_LOG_LEVEL: z.enum(logLevels).default("info"),
+  BARRACK_AGENT_HARNESS: z.enum(["pi", "fake"]).default("pi"),
+  BARRACK_MODEL_CREDENTIAL_KEY: credentialKeySchema(""),
+  BARRACK_MODEL_CREDENTIAL_PREVIOUS_KEYS: z
+    .string()
+    .default("")
+    .transform(splitCommaSeparatedList)
+    .pipe(z.array(credentialKeySchema("each key "))),
+  BARRACK_SANDBOX_IDLE_MINUTES: z.coerce
+    .number()
+    .positive()
+    .max(7 * 24 * 60)
+    .default(defaultIdleMinutes),
+  BARRACK_RUNNING_SANDBOXES_PER_USER: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1_000)
+    .default(defaultRunningSandboxesPerUser),
+  BARRACK_RUNNING_SANDBOXES_IN_TOTAL: z.coerce.number().int().min(1).max(100_000).optional(),
+  BARRACK_SANDBOX_CHECK_SECONDS: z.coerce
+    .number()
+    .positive()
+    .max(60 * 60)
+    .default(defaultCheckSeconds),
+  ...databaseEnvironmentShape,
+});
+
+/**
+ * A key model credentials are sealed under: base64 of 32 random bytes. The
+ * problem names the variable but never repeats its value.
+ */
+function credentialKeySchema(problemPrefix: string) {
+  return z
+    .string({ error: "required: base64 of 32 random bytes, from `openssl rand -base64 32`" })
+    .transform((text, context) => {
+      const parsed = parseCredentialKey(text);
+      if ("problem" in parsed) {
+        context.addIssue({ code: "custom", message: `${problemPrefix}${parsed.problem}` });
+        return z.NEVER;
+      }
+      return parsed.key;
+    });
+}
 
 type Settings = z.infer<typeof environmentSchema>;
 
 /**
  * Every variable the control plane itself reads, from each schema
- * `readConfiguration` checks; each provider reads its own as well, and model
- * keys and Pi's settings are forwarded from lists of their own.
+ * `readConfiguration` checks; each provider reads its own as well, and Pi's
+ * settings are forwarded from a list of their own.
  */
 export const controlPlaneVariableNames = [
   ...Object.keys(environmentSchema.shape),
@@ -146,8 +156,13 @@ export type ControlPlaneConfiguration = {
   authentication: AuthenticationConfiguration;
   /** Which provider creates threads' sandboxes. */
   sandboxProvider: SandboxProviderConfiguration;
-  /** What every new sandbox's supervisor is told. Holds model keys: never log it. */
+  /** What every new sandbox's supervisor is told. */
   supervisorEnvironment: SupervisorEnvironmentSettings;
+  /**
+   * What users' model credentials are sealed under: `current` seals, and
+   * `previous` only opens what earlier keys sealed, while rotating. Never log it.
+   */
+  modelCredentialKeys: { current: Buffer; previous: Buffer[] };
   /** When sandboxes stop by themselves, and how many may run at once. */
   sandboxLifecycle: SandboxLifecycleSettings;
   /** The GitHub App, if any, and which repository URLs are accepted. Holds the App's key: never log it. */
@@ -212,9 +227,12 @@ function toConfiguration(
     sandboxProvider,
     supervisorEnvironment: {
       controlPlaneUrlForSandboxes: settings.BARRACK_SANDBOX_CONTROL_PLANE_URL,
-      agent: toAgentSettings(settings),
-      modelCredentials: readModelCredentials(environment),
+      agent: { harness: settings.BARRACK_AGENT_HARNESS },
       piSettings: readPiSettings(environment),
+    },
+    modelCredentialKeys: {
+      current: settings.BARRACK_MODEL_CREDENTIAL_KEY,
+      previous: settings.BARRACK_MODEL_CREDENTIAL_PREVIOUS_KEYS,
     },
     sandboxLifecycle: {
       idlePeriodInMilliseconds: settings.BARRACK_SANDBOX_IDLE_MINUTES * 60_000,
@@ -226,16 +244,6 @@ function toConfiguration(
     },
     github,
   };
-}
-
-function toAgentSettings(settings: Settings): AgentSettings {
-  if (settings.BARRACK_AGENT_HARNESS === "fake") {
-    return { harness: "fake" };
-  }
-  if (settings.BARRACK_MODEL === undefined) {
-    throw new Error("The configuration schema let the Pi agent through without a model");
-  }
-  return { harness: "pi", model: settings.BARRACK_MODEL };
 }
 
 /**

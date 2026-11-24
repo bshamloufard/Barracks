@@ -205,6 +205,7 @@ describeWithTestDatabase("the control plane's migrations", () => {
     expect(tables.rows).toEqual([
       { name: "github_connection_attempts", has_row_security: true },
       { name: "github_connections", has_row_security: true },
+      { name: "model_credentials", has_row_security: true },
       { name: "schema_migrations", has_row_security: true },
       { name: "thread_events", has_row_security: true },
       { name: "thread_repositories", has_row_security: true },

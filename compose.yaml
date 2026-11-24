@@ -10,8 +10,11 @@
 # BARRACK_DATABASE_PASSWORD, and for sign-in a Supabase project's URL and
 # publishable key (BARRACK_SUPABASE_URL, BARRACK_SUPABASE_PUBLISHABLE_KEY)
 # and the email addresses allowed to use this installation
-# (BARRACK_ALLOWED_USER_EMAILS). The agent's settings and model keys are
-# read from it too.
+# (BARRACK_ALLOWED_USER_EMAILS); and the key users' own model keys are
+# sealed under (BARRACK_MODEL_CREDENTIAL_KEY, from `openssl rand -base64 32`;
+# keep a copy, since losing it loses every stored key). The agent's other
+# settings are read from it too. Each user adds their own model keys in
+# the web client's Settings.
 #
 # SIGN-IN IS SUPABASE'S. The control plane listens on every interface of its
 # container, where development mode's one shared user is refused, so users
@@ -134,6 +137,7 @@ services:
       BARRACK_SUPABASE_URL: ${BARRACK_SUPABASE_URL:?set BARRACK_SUPABASE_URL, your Supabase project's https URL, in .env}
       BARRACK_SUPABASE_PUBLISHABLE_KEY: ${BARRACK_SUPABASE_PUBLISHABLE_KEY:?set BARRACK_SUPABASE_PUBLISHABLE_KEY, the project's publishable key, in .env}
       BARRACK_ALLOWED_USER_EMAILS: ${BARRACK_ALLOWED_USER_EMAILS:?set BARRACK_ALLOWED_USER_EMAILS, the email addresses allowed to sign in, in .env}
+      BARRACK_MODEL_CREDENTIAL_KEY: ${BARRACK_MODEL_CREDENTIAL_KEY:?set BARRACK_MODEL_CREDENTIAL_KEY, from openssl rand -base64 32, in .env, and keep a copy}
       DOCKER_HOST: tcp://docker-api:2375
     ports:
       - "127.0.0.1:8787:8787"

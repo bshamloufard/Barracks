@@ -106,6 +106,7 @@ describe("the supervisor endpoint", () => {
     expect(olderSupervisor.inbox.messages.map((message) => message.type)).toEqual([
       "supervisor_welcome",
       "prepare_workspace",
+      "configure_model_access",
     ]);
   });
 

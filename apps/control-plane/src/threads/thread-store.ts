@@ -57,6 +57,17 @@ export interface ThreadStore {
   recordActivity(threadId: string, at: Date): Promise<void>;
 
   /**
+   * Switches the thread's model, if it exists and belongs to `ownerUserId`;
+   * returns the thread as it now is, or undefined. It does not change the
+   * version: no operation under way depends on the model.
+   */
+  changeModel(
+    ownerUserId: string,
+    threadId: string,
+    model: string,
+  ): Promise<ThreadRecord | undefined>;
+
+  /**
    * Removes a thread being deleted, if it is still at `version`. Returns
    * whether it was removed.
    */
@@ -188,6 +199,11 @@ export type NewThread = {
   /** SHA-256 of the supervisor's token. The token itself is never stored. */
   supervisorTokenDigest: Buffer;
   /**
+   * The model its agent runs on, as `provider/model`; none only where the
+   * installation runs the fake agent, which needs none.
+   */
+  model?: string;
+  /**
    * The repository the thread starts from, recorded in the same step as
    * the thread; read back through `ThreadRepositoryStore`.
    */
@@ -213,8 +229,13 @@ export type SandboxAdmission = {
 
 export type ThreadRecord = Omit<
   NewThread,
-  "ownerUserId" | "supervisorTokenDigest" | "repository"
+  "ownerUserId" | "supervisorTokenDigest" | "repository" | "model"
 > & {
+  /**
+   * Undefined for a thread created without one, and for threads created
+   * before each had its own (they ran on the installation's one model).
+   */
+  model: string | undefined;
   /** Undefined only for a thread created before sign-in existed, which nobody may see. */
   ownerUserId: string | undefined;
   /**

@@ -14,9 +14,8 @@
  * - This file describes the whole service, so an apply may delete variables
  *   it leaves out (a plan marks every deletion). Every secret is therefore
  *   listed with `preserve()`, which keeps the value set in Railway's
- *   dashboard and puts none in the repository. Add a `preserve()` line for
- *   each model provider key you set (such as ANTHROPIC_API_KEY), and read
- *   every plan before applying it.
+ *   dashboard and puts none in the repository. Read every plan before
+ *   applying it.
  * - The repository itself is connected in the dashboard, so this file names
  *   no GitHub repository and works from a fork unchanged.
  */
@@ -95,10 +94,11 @@ export default defineRailway((context, project) => {
       BARRACK_SUPABASE_URL: preserve(),
       BARRACK_SUPABASE_PUBLISHABLE_KEY: preserve(),
       BARRACK_ALLOWED_USER_EMAILS: preserve(),
-      // Set in the dashboard: the model in Pi's provider/model form, the
-      // Daytona snapshot and key, and Supabase's session pooler URL and
-      // certificate authority.
-      BARRACK_MODEL: preserve(),
+      // Set in the dashboard: the key users' model credentials are sealed
+      // under (losing it loses them), the Daytona snapshot and key, and
+      // Supabase's session pooler URL and certificate authority.
+      BARRACK_MODEL_CREDENTIAL_KEY: preserve(),
+      BARRACK_MODEL_CREDENTIAL_PREVIOUS_KEYS: preserve(),
       BARRACK_DAYTONA_SNAPSHOT: preserve(),
       DAYTONA_API_KEY: preserve(),
       BARRACK_DATABASE_URL: preserve(),

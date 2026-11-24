@@ -140,6 +140,7 @@ describe("creating a thread", () => {
       isAgentWorking: false,
       sandbox: { state: "running" },
       repository: null,
+      model: null,
     });
   });
 

@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import type { Authenticator } from "../authentication/authenticator.js";
 import { respondWithApiError } from "./api-error.js";
 import { addGithubRoutes, type GithubRoutesDependencies } from "./github-routes.js";
+import { addModelAccessRoutes } from "./model-access-routes.js";
 import { addPublicationRoutes, type PublicationRoutesDependencies } from "./publication-routes.js";
 import { refuseDisallowedOrigins, refuseHostsOtherThanLoopback } from "./request-guards.js";
 import { requireSignedInUser, type SignedInEnvironment } from "./require-signed-in-user.js";
@@ -60,6 +61,7 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
   };
   app.get(clientConfigurationPath, (context) => context.json(clientConfiguration));
   addThreadsRoutes(app, options.threads);
+  addModelAccessRoutes(app, { ...options.threads.modelAccess, logger: options.threads.logger });
   addGithubRoutes(app, options.github);
   addPublicationRoutes(app, options.publication);
   app.all("/api/*", (context) =>

@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
 import { createHttpApp } from "./http/http-app.js";
+import type { ThreadModelAccessDependencies } from "./http/threads-routes.js";
 import type { Logger } from "./logger.js";
 import type { ThreadPublisher } from "./publication/thread-publisher.js";
 import type { RepositoryServices } from "./repositories/assemble-repository-services.js";
@@ -47,6 +48,7 @@ export type ControlPlaneServerOptions = {
   relays: ThreadRelayRegistry;
   sandboxLifecycle: SandboxLifecycle;
   repositoryServices: RepositoryServices;
+  modelAccess: ThreadModelAccessDependencies;
   publisher: ThreadPublisher;
   authenticator: Authenticator;
   /** What clients are told about signing in. */
@@ -91,6 +93,7 @@ export async function startControlPlaneServer(
         store: repositoryServices.repositories,
         isGithubAvailable: repositoryServices.githubConnections.isAvailable,
       },
+      modelAccess: options.modelAccess,
       logger,
     },
     github: { githubConnections: repositoryServices.githubConnections, logger },

@@ -198,6 +198,7 @@ describe("each user's threads", () => {
       expect(supervisor.inbox.messages).toEqual([
         { type: "supervisor_welcome", lastRecordedEventNumber: 0 },
         { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
+        { type: "configure_model_access", model: null, credential: null },
       ]);
     },
   );

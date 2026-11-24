@@ -8,6 +8,10 @@ import {
   developmentAccessToken,
 } from "../authentication/development-single-user.js";
 import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
+import { CredentialKeyring } from "../model-access/credential-keyring.js";
+import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
+import { ModelAccessChanges } from "../model-access/model-access-changes.js";
+import { ModelCredentials } from "../model-access/model-credentials.js";
 import { assembleRepositoryServices } from "../repositories/assemble-repository-services.js";
 import { assembleThreadServices } from "../sandbox-lifecycle/assemble-thread-services.js";
 import {
@@ -71,6 +75,14 @@ function createApp() {
         store: repositoryServices.repositories,
         isGithubAvailable: false,
       },
+      modelAccess: {
+        credentials: new ModelCredentials({
+          store: new InMemoryModelCredentialStore(new CredentialKeyring(Buffer.alloc(32, 1))),
+          logger,
+        }),
+        changes: new ModelAccessChanges(threadStore, relays),
+        isModelRequired: true,
+      },
       logger,
     },
     github: { githubConnections: repositoryServices.githubConnections, logger },
@@ -103,6 +115,11 @@ describe("the HTTP API's access control", () => {
         "POST /api/threads/some-identifier/resume",
         "DELETE /api/threads/some-identifier",
         "POST /api/threads/some-identifier/publication",
+        "PUT /api/threads/some-identifier/model",
+        "GET /api/model-catalogue",
+        "GET /api/model-credentials",
+        "PUT /api/model-credentials/some-identifier",
+        "DELETE /api/model-credentials/some-identifier",
         "GET /api/github/connection",
         "POST /api/github/connection",
         "DELETE /api/github/connection",

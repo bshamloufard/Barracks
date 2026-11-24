@@ -3,6 +3,11 @@ import { createConfiguredAuthentication } from "./authentication/create-authenti
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
+import { checkCredentialKeys } from "./model-access/credential-key-check.js";
+import { CredentialKeyring } from "./model-access/credential-keyring.js";
+import { ModelAccessChanges } from "./model-access/model-access-changes.js";
+import { ModelCredentials } from "./model-access/model-credentials.js";
+import { OwnerModelAccess } from "./model-access/owner-model-access.js";
 import { assembleRepositoryServices } from "./repositories/assemble-repository-services.js";
 import {
   assembleThreadServices,
@@ -29,7 +34,14 @@ async function main(): Promise<void> {
   describeSandboxes(configuration, logger);
   // The database is migrated before the server listens, so nothing is
   // accepted that could not be recorded.
-  const storage = await openStorage(configuration.database, logger);
+  const keyring = new CredentialKeyring(
+    configuration.modelCredentialKeys.current,
+    configuration.modelCredentialKeys.previous,
+  );
+  const storage = await openStorage(configuration.database, keyring, logger);
+  await checkCredentialKeys(storage.modelCredentialStore, keyring, logger);
+  const credentials = new ModelCredentials({ store: storage.modelCredentialStore, logger });
+  const isModelRequired = configuration.supervisorEnvironment.agent.harness === "pi";
   const authentication = await createConfiguredAuthentication(
     configuration.authentication,
     storage.userStore,
@@ -50,6 +62,11 @@ async function main(): Promise<void> {
     supervisorEnvironment: configuration.supervisorEnvironment,
     settings: configuration.sandboxLifecycle,
     workspaces: repositoryServices.workspaces,
+    modelAccess: new OwnerModelAccess({
+      threadStore: storage.threadStore,
+      credentials,
+      isModelRequired,
+    }),
     logger,
   });
   const server = await startControlPlaneServer({
@@ -59,6 +76,11 @@ async function main(): Promise<void> {
     relays: threadServices.relays,
     sandboxLifecycle: threadServices.sandboxLifecycle,
     repositoryServices,
+    modelAccess: {
+      credentials,
+      changes: new ModelAccessChanges(storage.threadStore, threadServices.relays),
+      isModelRequired,
+    },
     publisher: repositoryServices.createPublisher(threadServices.relays),
     authenticator: authentication.authenticator,
     clientAuthentication: authentication.clientAuthentication,
@@ -78,7 +100,6 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
       sandboxProvider: sandboxProvider.kind,
       controlPlaneUrlForSandboxes: supervisorEnvironment.controlPlaneUrlForSandboxes,
       agent: supervisorEnvironment.agent,
-      forwardedModelCredentials: Object.keys(supervisorEnvironment.modelCredentials),
       forwardedPiSettings: supervisorEnvironment.piSettings,
     },
     "Creating thread sandboxes",

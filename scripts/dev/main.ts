@@ -82,9 +82,9 @@ async function stopEverything(exitCode: number, reason: string): Promise<void> {
 function describeAgent(settings: DevSettings): string {
   const { agent } = settings;
   if (agent.kind === "fake") {
-    return "Using the fake agent. Set BARRACK_MODEL (and your model provider's key) to use Pi.";
+    return "Using the fake agent. Set BARRACK_AGENT_HARNESS=pi to use Pi, then add your model provider's key in Settings.";
   }
-  return `Using Pi with ${agent.model}.`;
+  return "Using Pi: add your model provider's key in Settings, then choose a model for each thread.";
 }
 
 function report(message: string): void {

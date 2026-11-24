@@ -13,9 +13,10 @@ import type { ServiceDefinition } from "./service-process.js";
 const tsxLoaderUrl = import.meta.resolve("tsx");
 
 /**
- * The control plane gets the developer's whole environment, so that it can
- * forward model provider keys such as ANTHROPIC_API_KEY to sandboxes; it
- * passes on only an allowlist of them.
+ * The control plane gets the developer's whole environment, so that
+ * settings such as `BARRACK_DATABASE_URL` or `PI_OFFLINE` reach it. Model
+ * provider keys in it are no use: each user adds their own in Settings, and
+ * the supervisor passes none from its environment on to Pi.
  */
 export function controlPlaneService(settings: DevSettings): ServiceDefinition {
   return {
@@ -30,6 +31,7 @@ export function controlPlaneService(settings: DevSettings): ServiceDefinition {
       BARRACK_CONTROL_PLANE_PORT: String(settings.controlPlanePort),
       ...localProcessSandboxVariables(settings),
       ...agentVariables(settings),
+      BARRACK_MODEL_CREDENTIAL_KEY: settings.modelCredentialKey,
     },
   };
 }
@@ -87,10 +89,7 @@ function localProcessSandboxVariables(settings: DevSettings): NodeJS.ProcessEnv 
 }
 
 function agentVariables(settings: DevSettings): NodeJS.ProcessEnv {
-  const { agent } = settings;
-  return agent.kind === "fake"
-    ? { BARRACK_AGENT_HARNESS: "fake" }
-    : { BARRACK_AGENT_HARNESS: "pi", BARRACK_MODEL: agent.model };
+  return { BARRACK_AGENT_HARNESS: settings.agent.kind };
 }
 
 function runTypeScriptEntryPoint(

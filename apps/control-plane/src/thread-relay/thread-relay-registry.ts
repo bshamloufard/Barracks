@@ -9,6 +9,7 @@ import type {
 import type { ThreadAccess } from "../threads/thread-access.js";
 import type { ClientConnection, SupervisorConnection } from "./connections.js";
 import type { ThreadActivity } from "./thread-activity.js";
+import type { ThreadModelAccess } from "./thread-model-access.js";
 import { ThreadRelay } from "./thread-relay.js";
 import type { ThreadWorkspaces } from "./thread-workspaces.js";
 
@@ -16,6 +17,7 @@ export type ThreadRelayRegistryOptions = {
   threadEventLog: ThreadEventLog;
   threadActivity: ThreadActivity;
   workspaces?: ThreadWorkspaces;
+  modelAccess?: ThreadModelAccess;
   logger: Logger;
 };
 
@@ -90,6 +92,15 @@ export class ThreadRelayRegistry implements ThreadRuns {
     return relay.forgetDeletedThread();
   }
 
+  /**
+   * Tells the thread's attached supervisor its model access again, if it
+   * has changed. A thread with no relay here has no supervisor attached
+   * here, and its supervisor is told when it next attaches.
+   */
+  refreshModelAccess(threadId: string): void {
+    this.#relaysByThreadId.get(threadId)?.refreshModelAccess();
+  }
+
   /** Sends to the thread's attached supervisor; false if none is attached here. */
   sendWorkspaceMessage(threadId: string, message: ControlPlaneWorkspaceMessage): boolean {
     return this.#relaysByThreadId.get(threadId)?.sendWorkspaceMessage(message) ?? false;
@@ -115,6 +126,9 @@ export class ThreadRelayRegistry implements ThreadRuns {
       threadEventLog: this.#options.threadEventLog,
       threadActivity: this.#options.threadActivity,
       ...(this.#options.workspaces === undefined ? {} : { workspaces: this.#options.workspaces }),
+      ...(this.#options.modelAccess === undefined
+        ? {}
+        : { modelAccess: this.#options.modelAccess }),
       logger,
       whenUnused: () => this.#drop(relay, logger),
     });

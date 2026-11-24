@@ -3,6 +3,7 @@ import type {
   AssistantTextFragment,
   ClientCommand,
   ClientMessageRejected,
+  ConfigureModelAccess,
   ControlPlaneToClientMessage,
   ControlPlaneWorkspaceMessage,
   RecordedThreadEvent,
@@ -32,6 +33,7 @@ import { findMissedRange, type MissedRange, readMissedEvents } from "./read-miss
 import { SerialTaskQueue } from "./serial-task-queue.js";
 import { SupervisorBacklog, supervisorMessagesBacklogLimit } from "./supervisor-backlog.js";
 import type { ThreadActivity } from "./thread-activity.js";
+import { noThreadModelAccess, type ThreadModelAccess } from "./thread-model-access.js";
 import {
   emptyThreadWorkspaces,
   isSupervisorWorkspaceMessage,
@@ -82,6 +84,11 @@ type AttachedSupervisor = {
   deliveryCursor: number;
   /** Its sandbox is being stopped, so it is handed no more user messages. */
   isSandboxStopping: boolean;
+  /**
+   * The model access last sent on this connection, as sent, so the same is
+   * not sent again. It holds a key, in memory only, as the message did.
+   */
+  sentModelAccess: string | undefined;
 };
 
 export type ThreadRelayOptions = {
@@ -90,6 +97,8 @@ export type ThreadRelayOptions = {
   threadActivity: ThreadActivity;
   /** What the thread's workspace holds; empty when omitted. */
   workspaces?: ThreadWorkspaces;
+  /** The thread's model and its owner's key; none when omitted. */
+  modelAccess?: ThreadModelAccess;
   logger: Logger;
   /**
    * Called whenever the relay is left with no supervisor, no clients and no
@@ -126,6 +135,7 @@ export class ThreadRelay {
   readonly #threadEventLog: ThreadEventLog;
   readonly #threadActivity: ThreadActivity;
   readonly #workspaces: ThreadWorkspaces;
+  readonly #modelAccess: ThreadModelAccess;
   readonly #logger: Logger;
   readonly #whenUnused: () => void;
   readonly #queue = new SerialTaskQueue();
@@ -146,6 +156,7 @@ export class ThreadRelay {
     this.#threadEventLog = options.threadEventLog;
     this.#threadActivity = options.threadActivity;
     this.#workspaces = options.workspaces ?? emptyThreadWorkspaces;
+    this.#modelAccess = options.modelAccess ?? noThreadModelAccess;
     this.#logger = options.logger;
     this.#whenUnused = options.whenUnused;
   }
@@ -413,6 +424,21 @@ export class ThreadRelay {
   }
 
   /**
+   * The thread's model, or its owner's key for it, may have changed: the
+   * attached supervisor is told, if what it was told is no longer so. A
+   * supervisor attached to another control plane instance is told before
+   * its next user message instead (see `#broadcastRecordedEvent`).
+   */
+  refreshModelAccess(): void {
+    this.#enqueue("tell the supervisor its thread's model access", async () => {
+      const supervisor = this.#supervisor;
+      if (supervisor !== undefined) {
+        await this.#refreshModelAccess(supervisor);
+      }
+    });
+  }
+
+  /**
    * Sends a workspace message to the attached supervisor; returns false if
    * there is none, or its connection is closing.
    */
@@ -538,6 +564,7 @@ export class ThreadRelay {
       lastRecordedEventNumber: resumePoint.lastRecordedEventNumber,
       deliveryCursor: Math.max(claimedDelivery, resumePoint.userMessagesDeliveredThrough),
       isSandboxStopping: false,
+      sentModelAccess: undefined,
     };
     this.#supervisor = supervisor;
     connection.send({
@@ -554,6 +581,9 @@ export class ThreadRelay {
     );
     this.#broadcastSupervisorConnectionStatus();
     if (!(await this.#describeWorkspace(supervisor))) {
+      return;
+    }
+    if (!(await this.#describeModelAccess(supervisor))) {
       return;
     }
     this.#advanceUserMessagesDeliveredThrough(resumePoint.userMessagesDeliveredThrough);
@@ -584,6 +614,57 @@ export class ThreadRelay {
         "The control plane could not read the thread's workspace",
       );
       return false;
+    }
+  }
+
+  /**
+   * Tells a supervisor that has just been welcomed its thread's model and
+   * key, before it is handed any user message. Returns false, having closed
+   * the connection, if that cannot be read; the supervisor then tries again.
+   */
+  async #describeModelAccess(supervisor: AttachedSupervisor): Promise<boolean> {
+    try {
+      await this.#sendModelAccess(supervisor, await this.#modelAccess.describe(this.threadId));
+      return true;
+    } catch (error) {
+      this.#logger.error({ err: error }, "Could not read the thread's model access");
+      this.#forgetSupervisor();
+      supervisor.connection.close(
+        standardCloseCodes.internalError,
+        "The control plane could not read the thread's model access",
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Tells the supervisor its model access again if it has changed since it
+   * was last told. A failure to read it is logged and leaves the supervisor
+   * with what it has; the next refresh tries again.
+   */
+  async #refreshModelAccess(supervisor: AttachedSupervisor): Promise<void> {
+    try {
+      await this.#sendModelAccess(supervisor, await this.#modelAccess.describe(this.threadId));
+    } catch (error) {
+      this.#logger.error({ err: error }, "Could not read the thread's model access to refresh it");
+    }
+  }
+
+  /** Never logs the message, which holds the owner's key. */
+  async #sendModelAccess(
+    supervisor: AttachedSupervisor,
+    message: ConfigureModelAccess,
+  ): Promise<void> {
+    const serialised = JSON.stringify(message);
+    if (serialised === supervisor.sentModelAccess) {
+      return;
+    }
+    if (supervisor.connection.send(message)) {
+      supervisor.sentModelAccess = serialised;
+      this.#logger.info(
+        { model: message.model, hasCredential: message.credential !== null },
+        "Told the supervisor its thread's model access",
+      );
     }
   }
 
@@ -859,6 +940,11 @@ export class ThreadRelay {
   async #acceptUserMessage(client: ClientConnection, message: SendUserMessage): Promise<void> {
     const { messageId, text } = message;
     try {
+      const modelAdmission = await this.#modelAccess.admitUserMessage(this.threadId);
+      if (!modelAdmission.isAccepted) {
+        this.#rejectClientMessage(client, modelAdmission.reason, messageId);
+        return;
+      }
       const admission = await this.#threadActivity.admitUserMessage(this.threadId, text);
       if (!admission.isAccepted) {
         this.#rejectClientMessage(client, admission.reason, messageId);
@@ -935,6 +1021,11 @@ export class ThreadRelay {
       sequence <= supervisor.deliveryCursor
     ) {
       return;
+    }
+    if (event.type === "user_message") {
+      // The key may have been replaced, or the model switched, through
+      // another control plane instance since this supervisor was told.
+      await this.#refreshModelAccess(supervisor);
     }
     await this.#sendUserMessagesUpTo(supervisor, sequence - 1);
     if (event.type === "user_message") {

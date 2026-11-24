@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { sandboxProviderVariableNames } from "@barrack/sandbox-providers";
 import { describe, expect, it } from "vitest";
 import { controlPlaneVariableNames, readConfiguration } from "./configuration.js";
-import { forwardedModelCredentialNames } from "./threads/model-credentials.js";
 import { forwardedPiSettingNames } from "./threads/pi-settings.js";
 
 /**
@@ -35,11 +34,7 @@ const variablesForHostedDeployment = [
   ...forwardedPiSettingNames,
 ];
 
-const knownVariables = new Set([
-  ...variablesForHostedDeployment,
-  ...forwardedModelCredentialNames,
-  railwayPortVariable,
-]);
+const knownVariables = new Set([...variablesForHostedDeployment, railwayPortVariable]);
 
 /**
  * Every variable named in the first column of the table between the
@@ -117,11 +112,7 @@ describe("the deployment guide's table of variables", () => {
   });
 
   it("names only variables set in the dashboard that the Railway configuration preserves", () => {
-    // The model provider's key is the one the configuration's comment asks
-    // the operator to add, since which provider is theirs to choose.
-    const setInDashboard = variablesInGuideTable(
-      (setWhere) => setWhere.includes("dashboard") && !setWhere.startsWith("one,"),
-    );
+    const setInDashboard = variablesInGuideTable((setWhere) => setWhere.includes("dashboard"));
     const preserved = new Set(
       [...railwayConfiguration.matchAll(/^\s+([A-Z][A-Z0-9_]*): preserve\(\),/gm)].map(
         (match) => match[1] ?? "",
@@ -129,6 +120,7 @@ describe("the deployment guide's table of variables", () => {
     );
 
     expect(setInDashboard).toContain("BARRACK_GITHUB_APP_PRIVATE_KEY");
+    expect(setInDashboard).toContain("BARRACK_MODEL_CREDENTIAL_KEY");
     expect(setInDashboard.filter((name) => !preserved.has(name))).toEqual([]);
   });
 

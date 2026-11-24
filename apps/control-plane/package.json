@@ -13,6 +13,7 @@
     "dev": "tsx watch src/main.ts"
   },
   "dependencies": {
+    "@barrack/model-catalogue": "workspace:*",
     "@barrack/protocol": "workspace:*",
     "@barrack/sandbox-providers": "workspace:*",
     "@hono/node-server": "2.1.11",

@@ -37,11 +37,12 @@ type ThreadRow = {
   title: string | null;
   last_activity_at: Date;
   wake_requested: boolean;
+  model: string | null;
 };
 
 const threadColumns = `thread_id, owner_user_id, created_at, sandbox_provider,
   supervisor_token_digest, taken_over_supervisor_token_digests, sandbox_state, sandbox_id, sandbox_failure_reason, sandbox_problem,
-  lease_expires_at, state_version, title, last_activity_at, wake_requested`;
+  lease_expires_at, state_version, title, last_activity_at, wake_requested, model`;
 
 /**
  * Keeps thread records in Postgres, in the table created by
@@ -81,8 +82,8 @@ export class PostgresThreadStore implements ThreadStore {
       const result = await client.query<ThreadRow>(
         `insert into ${this.#table}
           (thread_id, owner_user_id, created_at, last_activity_at, sandbox_provider,
-            supervisor_token_digest, sandbox_state, lease_expires_at)
-          values ($1, $2, $3, $3, $4, $5, 'creating', $6)
+            supervisor_token_digest, sandbox_state, lease_expires_at, model)
+          values ($1, $2, $3, $3, $4, $5, 'creating', $6, $7)
           returning ${threadColumns}`,
         [
           thread.threadId,
@@ -91,6 +92,7 @@ export class PostgresThreadStore implements ThreadStore {
           thread.sandboxProvider,
           thread.supervisorTokenDigest,
           options.leaseExpiresAt,
+          thread.model ?? null,
         ],
       );
       if (thread.repository !== undefined) {
@@ -166,6 +168,21 @@ export class PostgresThreadStore implements ThreadStore {
       threadId,
       at,
     ]);
+  }
+
+  async changeModel(
+    ownerUserId: string,
+    threadId: string,
+    model: string,
+  ): Promise<ThreadRecord | undefined> {
+    const result = await this.#pool.query<ThreadRow>(
+      `update ${this.#table} set model = $3
+        where thread_id = $1 and owner_user_id = $2
+        returning ${threadColumns}`,
+      [threadId, ownerUserId, model],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : toThreadRecord(row);
   }
 
   async remove(threadId: string, version: number): Promise<boolean> {
@@ -375,6 +392,7 @@ function toThreadRecord(row: ThreadRow): ThreadRecord {
     title: row.title ?? undefined,
     lastActivityAt: row.last_activity_at,
     isWakeRequested: row.wake_requested,
+    model: row.model ?? undefined,
   };
 }
 

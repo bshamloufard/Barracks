@@ -1,4 +1,5 @@
 import {
+  changeThreadModelRequestSchema,
   createThreadRequestSchema,
   type ThreadListResponse,
   type ThreadResponse,
@@ -10,6 +11,8 @@ import {
 } from "@barrack/protocol";
 import type { Context, Hono } from "hono";
 import type { Logger } from "../logger.js";
+import type { ModelAccessChanges } from "../model-access/model-access-changes.js";
+import type { ModelCredentials } from "../model-access/model-credentials.js";
 import { describePublishing } from "../publication/publishing-availability.js";
 import type { RepositoryRequests } from "../repositories/repository-requests.js";
 import type {
@@ -32,7 +35,16 @@ export type ThreadsRoutesDependencies = {
   threadEventLog: ThreadEventLog;
   sandboxLifecycle: SandboxLifecycle;
   repositories: ThreadRepositoriesDependencies;
+  modelAccess: ThreadModelAccessDependencies;
   logger: Logger;
+};
+
+/** What choosing a thread's model needs. */
+export type ThreadModelAccessDependencies = {
+  credentials: ModelCredentials;
+  changes: ModelAccessChanges;
+  /** Whether a thread must have a model: the real agent needs one, the fake agent does not. */
+  isModelRequired: boolean;
 };
 
 /** What creating threads on repositories, and describing them, needs. */
@@ -77,6 +89,9 @@ export function addThreadsRoutes(
   app.delete(`${threadsApiPath}/:threadId`, (context) =>
     deleteThread(context, context.req.param("threadId"), dependencies),
   );
+  app.put(`${threadsApiPath}/:threadId/model`, requireJsonBody(), limitBodySize(), (context) =>
+    changeModel(context, context.req.param("threadId"), dependencies),
+  );
 }
 
 async function createThread(
@@ -89,12 +104,16 @@ async function createThread(
       context,
       400,
       "bad_request",
-      'A new thread is created with {} as the body, or { "repository": { "url", "access", "baseBranch" } } to start from a repository.',
+      'A new thread is created with { "model": "provider/model" } as the body, and "repository": { "url", "access", "baseBranch" } to start from a repository.',
     );
   }
   const { userId } = signedInUserOf(context);
   try {
-    const { repository } = request.data;
+    const { model, repository } = request.data;
+    const modelRefusal = await refuseModel(context, userId, model, dependencies);
+    if (modelRefusal !== undefined) {
+      return modelRefusal;
+    }
     const resolved =
       repository === undefined
         ? undefined
@@ -105,11 +124,88 @@ async function createThread(
     if (resolved?.kind === "not_allowed") {
       return respondWithApiError(context, 403, "repository_not_allowed", resolved.message);
     }
-    const outcome = await dependencies.sandboxLifecycle.createThread(userId, resolved?.choice);
+    const outcome = await dependencies.sandboxLifecycle.createThread(userId, {
+      model,
+      repository: resolved?.choice,
+    });
     return await respondToLifecycleRequest(context, outcome, 201, "", dependencies);
   } catch (error) {
     dependencies.logger.error({ err: error, userId }, "Could not create a thread");
     return respondUnavailable(context, "The control plane could not record a new thread.");
+  }
+}
+
+/**
+ * Refuses a new thread without a model where the agent needs one, and with
+ * a model whose provider the user has no key for, saying which key to add
+ * and where; undefined when the model will do.
+ */
+async function refuseModel(
+  context: Context,
+  userId: string,
+  model: string | undefined,
+  dependencies: ThreadsRoutesDependencies,
+): Promise<Response | undefined> {
+  const { credentials, isModelRequired } = dependencies.modelAccess;
+  if (model === undefined) {
+    return isModelRequired
+      ? respondWithApiError(
+          context,
+          400,
+          "bad_request",
+          'Choose a model for the thread: { "model": "provider/model" }.',
+        )
+      : undefined;
+  }
+  const missing = await credentials.describeMissingCredential(
+    userId,
+    model,
+    "create the thread again",
+  );
+  return missing === undefined
+    ? undefined
+    : respondWithApiError(context, 409, "model_credential_missing", missing);
+}
+
+/** The new model applies from the agent's next run; its supervisor is told at once. */
+async function changeModel(
+  context: Context<SignedInEnvironment>,
+  threadId: string,
+  dependencies: ThreadsRoutesDependencies,
+): Promise<Response> {
+  const request = changeThreadModelRequestSchema.safeParse(await readJsonBody(context));
+  if (!request.success) {
+    return respondWithApiError(
+      context,
+      400,
+      "bad_request",
+      'A thread\'s model is changed with { "model": "provider/model" } as the body.',
+    );
+  }
+  if (!threadIdSchema.safeParse(threadId).success) {
+    return respondThreadNotFound(context, threadId);
+  }
+  const { userId } = signedInUserOf(context);
+  const { model } = request.data;
+  const { credentials, changes } = dependencies.modelAccess;
+  try {
+    if ((await dependencies.threadStore.findOwnedBy(userId, threadId)) === undefined) {
+      return respondThreadNotFound(context, threadId);
+    }
+    const missing = await credentials.describeMissingCredential(userId, model, "switch again");
+    if (missing !== undefined) {
+      return respondWithApiError(context, 409, "model_credential_missing", missing);
+    }
+    const thread = await dependencies.threadStore.changeModel(userId, threadId, model);
+    if (thread === undefined) {
+      return respondThreadNotFound(context, threadId);
+    }
+    dependencies.logger.info({ threadId, model }, "Switched a thread's model");
+    changes.threadModelChanged(threadId);
+    return await respondWithThread(context, thread, 200, dependencies);
+  } catch (error) {
+    dependencies.logger.error({ err: error, threadId }, "Could not switch a thread's model");
+    return respondUnavailable(context, "The control plane could not switch the thread's model.");
   }
 }
 
@@ -282,6 +378,7 @@ function toThreadSummary(
             workBranch: repository.workBranch,
             publishing: describePublishing(repository, isGithubAvailable),
           },
+    model: thread.model ?? null,
   };
 }
 

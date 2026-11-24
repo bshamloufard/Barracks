@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import {
+  buildModelCredentialApiPath,
   type ClientAuthenticationConfiguration,
   threadResponseSchema,
   threadsApiPath,
@@ -18,6 +20,12 @@ import type { GithubConnectionStore } from "../github/github-connection-store.js
 import type { GithubSettings } from "../github/github-settings.js";
 import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
 import type { Logger } from "../logger.js";
+import { CredentialKeyring } from "../model-access/credential-keyring.js";
+import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
+import { ModelAccessChanges } from "../model-access/model-access-changes.js";
+import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
+import { ModelCredentials } from "../model-access/model-credentials.js";
+import { OwnerModelAccess } from "../model-access/owner-model-access.js";
 import {
   assembleRepositoryServices,
   type RepositoryServices,
@@ -56,7 +64,6 @@ export const testGithubSettings: GithubSettings = {
 export const testSupervisorEnvironment: SupervisorEnvironmentSettings = {
   controlPlaneUrlForSandboxes: "ws://control-plane.test:8787",
   agent: { harness: "fake" },
-  modelCredentials: {},
   piSettings: {},
 };
 
@@ -98,6 +105,10 @@ export type TestControlPlaneOptions = {
   threadRepositoryStore?: ThreadRepositoryStore;
   /** Defaults to an in-memory store. */
   githubConnectionStore?: GithubConnectionStore;
+  /** Defaults to an in-memory store, sealing under a key of its own. */
+  modelCredentialStore?: ModelCredentialStore;
+  /** Whether threads must have a model, as with the real agent; not by default, as with the fake one. */
+  isModelRequired?: boolean;
   /** No GitHub App by default (`testGithubSettings`). */
   github?: GithubSettings;
   credentialRequestLimits?: CredentialRequestLimits;
@@ -142,6 +153,7 @@ export class TestControlPlane {
   readonly sandboxProvider: FakeSandboxProvider;
   readonly threadServices: ThreadServices;
   readonly repositoryServices: RepositoryServices;
+  readonly modelCredentials: ModelCredentials;
   /** Every line the control plane logged, at every level. */
   readonly logLines: string[];
   readonly #closeServer: () => Promise<void>;
@@ -154,6 +166,7 @@ export class TestControlPlane {
     sandboxProvider: FakeSandboxProvider;
     threadServices: ThreadServices;
     repositoryServices: RepositoryServices;
+    modelCredentials: ModelCredentials;
     logLines: string[];
     closeServer: () => Promise<void>;
   }) {
@@ -164,6 +177,7 @@ export class TestControlPlane {
     this.sandboxProvider = fields.sandboxProvider;
     this.threadServices = fields.threadServices;
     this.repositoryServices = fields.repositoryServices;
+    this.modelCredentials = fields.modelCredentials;
     this.logLines = fields.logLines;
     this.#closeServer = fields.closeServer;
   }
@@ -188,6 +202,14 @@ export class TestControlPlane {
         ? {}
         : { maximumBundleSizeInBytes: options.maximumBundleSizeInBytes }),
     });
+    const modelCredentials = new ModelCredentials({
+      store:
+        options.modelCredentialStore ??
+        new InMemoryModelCredentialStore(new CredentialKeyring(randomBytes(32))),
+      logger,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
+    const isModelRequired = options.isModelRequired ?? false;
     const threadServices = assembleThreadServices({
       threadStore,
       threadEventLog,
@@ -196,6 +218,11 @@ export class TestControlPlane {
       supervisorEnvironment: options.supervisorEnvironment ?? testSupervisorEnvironment,
       settings: { ...testLifecycleSettings, ...options.lifecycleSettings },
       workspaces: repositoryServices.workspaces,
+      modelAccess: new OwnerModelAccess({
+        threadStore,
+        credentials: modelCredentials,
+        isModelRequired,
+      }),
       logger,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
       timing: {
@@ -220,6 +247,11 @@ export class TestControlPlane {
       relays: threadServices.relays,
       sandboxLifecycle: threadServices.sandboxLifecycle,
       repositoryServices,
+      modelAccess: {
+        credentials: modelCredentials,
+        changes: new ModelAccessChanges(threadStore, threadServices.relays),
+        isModelRequired,
+      },
       publisher: repositoryServices.createPublisher(threadServices.relays),
       ...authentication,
       logger,
@@ -237,6 +269,7 @@ export class TestControlPlane {
       sandboxProvider,
       threadServices,
       repositoryServices,
+      modelCredentials,
       logLines,
       closeServer: async () => {
         await server.close();
@@ -245,15 +278,23 @@ export class TestControlPlane {
     });
   }
 
-  /** Creates a thread through the API as a browser would, and waits until its sandbox is settled. */
-  async createThread(accessToken = developmentAccessToken): Promise<TestThread> {
-    const response = await this.postThread({ ...browserHeaders(accessToken) });
+  /**
+   * Creates a thread through the API as a browser would, and waits until
+   * its sandbox is settled; with no model unless given one (which needs the
+   * user's key for its provider).
+   */
+  async createThread(
+    accessToken = developmentAccessToken,
+    model: string | undefined = undefined,
+  ): Promise<TestThread> {
+    const requestBody = JSON.stringify(model === undefined ? {} : { model });
+    const response = await this.postThread({ ...browserHeaders(accessToken) }, requestBody);
     if (response.status !== 201) {
       throw new Error(`Creating a thread answered ${response.status}: ${await response.text()}`);
     }
-    const body = threadResponseSchema.parse(await response.json());
+    const { thread } = threadResponseSchema.parse(await response.json());
     await this.whenOperationsSettle();
-    const { threadId } = body.thread;
+    const { threadId } = thread;
     return { threadId, supervisorToken: this.supervisorTokenGivenFor(threadId) };
   }
 
@@ -272,6 +313,35 @@ export class TestControlPlane {
       method,
       headers: browserHeaders(accessToken),
       body: method === "POST" ? "{}" : null,
+    });
+  }
+
+  /** Adds or replaces the user's key for the provider through the API, as Settings does. */
+  async saveModelCredential(
+    providerId: string,
+    secret: string,
+    accessToken = developmentAccessToken,
+    settings: Record<string, string> = {},
+  ): Promise<Response> {
+    return this.sendJson(
+      "PUT",
+      buildModelCredentialApiPath(providerId),
+      { secret, settings },
+      accessToken,
+    );
+  }
+
+  /** Sends a request with a JSON body of the test's choosing, from an allowed origin. */
+  sendJson(
+    method: "POST" | "PUT" | "DELETE",
+    path: string,
+    body: unknown,
+    accessToken = developmentAccessToken,
+  ): Promise<Response> {
+    return fetch(`${this.httpBaseUrl}${path}`, {
+      method,
+      headers: browserHeaders(accessToken),
+      body: JSON.stringify(body),
     });
   }
 

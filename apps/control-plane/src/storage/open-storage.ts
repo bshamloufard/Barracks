@@ -11,6 +11,10 @@ import type { GithubConnectionStore } from "../github/github-connection-store.js
 import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
 import { PostgresGithubConnectionStore } from "../github/postgres-github-connection-store.js";
 import type { Logger } from "../logger.js";
+import type { CredentialKeyring } from "../model-access/credential-keyring.js";
+import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
+import type { ModelCredentialStore } from "../model-access/model-credential-store.js";
+import { PostgresModelCredentialStore } from "../model-access/postgres-model-credential-store.js";
 import { PostgresThreadRepositoryStore } from "../repositories/postgres-thread-repository-store.js";
 import type { ThreadRepositoryStore } from "../repositories/thread-repository-store.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
@@ -34,6 +38,8 @@ export type OpenStorage = {
   /** The repository each thread started from; written with the thread by `threadStore`. */
   threadRepositoryStore: ThreadRepositoryStore;
   githubConnectionStore: GithubConnectionStore;
+  /** Users' model credentials, sealed under `keyring`. */
+  modelCredentialStore: ModelCredentialStore;
   /** Releases what storage holds open, such as its database connections. */
   close(): Promise<void>;
 };
@@ -56,6 +62,7 @@ const certificateVerificationErrorCodes = new Set([
  */
 export async function openStorage(
   database: DatabaseConfiguration | undefined,
+  keyring: CredentialKeyring,
   logger: Logger,
 ): Promise<OpenStorage> {
   if (database === undefined) {
@@ -69,6 +76,7 @@ export async function openStorage(
       userStore: new InMemoryUserStore(),
       threadRepositoryStore: threadStore.repositories,
       githubConnectionStore: new InMemoryGithubConnectionStore(),
+      modelCredentialStore: new InMemoryModelCredentialStore(keyring),
       close: async () => undefined,
     };
   }
@@ -97,6 +105,7 @@ export async function openStorage(
     userStore: new PostgresUserStore(pool),
     threadRepositoryStore: new PostgresThreadRepositoryStore(pool),
     githubConnectionStore: new PostgresGithubConnectionStore(pool),
+    modelCredentialStore: new PostgresModelCredentialStore(pool, keyring),
     close: async () => {
       await keepAlive?.stop();
       await pool.end();

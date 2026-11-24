@@ -31,6 +31,7 @@ RUN corepack enable && pnpm fetch
 
 COPY tsconfig.base.json ./
 COPY packages/protocol/ packages/protocol/
+COPY packages/model-catalogue/ packages/model-catalogue/
 COPY packages/sandbox-providers/ packages/sandbox-providers/
 COPY apps/control-plane/ apps/control-plane/
 COPY apps/web/ apps/web/

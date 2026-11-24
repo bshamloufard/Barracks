@@ -1,5 +1,9 @@
-/** Which agent the supervisor runs; see the supervisor's README. */
-export type AgentSettings = { harness: "fake" } | { harness: "pi"; model: string };
+/**
+ * Which agent the supervisor runs; see the supervisor's README. The model
+ * and its key are not here: each thread has its own, sent to its
+ * supervisor over its connection, never put in the sandbox's environment.
+ */
+export type AgentSettings = { harness: "fake" | "pi" };
 
 export type SupervisorEnvironmentSettings = {
   /**
@@ -9,16 +13,14 @@ export type SupervisorEnvironmentSettings = {
    */
   controlPlaneUrlForSandboxes: string;
   agent: AgentSettings;
-  /** Forwarded to sandboxes running Pi; see `model-credentials.ts`. */
-  modelCredentials: Readonly<Record<string, string>>;
   /** Forwarded to sandboxes running Pi; see `pi-settings.ts`. */
   piSettings: Readonly<Record<string, string>>;
 };
 
 /**
  * Everything a new thread's supervisor is told, as the environment variables
- * its configuration reads. The result holds the thread's token and possibly
- * model keys, so it goes to the sandbox provider and nowhere else.
+ * its configuration reads. The result holds the thread's token, so it goes
+ * to the sandbox provider and nowhere else.
  */
 export function buildSupervisorEnvironment(
   settings: SupervisorEnvironmentSettings,
@@ -34,11 +36,5 @@ export function buildSupervisorEnvironment(
   if (agent.harness === "fake") {
     return { ...threadVariables, BARRACK_AGENT_HARNESS: "fake" };
   }
-  return {
-    ...settings.modelCredentials,
-    ...settings.piSettings,
-    ...threadVariables,
-    BARRACK_AGENT_HARNESS: "pi",
-    BARRACK_MODEL: agent.model,
-  };
+  return { ...settings.piSettings, ...threadVariables, BARRACK_AGENT_HARNESS: "pi" };
 }

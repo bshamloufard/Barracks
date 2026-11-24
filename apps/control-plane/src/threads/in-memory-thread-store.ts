@@ -44,9 +44,10 @@ export class InMemoryThreadStore implements ThreadStore {
     if (limitReached !== undefined) {
       return limitReached;
     }
-    const { supervisorTokenDigest, repository, ...threadFields } = thread;
+    const { supervisorTokenDigest, repository, model, ...threadFields } = thread;
     const record: ThreadRecord = {
       ...threadFields,
+      model,
       supervisorTokenDigests: [Buffer.from(supervisorTokenDigest)],
       createdAt: options.at,
       sandbox: { state: "creating", leaseExpiresAt: options.leaseExpiresAt },
@@ -127,6 +128,18 @@ export class InMemoryThreadStore implements ThreadStore {
     if (current !== undefined) {
       this.#replace({ ...current, lastActivityAt: at });
     }
+  }
+
+  async changeModel(
+    ownerUserId: string,
+    threadId: string,
+    model: string,
+  ): Promise<ThreadRecord | undefined> {
+    const current = this.#find(threadId);
+    if (current?.ownerUserId !== ownerUserId) {
+      return undefined;
+    }
+    return this.#replace({ ...current, model });
   }
 
   async remove(threadId: string, version: number): Promise<boolean> {

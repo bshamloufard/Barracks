@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { readConfiguration } from "./configuration.js";
 
-/** The fewest settings that start a control plane: where sandboxes run, how they reach it, the agent, and sign-in. */
+/** Base64 of 32 bytes, as `openssl rand -base64 32` prints; for tests alone. */
+const exampleCredentialKey = Buffer.alloc(32, 1).toString("base64");
+const previousCredentialKey = Buffer.alloc(32, 2).toString("base64");
+
+/** The fewest settings that start a control plane: where sandboxes run, how they reach it, the agent, sign-in, and the key credentials are sealed under. */
 const minimalEnvironment = {
+  BARRACK_MODEL_CREDENTIAL_KEY: exampleCredentialKey,
   BARRACK_SUPABASE_URL: "https://project-ref.supabase.co/",
   BARRACK_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_example",
   BARRACK_ALLOWED_USER_EMAILS: "Owner@Example.com",
@@ -13,6 +18,7 @@ const minimalEnvironment = {
 };
 
 const localProcessEnvironment = {
+  BARRACK_MODEL_CREDENTIAL_KEY: exampleCredentialKey,
   BARRACK_AUTHENTICATION: "development-single-user",
   BARRACK_SANDBOX_PROVIDER: "local-process",
   BARRACK_ALLOW_UNISOLATED_SANDBOXES: "development-only",
@@ -56,9 +62,9 @@ describe("the control plane configuration", () => {
         supervisorEnvironment: {
           controlPlaneUrlForSandboxes: "ws://host.docker.internal:8787",
           agent: { harness: "fake" },
-          modelCredentials: {},
           piSettings: {},
         },
+        modelCredentialKeys: { current: Buffer.alloc(32, 1), previous: [] },
         sandboxLifecycle: {
           idlePeriodInMilliseconds: 10 * 60_000,
           admission: { maximumPerUser: 3, maximumInInstallation: undefined },
@@ -112,35 +118,59 @@ describe("the control plane configuration", () => {
     expect(JSON.stringify(result)).not.toContain("a-shared-token-from-milestone-one");
   });
 
-  it("runs Pi by default, which needs a model in provider/model form", () => {
+  it("runs Pi by default, with no model of its own: each thread has one", () => {
     const { BARRACK_AGENT_HARNESS: _harness, ...withoutHarness } = minimalEnvironment;
 
-    const withoutModel = readConfiguration(withoutHarness);
-    const withModel = readConfiguration({
-      ...withoutHarness,
-      BARRACK_MODEL: "anthropic/example-model",
-    });
+    const result = readConfiguration(withoutHarness);
 
-    expect(withoutModel).toEqual({
-      ok: false,
-      problems: [expect.stringMatching(/^BARRACK_MODEL: required for the Pi agent/)],
-    });
-    expect(withModel.ok && withModel.configuration.supervisorEnvironment.agent).toEqual({
+    expect(result.ok && result.configuration.supervisorEnvironment.agent).toEqual({
       harness: "pi",
-      model: "anthropic/example-model",
     });
   });
 
-  it("forwards only the allowlisted model provider keys to sandboxes", () => {
+  it("forwards no model provider key of its own to sandboxes", () => {
     const result = readConfiguration({
       ...minimalEnvironment,
+      BARRACK_AGENT_HARNESS: "pi",
       ANTHROPIC_API_KEY: "developer-key",
-      AWS_SECRET_ACCESS_KEY: "cloud-credentials",
     });
 
-    expect(result.ok && result.configuration.supervisorEnvironment.modelCredentials).toEqual({
-      ANTHROPIC_API_KEY: "developer-key",
+    expect(JSON.stringify(result.ok && result.configuration.supervisorEnvironment)).not.toContain(
+      "developer-key",
+    );
+  });
+
+  it("reads the key credentials are sealed under, and the previous ones while rotating", () => {
+    const result = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_CREDENTIAL_PREVIOUS_KEYS: ` ${previousCredentialKey} `,
     });
+
+    expect(result.ok && result.configuration.modelCredentialKeys).toEqual({
+      current: Buffer.alloc(32, 1),
+      previous: [Buffer.alloc(32, 2)],
+    });
+  });
+
+  it("requires a key of 32 bytes in base64 for credentials, never repeating what it was given", () => {
+    const { BARRACK_MODEL_CREDENTIAL_KEY: _key, ...withoutKey } = minimalEnvironment;
+    const shortKey = Buffer.alloc(16, 3).toString("base64");
+
+    const missing = readConfiguration(withoutKey);
+    const short = readConfiguration({
+      ...minimalEnvironment,
+      BARRACK_MODEL_CREDENTIAL_KEY: shortKey,
+    });
+
+    expect(missing).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^BARRACK_MODEL_CREDENTIAL_KEY: required: base64 of 32/)],
+    });
+    expect(short).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^BARRACK_MODEL_CREDENTIAL_KEY: must be 32 bytes/)],
+    });
+    expect(JSON.stringify(short)).not.toContain(shortKey);
   });
 
   it("forwards only the allowlisted Pi settings to sandboxes", () => {
@@ -172,6 +202,7 @@ describe("the control plane configuration", () => {
       "BARRACK_ALLOWED_CLIENT_ORIGINS",
       "BARRACK_WEB_CLIENT_DIRECTORY",
       "BARRACK_LOG_LEVEL",
+      "BARRACK_MODEL_CREDENTIAL_KEY",
       "BARRACK_SUPABASE_URL",
       "BARRACK_SUPABASE_PUBLISHABLE_KEY",
       "BARRACK_ALLOWED_USER_EMAILS",

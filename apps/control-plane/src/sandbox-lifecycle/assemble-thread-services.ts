@@ -1,6 +1,7 @@
 import type { SandboxProvider } from "@barrack/sandbox-providers";
 import type { Logger } from "../logger.js";
 import type { ThreadEventLog } from "../thread-event-log/thread-event-log.js";
+import type { ThreadModelAccess } from "../thread-relay/thread-model-access.js";
 import { ThreadRelayRegistry } from "../thread-relay/thread-relay-registry.js";
 import type { ThreadWorkspaces } from "../thread-relay/thread-workspaces.js";
 import type { SupervisorEnvironmentSettings } from "../threads/supervisor-environment.js";
@@ -26,6 +27,8 @@ export type ThreadServicesOptions = {
   settings: SandboxLifecycleSettings;
   /** What threads' workspaces hold; empty when omitted. */
   workspaces?: ThreadWorkspaces;
+  /** Threads' models and their owners' keys; none when omitted. */
+  modelAccess?: ThreadModelAccess;
   logger: Logger;
   /** The real time unless a test controls it. */
   clock?: Clock;
@@ -62,6 +65,7 @@ export function assembleThreadServices(options: ThreadServicesOptions): ThreadSe
       recordAgentActivity: (threadId) => lifecycleOf().recordAgentActivity(threadId),
     },
     ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
+    ...(options.modelAccess === undefined ? {} : { modelAccess: options.modelAccess }),
     logger,
   });
   const operations = new SandboxOperations({

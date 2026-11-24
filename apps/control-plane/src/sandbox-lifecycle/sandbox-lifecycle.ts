@@ -78,8 +78,9 @@ export class SandboxLifecycle {
   /** `repository`, if given, is recorded with the thread; its work branch is named after it. */
   async createThread(
     ownerUserId: string,
-    repository?: ThreadRepositoryChoice,
+    choices: { model?: string | undefined; repository?: ThreadRepositoryChoice | undefined } = {},
   ): Promise<LifecycleRequestOutcome> {
+    const { model, repository } = choices;
     const { threadStore, operations, sandboxProviderName, settings } = this.#options;
     const supervisorToken = mintSupervisorToken();
     const threadId = randomUUID();
@@ -89,6 +90,7 @@ export class SandboxLifecycle {
         ownerUserId,
         sandboxProvider: sandboxProviderName,
         supervisorTokenDigest: supervisorToken.digest,
+        ...(model === undefined ? {} : { model }),
         ...(repository === undefined
           ? {}
           : { repository: { ...repository, workBranch: workBranchFor(threadId) } }),

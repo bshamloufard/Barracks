@@ -181,6 +181,20 @@ export function describeThreadStoreContract(
       expect(await store.find("thread-missing")).toBeUndefined();
     });
 
+    it("switches a thread's model for its owner alone, leaving its version as it was", async () => {
+      const store = await createEmptyStore();
+      const created = await createThread(store, "thread-a", ownerA);
+
+      expect(await store.changeModel(ownerB, "thread-a", "openai/other-model")).toBeUndefined();
+      expect(
+        await store.changeModel(ownerA, "thread-missing", "openai/other-model"),
+      ).toBeUndefined();
+      const changed = await store.changeModel(ownerA, "thread-a", "openai/other-model");
+
+      expect(changed).toEqual({ ...created, model: "openai/other-model" });
+      expect(await store.find("thread-a")).toEqual(changed);
+    });
+
     it("lists only the owner's threads, the most recently active first, up to the limit", async () => {
       const store = await createEmptyStore();
       await createThread(store, "thread-1", ownerA, secondsAfterStart(1));
@@ -570,5 +584,6 @@ function newThread(threadId: string, ownerUserId: string): NewThread {
     ownerUserId,
     sandboxProvider: "fake",
     supervisorTokenDigest: randomBytes(32),
+    model: "anthropic/example-model",
   };
 }

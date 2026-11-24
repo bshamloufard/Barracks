@@ -180,6 +180,7 @@ describe("agent events from a supervisor", () => {
     expect(reconnection.inbox.messages).toEqual([
       { type: "supervisor_welcome", lastRecordedEventNumber: 1 },
       { type: "prepare_workspace", repository: null, agentHasWorkedBefore: false },
+      { type: "configure_model_access", model: null, credential: null },
       { type: "agent_events_recorded", throughEventNumber: 1 },
     ]);
   });
