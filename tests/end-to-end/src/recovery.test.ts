@@ -26,16 +26,17 @@ import {
  * without one only the tests that need no restart of the control plane run.
  */
 
-/** The fake agent quotes a message back one word per 60 ms step, so this takes about six seconds. */
 /** Makes the fake agent call a tool before it replies; see the supervisor's fake agent. */
 const fakeAgentToolTrigger = "[tool]";
 
+/** The fake agent quotes a message back one word per 60 ms step, so this takes about six seconds. */
 const longMessage = Array.from({ length: 100 }, (_, index) => `word${index + 1}`).join(" ");
 
 let recordDirectory: string;
 let supervisors: RestartableSupervisors;
 let database: ThrowawayDatabase | undefined;
-let controlPlane: RunningControlPlane | undefined;
+/** Every control plane a test started, killed ones included, whose leftovers must still be removed. */
+const controlPlanes: RunningControlPlane[] = [];
 const clients: TestClient[] = [];
 
 beforeEach(async () => {
@@ -47,15 +48,18 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.close()));
-  await controlPlane?.stop();
-  controlPlane = undefined;
+  // Newest first: the one still running stops the supervisors it started;
+  // stopping one that was killed only removes what it left behind.
+  for (const running of controlPlanes.splice(0).reverse()) {
+    await running.stop();
+  }
   await supervisors.stopAll();
   await database?.drop();
   await rm(recordDirectory, { recursive: true, force: true });
 });
 
-function startTestControlPlane(port?: number): Promise<RunningControlPlane> {
-  return startControlPlane({
+async function startTestControlPlane(port?: number): Promise<RunningControlPlane> {
+  const running = await startControlPlane({
     sandboxes: {
       kind: "local-process",
       supervisorCommand: restartableSupervisorCommand(recordDirectory),
@@ -63,6 +67,8 @@ function startTestControlPlane(port?: number): Promise<RunningControlPlane> {
     ...(port === undefined ? {} : { port }),
     ...(database === undefined ? {} : { databaseUrl: database.url }),
   });
+  controlPlanes.push(running);
+  return running;
 }
 
 async function connectClient(
@@ -118,14 +124,13 @@ describe("a thread whose control plane is killed in the middle of a run", () => 
       // gone and the long reply carries on once a new one is up.
       const message = `${fakeAgentToolTrigger} ${longMessage}`;
       const firstControlPlane = await startTestControlPlane();
-      controlPlane = firstControlPlane;
       const { threadId, client: clientBeforeKill } = await startThread(firstControlPlane);
       clientBeforeKill.send({ type: "send_user_message", text: message });
       await waitUntilStreaming(clientBeforeKill, 1);
 
       await firstControlPlane.kill();
-      controlPlane = await startTestControlPlane(firstControlPlane.port);
-      const clientAfterRestart = await connectClient(controlPlane, threadId);
+      const secondControlPlane = await startTestControlPlane(firstControlPlane.port);
+      const clientAfterRestart = await connectClient(secondControlPlane, threadId);
       await clientAfterRestart.waitUntilRunsHaveSettled(1);
 
       const history = clientAfterRestart.threadEvents();
@@ -156,7 +161,7 @@ describe("a thread whose control plane is killed in the middle of a run", () => 
 
 describe("a thread whose supervisor is killed in the middle of a run", () => {
   it("has the run closed in its history once a new supervisor starts, and answers the next message", async () => {
-    controlPlane = await startTestControlPlane();
+    const controlPlane = await startTestControlPlane();
     const { threadId, client } = await startThread(controlPlane);
     client.send({ type: "send_user_message", text: longMessage });
     await waitUntilStreaming(client, 5);
@@ -194,7 +199,7 @@ describe("a thread whose supervisor is killed in the middle of a run", () => {
 
 describe("a message sent while the thread's supervisor is down", () => {
   it("is recorded, shown as waiting, and delivered once the supervisor is back", async () => {
-    controlPlane = await startTestControlPlane();
+    const controlPlane = await startTestControlPlane();
     const { threadId, client } = await startThread(controlPlane);
     await supervisors.kill(threadId);
     await client.waitUntil("told the supervisor is gone", (messages) =>
