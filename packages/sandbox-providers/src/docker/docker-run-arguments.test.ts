@@ -9,6 +9,7 @@ const settings: DockerProviderSettings = {
   stopTimeoutInSeconds: 15,
   servicePorts: [],
   dockerExecutable: "docker",
+  network: undefined,
 };
 
 const request = {
@@ -52,6 +53,13 @@ describe("the docker run arguments for a thread's sandbox", () => {
     expect(runArguments).toContain("--pids-limit 1024 --stop-timeout 15");
     expect(runArguments).toContain("--cap-drop ALL --cap-add SETUID --cap-add SETGID");
     expect(runArguments).not.toContain("--privileged");
+  });
+
+  it("leaves the sandbox on Docker's default bridge unless a network is configured", () => {
+    expect(buildRunArguments(settings, request)).not.toContain("--network");
+    expect(
+      buildRunArguments({ ...settings, network: "barrack-sandboxes" }, request).join(" "),
+    ).toContain("--network barrack-sandboxes");
   });
 
   it("publishes no ports unless service ports are configured, and then only on loopback", () => {

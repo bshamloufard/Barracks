@@ -34,6 +34,7 @@ describeSandboxProviderContract({
       stopTimeoutInSeconds: 10,
       servicePorts: [],
       dockerExecutable: "docker",
+      network: undefined,
     });
     return {
       provider,

@@ -91,8 +91,21 @@ describe("choosing the sandbox provider from the environment", () => {
           stopTimeoutInSeconds: 15,
           servicePorts: [6080, 5900],
           dockerExecutable: "docker",
+          network: undefined,
         },
       },
+    });
+  });
+
+  it("puts Docker sandboxes on the named network when one is given", () => {
+    const result = readSandboxProviderConfiguration({
+      BARRACK_SANDBOX_PROVIDER: "docker",
+      BARRACK_DOCKER_IMAGE: "barrack-sandbox:dev",
+      BARRACK_DOCKER_NETWORK: "barrack-sandboxes",
+    });
+
+    expect(result.ok && result.configuration).toMatchObject({
+      docker: { network: "barrack-sandboxes" },
     });
   });
 

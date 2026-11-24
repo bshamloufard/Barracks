@@ -21,6 +21,7 @@ const settings: DockerProviderSettings = {
   stopTimeoutInSeconds: 10,
   servicePorts: [6080],
   dockerExecutable: "docker",
+  network: undefined,
 };
 
 const barrackContainerId = "b".repeat(64);

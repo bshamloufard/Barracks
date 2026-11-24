@@ -42,6 +42,7 @@ const dockerVariablesSchema = z.object({
   BARRACK_DOCKER_STOP_TIMEOUT_SECONDS: positiveWholeNumber.default(15),
   BARRACK_DOCKER_SERVICE_PORTS: portListSchema.default([]),
   BARRACK_DOCKER_EXECUTABLE: z.string().min(1).default("docker"),
+  BARRACK_DOCKER_NETWORK: z.string().min(1).optional(),
 });
 
 const daytonaVariablesSchema = z.object({
@@ -131,6 +132,7 @@ function readDockerConfiguration(
         stopTimeoutInSeconds: variables.BARRACK_DOCKER_STOP_TIMEOUT_SECONDS,
         servicePorts: variables.BARRACK_DOCKER_SERVICE_PORTS,
         dockerExecutable: variables.BARRACK_DOCKER_EXECUTABLE,
+        network: variables.BARRACK_DOCKER_NETWORK,
       },
     },
   };

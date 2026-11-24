@@ -20,6 +20,13 @@ export type DockerProviderSettings = {
   servicePorts: readonly number[];
   /** The docker executable; `docker` on the search path unless set. */
   dockerExecutable: string;
+  /**
+   * The Docker network sandboxes join, instead of Docker's default bridge.
+   * A control plane running in a container on the same network is then
+   * reachable by its name there, and other containers kept off that network,
+   * such as its database, are not reachable at all (see compose.yaml).
+   */
+  network: string | undefined;
 };
 
 /**
@@ -47,6 +54,7 @@ export function buildRunArguments(
   const environmentArguments = Object.keys(request.supervisorEnvironment)
     .sort()
     .flatMap((name) => ["--env", name]);
+  const networkArguments = settings.network === undefined ? [] : ["--network", settings.network];
   const publishArguments = settings.servicePorts.flatMap((port) => [
     "--publish",
     `127.0.0.1::${port}`,
@@ -84,6 +92,7 @@ export function buildRunArguments(
     "--cap-add",
     "SETGID",
     ...environmentArguments,
+    ...networkArguments,
     ...publishArguments,
     settings.image,
   ];
