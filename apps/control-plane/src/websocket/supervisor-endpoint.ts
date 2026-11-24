@@ -57,16 +57,15 @@ function attachSupervisor(
   dependencies: UpgradeDependencies,
   logger: Logger,
 ): void {
-  const relay = dependencies.relays.relayFor(threadId);
   const connection = new WebSocketSupervisorConnection(webSocket, logger);
   logger.info("Supervisor connected");
   keepConnectionAlive(webSocket, dependencies.heartbeatIntervalInMilliseconds, logger);
   webSocket.on("error", (error) => logger.warn({ err: error }, "Supervisor connection failed"));
+  const relay = dependencies.relays.attachSupervisor(threadId, connection);
   webSocket.on("close", (closeCode, reason) => {
     logger.info({ closeCode, reason: reason.toString() }, "Supervisor disconnected");
     relay.detachSupervisor(connection);
   });
-  relay.attachSupervisor(connection);
   receiveMessages(
     webSocket,
     parseSupervisorToControlPlaneMessage,

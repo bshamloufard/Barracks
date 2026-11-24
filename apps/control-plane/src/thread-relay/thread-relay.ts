@@ -32,6 +32,17 @@ type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
  */
 type ClientPhase = { name: "replaying"; heldBackMessages: HeldBackMessage[] } | { name: "live" };
 
+export type ThreadRelayOptions = {
+  threadId: string;
+  threadEventLog: ThreadEventLog;
+  logger: Logger;
+  /**
+   * Called whenever the relay is left with no supervisor, no clients and no
+   * queued work, so it holds nothing that outlives it and can be dropped.
+   */
+  whenUnused: () => void;
+};
+
 /**
  * Coordinates one thread: its supervisor, the clients watching it, and the
  * text of any assistant message still being streamed. It enforces the two
@@ -48,15 +59,18 @@ export class ThreadRelay {
   readonly threadId: string;
   readonly #threadEventLog: ThreadEventLog;
   readonly #logger: Logger;
+  readonly #whenUnused: () => void;
   readonly #queue = new SerialTaskQueue();
+  #queuedTaskCount = 0;
   readonly #inProgressText = new InProgressAssistantText();
   readonly #clientPhases = new Map<ClientConnection, ClientPhase>();
   #supervisor: SupervisorConnection | undefined;
 
-  constructor(threadId: string, threadEventLog: ThreadEventLog, logger: Logger) {
-    this.threadId = threadId;
-    this.#threadEventLog = threadEventLog;
-    this.#logger = logger;
+  constructor(options: ThreadRelayOptions) {
+    this.threadId = options.threadId;
+    this.#threadEventLog = options.threadEventLog;
+    this.#logger = options.logger;
+    this.#whenUnused = options.whenUnused;
   }
 
   attachSupervisor(connection: SupervisorConnection): void {
@@ -120,15 +134,38 @@ export class ThreadRelay {
   }
 
   /**
-   * Replays the history the client missed, then switches it to live traffic.
-   * The client is registered before the log is read, so any event recorded
+   * Registers the client at once, then replays the history it missed and
+   * switches it to live traffic. A client whose replay fails is detached and
+   * disconnected, so it reconnects and tries again.
+   */
+  attachClient(connection: ClientConnection, lastSeenSequence: number): void {
+    const heldBackMessages: HeldBackMessage[] = [];
+    this.#clientPhases.set(connection, { name: "replaying", heldBackMessages });
+    this.#replayThenGoLive(connection, lastSeenSequence, heldBackMessages).catch(
+      (error: unknown) => {
+        this.#logger.error({ err: error }, "Could not replay the thread's history to a client");
+        this.detachClient(connection);
+        connection.close(standardCloseCodes.internalError, "Could not replay the thread's history");
+      },
+    );
+  }
+
+  detachClient(connection: ClientConnection): void {
+    this.#clientPhases.delete(connection);
+    this.#reportIfUnused();
+  }
+
+  /**
+   * The client was registered before the log is read, so any event recorded
    * while the replay is under way is held back for it rather than missed;
    * held-back events the replay already covered are then skipped, so none is
    * sent twice. A client that detaches part way is sent nothing more.
    */
-  async attachClient(connection: ClientConnection, lastSeenSequence: number): Promise<void> {
-    const heldBackMessages: HeldBackMessage[] = [];
-    this.#clientPhases.set(connection, { name: "replaying", heldBackMessages });
+  async #replayThenGoLive(
+    connection: ClientConnection,
+    lastSeenSequence: number,
+    heldBackMessages: HeldBackMessage[],
+  ): Promise<void> {
     const missed = await readMissedEvents(
       this.#threadEventLog,
       this.threadId,
@@ -148,10 +185,6 @@ export class ThreadRelay {
     }
     this.#clientPhases.set(connection, { name: "live" });
     this.#logger.info({ replayedEventCount: missed.events.length }, "Client caught up and is live");
-  }
-
-  detachClient(connection: ClientConnection): void {
-    this.#clientPhases.delete(connection);
   }
 
   async #recordAgentEvent(supervisor: SupervisorConnection, event: ThreadEvent): Promise<void> {
@@ -340,9 +373,31 @@ export class ThreadRelay {
   }
 
   #enqueue(description: string, task: () => Promise<void>): void {
-    this.#queue.enqueue(task).catch((error: unknown) => {
-      this.#logger.error({ err: error }, `Failed to ${description}`);
-    });
+    this.#queuedTaskCount += 1;
+    this.#queue
+      .enqueue(task)
+      .catch((error: unknown) => {
+        this.#logger.error({ err: error }, `Failed to ${description}`);
+      })
+      .finally(() => {
+        this.#queuedTaskCount -= 1;
+        this.#reportIfUnused();
+      });
+  }
+
+  /**
+   * The check and the callback run in one synchronous step, as does the
+   * registry's attaching of a peer, so no peer can attach between the relay
+   * being found unused and the registry dropping it.
+   */
+  #reportIfUnused(): void {
+    const isUnused =
+      this.#supervisor === undefined &&
+      this.#clientPhases.size === 0 &&
+      this.#queuedTaskCount === 0;
+    if (isUnused) {
+      this.#whenUnused();
+    }
   }
 }
 

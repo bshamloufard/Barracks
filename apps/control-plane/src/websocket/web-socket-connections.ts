@@ -62,6 +62,10 @@ export class WebSocketClientConnection implements ClientConnection {
     });
   }
 
+  close(closeCode: number, reason: string): void {
+    this.#socket.close(closeCode, reason);
+  }
+
   #logSendFailure(error: Error | undefined): void {
     if (isWriteFailure(error)) {
       this.#logger.warn({ err: error }, "Could not send a message to a client");

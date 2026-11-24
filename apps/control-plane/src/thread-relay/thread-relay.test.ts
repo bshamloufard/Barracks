@@ -64,7 +64,12 @@ function createRelayWithControllableLog(): {
   threadEventLog: ControllableThreadEventLog;
 } {
   const threadEventLog = new ControllableThreadEventLog();
-  const relay = new ThreadRelay(threadId, threadEventLog, pino({ level: "silent" }));
+  const relay = new ThreadRelay({
+    threadId,
+    threadEventLog,
+    logger: pino({ level: "silent" }),
+    whenUnused: () => undefined,
+  });
   return { relay, threadEventLog };
 }
 
@@ -196,16 +201,32 @@ describe("a client connecting to a thread", () => {
     const readGates = threadEventLog.holdNextRead();
     const client = new FakeClientConnection();
 
-    const replay = relay.attachClient(client, 0);
+    relay.attachClient(client, 0);
     await readGates.beforeReading.reached;
     relay.detachClient(client);
     sendAgentEvent(relay, supervisor, toolExecutionStarted("call-1"));
     await allPendingWorkSettled();
     readGates.beforeReading.release();
     readGates.afterReading.release();
-    await replay;
+    await allPendingWorkSettled();
 
     expect(client.inbox.messages).toEqual([]);
+  });
+
+  it("is detached and disconnected when its history cannot be read", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const client = new FakeClientConnection();
+    threadEventLog.failNextRead(new Error("The log is unavailable"));
+
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
+    relay.receiveFromClient(client, { type: "interrupt_agent" });
+    await allPendingWorkSettled();
+
+    expect(client.closingRequest?.closeCode).toBe(standardCloseCodes.internalError);
+    expect(client.inbox.messages.map((message) => message.type)).toEqual([
+      "client_message_rejected",
+    ]);
   });
 
   it("receives live events after its replay without a gap", async () => {
@@ -321,7 +342,8 @@ describe("agent events from the supervisor", () => {
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
     relay.attachSupervisor(supervisor);
-    await relay.attachClient(client, 0);
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
 
     threadEventLog.failNextAppend(new Error("The log is unavailable"));
     sendAgentEvent(relay, supervisor, agentRunStarted);
@@ -521,7 +543,8 @@ describe("user messages from a client", () => {
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
     relay.attachSupervisor(supervisor);
-    await relay.attachClient(client, 0);
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
     supervisor.isAcceptingMessages = false;
 
     relay.receiveFromClient(client, { type: "send_user_message", text: "Are you there?" });
@@ -571,7 +594,8 @@ describe("interrupts from a client", () => {
     const supervisor = new FakeSupervisorConnection();
     const client = new FakeClientConnection();
     relay.attachSupervisor(supervisor);
-    await relay.attachClient(client, 0);
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
     supervisor.isAcceptingMessages = false;
 
     relay.receiveFromClient(client, { type: "interrupt_agent" });

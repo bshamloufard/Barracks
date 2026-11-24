@@ -35,4 +35,6 @@ export interface ClientConnection {
    * than piling up in memory and tripping the slow-client limit.
    */
   sendAndWaitUntilWritten(message: ControlPlaneToClientMessage): Promise<void>;
+
+  close(closeCode: number, reason: string): void;
 }

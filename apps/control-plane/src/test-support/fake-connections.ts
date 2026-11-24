@@ -36,7 +36,11 @@ export class FakeSupervisorConnection implements SupervisorConnection {
 
 export class FakeClientConnection implements ClientConnection {
   readonly inbox = new MessageInbox<ControlPlaneToClientMessage>();
-  readonly isOpen = true;
+  closingRequest: ClosingRequest | undefined;
+
+  get isOpen(): boolean {
+    return this.closingRequest === undefined;
+  }
 
   send(message: ControlPlaneToClientMessage): void {
     this.inbox.add(message);
@@ -44,6 +48,10 @@ export class FakeClientConnection implements ClientConnection {
 
   async sendAndWaitUntilWritten(message: ControlPlaneToClientMessage): Promise<void> {
     this.inbox.add(message);
+  }
+
+  close(closeCode: number, reason: string): void {
+    this.closingRequest = { closeCode, reason };
   }
 }
 

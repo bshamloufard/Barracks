@@ -33,14 +33,15 @@ export type ReadGates = {
 /**
  * An in-memory log whose next read or append can be paused, so a test can
  * make events arrive at exactly the moment a race would happen in production,
- * when the log is a database round trip away. Its next append can also be
- * made to fail, as a database write can.
+ * when the log is a database round trip away. Its next append or read can
+ * also be made to fail, as a database query can.
  */
 export class ControllableThreadEventLog implements ThreadEventLog {
   readonly #log = new InMemoryThreadEventLog();
   #nextReadGates: ReadGates | undefined;
   #nextAppendGate: Gate | undefined;
   #nextAppendFailure: Error | undefined;
+  #nextReadFailure: Error | undefined;
 
   holdNextRead(): ReadGates {
     const gates = { beforeReading: new Gate(), afterReading: new Gate() };
@@ -59,6 +60,11 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     this.#nextAppendFailure = failure;
   }
 
+  /** Makes the next read reject with `failure`. */
+  failNextRead(failure: Error): void {
+    this.#nextReadFailure = failure;
+  }
+
   async append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent> {
     const gate = this.#nextAppendGate;
     this.#nextAppendGate = undefined;
@@ -75,6 +81,11 @@ export class ControllableThreadEventLog implements ThreadEventLog {
     const gates = this.#nextReadGates;
     this.#nextReadGates = undefined;
     await gates?.beforeReading.pass();
+    const failure = this.#nextReadFailure;
+    this.#nextReadFailure = undefined;
+    if (failure !== undefined) {
+      throw failure;
+    }
     const events = await this.#log.readAfter(threadId, afterSequence);
     await gates?.afterReading.pass();
     return events;

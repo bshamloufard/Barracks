@@ -8,7 +8,6 @@ import {
 } from "@barrack/protocol";
 import type { WebSocket } from "ws";
 import type { Logger } from "../logger.js";
-import { standardCloseCodes } from "../standard-close-codes.js";
 import { keepConnectionAlive } from "./heartbeat.js";
 import { receiveMessages } from "./receive-messages.js";
 import { rejectUpgrade } from "./reject-upgrade.js";
@@ -61,11 +60,15 @@ function attachClient(
   dependencies: UpgradeDependencies,
   logger: Logger,
 ): void {
-  const relay = dependencies.relays.relayFor(endpoint.threadId);
   const connection = new WebSocketClientConnection(webSocket, logger);
   logger.info({ lastSeenSequence: endpoint.lastSeenSequence }, "Client connected");
   keepConnectionAlive(webSocket, dependencies.heartbeatIntervalInMilliseconds, logger);
   webSocket.on("error", (error) => logger.warn({ err: error }, "Client connection failed"));
+  const relay = dependencies.relays.attachClient(
+    endpoint.threadId,
+    connection,
+    endpoint.lastSeenSequence,
+  );
   webSocket.on("close", (closeCode, reason) => {
     logger.info({ closeCode, reason: reason.toString() }, "Client disconnected");
     relay.detachClient(connection);
@@ -76,8 +79,4 @@ function attachClient(
     (message) => relay.receiveFromClient(connection, message),
     logger,
   );
-  relay.attachClient(connection, endpoint.lastSeenSequence).catch((error: unknown) => {
-    logger.error({ err: error }, "Could not replay the thread's history to a client");
-    webSocket.close(standardCloseCodes.internalError, "Could not replay the thread's history");
-  });
 }
