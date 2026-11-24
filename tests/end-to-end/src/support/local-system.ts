@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,6 +28,12 @@ export type SandboxChoice =
        * `restartable-supervisors.ts`.
        */
       supervisorCommand?: string[];
+      /**
+       * Where the sandboxes are: a new directory unless given, as when a
+       * control plane is started again in place of one that died, and must
+       * find the sandboxes it made.
+       */
+      sandboxesDirectory?: string;
     }
   | { kind: "docker" };
 
@@ -49,6 +55,8 @@ export type ControlPlaneOptions = {
   port?: number;
   /** Postgres to keep threads and history in; memory unless given. */
   databaseUrl?: string;
+  /** More of the control plane's settings, such as its idle period or its limit on running sandboxes. */
+  environment?: NodeJS.ProcessEnv;
 };
 
 export type RunningControlPlane = {
@@ -60,6 +68,8 @@ export type RunningControlPlane = {
   /** A signed-in test user's access token, which every request and client connection carries. */
   accessToken: string;
   process: ServiceProcess;
+  /** Where its local-process sandboxes are; undefined for Docker. */
+  sandboxesDirectory: string | undefined;
   /** Stops the control plane, which stops the supervisors it started, and removes what it left. */
   stop(): Promise<void>;
   /**
@@ -97,6 +107,7 @@ export async function startControlPlane(
     ...agentVariables(options.agent ?? { harness: "fake" }),
     ...sandboxes.variables,
     ...databaseVariables(options.databaseUrl),
+    ...options.environment,
   });
   await controlPlane.waitForLogLine(
     "the control plane to listen",
@@ -109,6 +120,7 @@ export async function startControlPlane(
     httpBaseUrl,
     accessToken: await authentication.signIn(httpBaseUrl),
     process: controlPlane,
+    sandboxesDirectory: sandboxes.sandboxesDirectory,
     async stop() {
       await controlPlane.stop();
       await authentication.stop();
@@ -177,10 +189,14 @@ function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {
   return { BARRACK_AGENT_HARNESS: "pi", BARRACK_MODEL: agent.model, PI_OFFLINE: "1" };
 }
 
-async function sandboxVariables(
-  sandboxes: SandboxChoice,
-  port: number,
-): Promise<{ variables: NodeJS.ProcessEnv; removeLeftovers: () => Promise<void> }> {
+type SandboxSetUp = {
+  variables: NodeJS.ProcessEnv;
+  /** The local-process sandboxes' directory, for a control plane started again in this one's place. */
+  sandboxesDirectory: string | undefined;
+  removeLeftovers: () => Promise<void>;
+};
+
+async function sandboxVariables(sandboxes: SandboxChoice, port: number): Promise<SandboxSetUp> {
   if (sandboxes.kind === "docker") {
     return {
       variables: {
@@ -192,11 +208,15 @@ async function sandboxVariables(
         BARRACK_DOCKER_STOP_TIMEOUT_SECONDS: String(testDockerSettings.stopTimeoutInSeconds),
         BARRACK_SANDBOX_CONTROL_PLANE_URL: `ws://host.docker.internal:${port}`,
       },
+      sandboxesDirectory: undefined,
       removeLeftovers: async () => undefined,
     };
   }
-  const sandboxesDirectory = await mkdtemp(path.join(tmpdir(), "barrack-end-to-end-sandboxes-"));
+  const sandboxesDirectory =
+    sandboxes.sandboxesDirectory ??
+    (await mkdtemp(path.join(tmpdir(), "barrack-end-to-end-sandboxes-")));
   return {
+    sandboxesDirectory,
     variables: {
       BARRACK_SANDBOX_PROVIDER: "local-process",
       BARRACK_ALLOW_UNISOLATED_SANDBOXES: "development-only",
@@ -211,8 +231,35 @@ async function sandboxVariables(
       ),
       BARRACK_SANDBOX_CONTROL_PLANE_URL: `ws://127.0.0.1:${port}`,
     },
-    removeLeftovers: () => rm(sandboxesDirectory, { recursive: true, force: true }),
+    removeLeftovers: async () => {
+      await killSupervisorsLeftIn(sandboxesDirectory);
+      await rm(sandboxesDirectory, { recursive: true, force: true });
+    },
   };
+}
+
+/**
+ * A control plane ends the supervisors it started when it exits normally,
+ * but not those an earlier one, killed outright, left running and it took
+ * over; the local-process provider names each running one in its sandbox's
+ * `supervisor.pid`.
+ */
+async function killSupervisorsLeftIn(sandboxesDirectory: string): Promise<void> {
+  const sandboxDirectories = await readdir(sandboxesDirectory).catch(() => []);
+  for (const sandboxDirectory of sandboxDirectories) {
+    const processIdText = await readFile(
+      path.join(sandboxesDirectory, sandboxDirectory, "supervisor.pid"),
+      "utf8",
+    ).catch(() => undefined);
+    const processId = Number(processIdText);
+    if (processIdText !== undefined && Number.isSafeInteger(processId) && processId > 0) {
+      try {
+        process.kill(processId, "SIGKILL");
+      } catch {
+        // Already gone, as it should be.
+      }
+    }
+  }
 }
 
 /**
