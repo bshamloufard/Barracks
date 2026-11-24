@@ -30,10 +30,14 @@ type HeldBackMessage = ThreadEventMessage | ClientMessageRejected;
  * text streamed so far when its replay ends, which supersede them, so
  * holding them would only cost memory for as long as a slow replay lasts.
  *
- * A live client is never sent a thread event at or below the newest one it
- * has been sent. An append can be committed, and so replayed, before the
- * log's answer reaches the relay and the relay broadcasts it, by which time
- * the client may already be live.
+ * A live client is sent each thread event only if it is the one after the
+ * last it was sent. An event at or below that was already replayed to it: an
+ * append can be committed, and so replayed, before the log's answer reaches
+ * the relay and the relay broadcasts it. An event further on means the
+ * client missed one this relay never broadcast, because another control
+ * plane instance recorded it or because an append reported as failed was
+ * committed after all; that client is disconnected, so it reconnects and
+ * replays what it missed from the log, rather than being shown a gap.
  */
 type ClientPhase =
   | { name: "replaying"; heldBackMessages: HeldBackMessage[] }
@@ -348,9 +352,29 @@ export class ThreadRelay {
       if (message.sequence <= phase.lastSentSequence) {
         return;
       }
+      if (message.sequence > phase.lastSentSequence + 1) {
+        this.#disconnectClientThatMissedEvents(client, phase.lastSentSequence, message.sequence);
+        return;
+      }
       phase.lastSentSequence = message.sequence;
     }
     client.send(message);
+  }
+
+  #disconnectClientThatMissedEvents(
+    client: ClientConnection,
+    lastSentSequence: number,
+    nextSequence: number,
+  ): void {
+    this.#logger.warn(
+      { lastSentSequence, nextSequence },
+      "A live client would have missed thread events; disconnecting it so it replays them",
+    );
+    this.detachClient(client);
+    client.close(
+      standardCloseCodes.internalError,
+      "Thread events were recorded that this connection was not sent; reconnect to replay them",
+    );
   }
 
   /**

@@ -329,6 +329,30 @@ describe("a client connecting to a thread", () => {
   });
 });
 
+describe("a live client", () => {
+  it("is disconnected, rather than shown a gap, when an event was recorded that this relay never broadcast", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    const client = new FakeClientConnection();
+    relay.attachSupervisor(supervisor);
+    relay.attachClient(client, 0);
+    sendAgentEvent(relay, supervisor, agentRunStarted);
+    await allPendingWorkSettled();
+
+    // As another control plane instance appending to the same thread would.
+    await threadEventLog.append(threadId, toolExecutionStarted("call-from-elsewhere"));
+    sendAgentEvent(relay, supervisor, agentRunSettled);
+    await allPendingWorkSettled();
+
+    expect(
+      client.inbox.messages.flatMap((message) =>
+        message.type === "thread_event" ? [message.sequence] : [],
+      ),
+    ).toEqual([1]);
+    expect(client.closingRequest?.closeCode).toBe(standardCloseCodes.internalError);
+  });
+});
+
 describe("agent events from the supervisor", () => {
   it("are recorded with consecutive sequences and shown to every client in the order they were sent", async () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
