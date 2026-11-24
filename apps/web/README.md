@@ -54,6 +54,8 @@ pnpm --filter @barrack/web dev
 
 and open <http://localhost:5173/>.
 
+Its tests cover the pure parts (the reducers, the connection's and the desktop viewer's state machines, the presentation helpers) and run with `pnpm test` from the root; the desktop is also driven in a real browser by an end-to-end test in Docker ([`docker-desktop.test.ts`](../../tests/end-to-end/src/docker-desktop.test.ts)). Sign-in has run only against the tests' stand-in for Supabase.
+
 To build the static files the control plane serves in production:
 
 ```sh

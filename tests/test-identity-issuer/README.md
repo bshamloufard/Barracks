@@ -1,0 +1,5 @@
+# @barrack/test-identity-issuer
+
+A stand-in for Supabase Auth's token issuer, so the tests of sign-in need no Supabase project: an ES256 key pair, its public key set served on localhost at the path Supabase uses, a function that mints access tokens with chosen claims and lifetimes, and `/auth/v1/user`, the one endpoint the control plane asks about a user. The control plane verifies these tokens with exactly the code it uses against a real project, so the tests cover fetching the key set, checking claims and expiry, and a rotated key. It has never been compared with a real Supabase project; the [first-deployment checklist](../../docs/deployment.md#first-deployment-checklist) lists what a real one must confirm.
+
+The control plane's sign-in and access-control tests, and the end-to-end tests that need real sign-in (those in Docker, where development mode is refused), use it. Everything is in [`src/test-identity-issuer.ts`](src/test-identity-issuer.ts). It has no tests of its own and no build step; `pnpm typecheck` checks it.

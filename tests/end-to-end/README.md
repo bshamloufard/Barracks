@@ -1,0 +1,25 @@
+# @barrack/end-to-end-tests
+
+Tests that run Barrack's real processes together: the control plane and sandbox supervisors started from their sources, driven over real HTTP and WebSockets as a client would. They import nothing from the applications, so they test the parts as they really run. Nothing here reaches the internet: GitHub, Supabase's token issuer and the model providers are the stand-ins in the other folders under [`tests/`](..).
+
+## Running them
+
+From the repository root:
+
+- `pnpm test` runs the local tests, with the fake agent and local-process sandboxes (no isolation, no Docker).
+- `pnpm test:docker` builds the sandbox image and also runs the Docker tests, in real containers with the real Pi against the [mock model server](../mock-model-server).
+
+The root [README](../../README.md#commands) lists the variables that select or skip suites (`BARRACK_TEST_DATABASE_URL`, `BARRACK_DOCKER_TESTS`, `BARRACK_DOCKER_TEST_IMAGE`, and Playwright for the desktop's browser test).
+
+## Main files
+
+| File                                                         | What it shows                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`local-thread.test.ts`](src/local-thread.test.ts)           | A thread created through the API: its events in order, streamed text, replay to a late or reconnecting client, interrupts                                                                                                                                                                                                         |
+| [`recovery.test.ts`](src/recovery.test.ts)                   | Killing the control plane or a supervisor mid-run loses no recorded event and repeats no message                                                                                                                                                                                                                                  |
+| [`thread-lifecycle.test.ts`](src/thread-lifecycle.test.ts)   | Stop and resume, waking by a message, idle shutdown, the running-sandbox limit, and a killed control plane's operations finished                                                                                                                                                                                                  |
+| [`repository-thread.test.ts`](src/repository-thread.test.ts) | Cloning and publishing against the stand-in for GitHub                                                                                                                                                                                                                                                                            |
+| [`local-model-proxy.test.ts`](src/local-model-proxy.test.ts) | The real Pi through the model proxy, against the mock model, and the usage cap ending a run                                                                                                                                                                                                                                       |
+| [`local-desktop.test.ts`](src/local-desktop.test.ts)         | A local-process sandbox has no desktop, and says so                                                                                                                                                                                                                                                                               |
+| `docker-*.test.ts`                                           | The same in Docker sandboxes: [three threads at once, and deleting them](src/docker-thread-lifecycle.test.ts), [the agent's isolation](src/docker-agent-isolation.test.ts), [the desktop in a browser](src/docker-desktop.test.ts), [model keys](src/docker-model-access.test.ts) and [the proxy](src/docker-model-proxy.test.ts) |
+| [`src/support/`](src/support)                                | Starting the processes, test clients, a throwaway database, and the probes the isolation test runs as each sandbox user                                                                                                                                                                                                           |

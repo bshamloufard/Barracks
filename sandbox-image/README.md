@@ -16,11 +16,13 @@ This builds `barrack-sandbox:dev` from [`Dockerfile`](Dockerfile), with the repo
 - The lockfile is fetched in a layer of its own, so editing the supervisor rebuilds in seconds; only a lockfile change fetches packages again.
 - The sandbox itself is Ubuntu 24.04, the distribution coding tools and agents most often expect. The build stage runs on the official Node image.
 - `NODE_IMAGE` and `BASE_IMAGE` build arguments replace the two base images, for example with a mirror.
-- Firefox comes from Mozilla's APT repository (`packages.mozilla.org`), checked against Mozilla's signing key kept here in [`packages.mozilla.org.asc`](packages.mozilla.org.asc) (fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`, as [Mozilla's installation page](https://support.mozilla.org/kb/install-firefox-linux) gives it), and only Firefox is taken from there. That repository keeps current versions only, so each build gets the Firefox of its day. Where the build cannot reach it, hand it an unpacked official Firefox for Linux (the `firefox` directory of Mozilla's tarball for the image's architecture) instead:
+- Firefox comes from Mozilla's APT repository (`packages.mozilla.org`), checked against Mozilla's signing key kept here in [`packages.mozilla.org.asc`](packages.mozilla.org.asc) (fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`, as [Mozilla's installation page](https://support.mozilla.org/kb/install-firefox-linux) gives it), and only Firefox is taken from there. That repository keeps current versions only, so each build gets the Firefox of its day. **This route has never been built**: the network where Barrack was developed blocks `packages.mozilla.org`, so every image tested took the next route; the [first-deployment checklist](../docs/deployment.md#first-deployment-checklist) says how to check it. Where the build cannot reach it, hand it an unpacked official Firefox for Linux (the `firefox` directory of Mozilla's tarball for the image's architecture) instead:
 
   ```sh
   pnpm sandbox-image:build --build-arg FIREFOX_SOURCE=build-context --build-context firefox=/path/to/firefox
   ```
+
+The image has been built and tested only on amd64; Daytona needs amd64, while an arm64 machine running Compose would build it for arm64, untried. `pnpm test:docker` builds it and runs the tests that use it: the providers' Docker contract, the isolation tests below, and threads end to end with the real Pi.
 
 The image is large: about 1.8 GB unpacked, most of it the desktop (Mesa and LLVM, which Ubuntu's X servers depend on) and Firefox. See the [decision log](../docs/decisions.md) for why the desktop is always part of it.
 

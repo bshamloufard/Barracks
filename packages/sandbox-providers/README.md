@@ -19,7 +19,9 @@
 | daytona       | [`src/daytona`](src/daytona)             | A Daytona sandbox from a snapshot of the sandbox image                                |
 | local-process | [`src/local-process`](src/local-process) | **Not a sandbox.** A directory and a child process on the control plane's own machine |
 
-`readSandboxProviderConfiguration(process.env)` reads the choice and `createSandboxProvider(configuration)` builds it.
+`readSandboxProviderConfiguration(process.env)` ([`src/provider-configuration.ts`](src/provider-configuration.ts)) reads the choice and `createSandboxProvider(configuration)` ([`src/create-sandbox-provider.ts`](src/create-sandbox-provider.ts)) builds it.
+
+**What has run.** The fake and local-process providers run in every `pnpm test`, and the Docker provider against real containers in `pnpm test:docker`. The Daytona provider has run only against an in-memory stand-in for Daytona's API: it has never created a real Daytona sandbox.
 
 | Variable                               | For           | Meaning                                                                                                        |
 | -------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |

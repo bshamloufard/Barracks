@@ -48,7 +48,7 @@ The same project signs users in. The web client asks for a six-digit code by ema
 4. **Sign-ups off.** Supabase lets anyone sign up by default. List the addresses that may use Barrack in `BARRACK_ALLOWED_USER_EMAILS` (the control plane refuses everyone else, once Supabase confirms they own their address), and once each of them has signed in once, turn off **Allow new users to sign up** under **Authentication → Sign In / Providers**. Leave "Confirm email" on and anonymous sign-ins off, as they are by default.
 5. **The publishable key only.** Under **Project Settings → API Keys**, copy the project URL (`BARRACK_SUPABASE_URL`) and the **publishable** key, `sb_publishable_…` (`BARRACK_SUPABASE_PUBLISHABLE_KEY`). It is handed to every browser. Never use the secret key or the legacy `service_role` key: the control plane refuses to start with one.
 
-More in the [control plane's README](../apps/control-plane/README.md#signing-users-in).
+How the control plane checks each token is in the [control plane's README](../apps/control-plane/README.md#signing-users-in).
 
 ### 2. Daytona: the sandbox image
 
