@@ -15,6 +15,13 @@ export type UsageCapCheck =
   | { isReached: false }
   | { isReached: true; capTokens: number; countedTokens: number; windowHours: number };
 
+/**
+ * Pauses before trying a failed usage write again: enough to ride out a
+ * database blip or a pool briefly exhausted, and short enough to finish
+ * within a shutdown's grace period.
+ */
+const defaultRecordRetryDelays = [250, 1_000, 4_000];
+
 /** How many days of usage the settings page shows. */
 export const recentUsageDays = 30;
 
@@ -29,38 +36,51 @@ export class ModelUsage {
   readonly #settings: ModelUsageCapSettings;
   readonly #clock: () => Date;
   readonly #logger: Logger;
+  readonly #recordRetryDelays: readonly number[];
 
   constructor(options: {
     store: ModelUsageStore;
     settings: ModelUsageCapSettings;
     clock?: () => Date;
     logger: Logger;
+    /** The pauses before each further try of a failed write; `defaultRecordRetryDelays` unless given. */
+    recordRetryDelaysInMilliseconds?: readonly number[];
   }) {
     this.#store = options.store;
     this.#settings = options.settings;
     this.#clock = options.clock ?? (() => new Date());
     this.#logger = options.logger;
+    this.#recordRetryDelays = options.recordRetryDelaysInMilliseconds ?? defaultRecordRetryDelays;
   }
 
   get settings(): ModelUsageCapSettings {
     return this.#settings;
   }
 
-  /** Adds one answer; a failure is logged, never thrown, since the answer has been given. */
+  /**
+   * Adds one answer, trying again after each of `recordRetryDelaysInMilliseconds`
+   * when the write fails, since it is the only record of what the owner's
+   * key spent on it. Never throws, since the answer has been given; usage
+   * still not written after the last try is logged as lost, with its counts
+   * and whose it was, and nothing of the request or the answer.
+   */
   async record(usage: Omit<AnswerUsage, "at">): Promise<void> {
-    try {
-      await this.#store.add({ ...usage, at: this.#clock() });
-    } catch (error) {
-      this.#logger.error(
-        {
-          err: error,
-          ownerUserId: usage.ownerUserId,
-          threadId: usage.threadId,
-          providerId: usage.providerId,
-          source: usage.source,
-        },
-        "Could not record a model answer's usage",
-      );
+    const at = this.#clock();
+    for (const delay of [...this.#recordRetryDelays, undefined]) {
+      try {
+        await this.#store.add({ ...usage, at });
+        return;
+      } catch (error) {
+        if (delay === undefined) {
+          this.#logger.error(
+            { err: error, ...usage, at },
+            "Could not record a model answer's usage after trying again; it is lost",
+          );
+          return;
+        }
+        this.#logger.warn({ err: error, threadId: usage.threadId }, "Recording usage failed");
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
 
