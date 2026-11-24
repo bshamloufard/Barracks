@@ -109,15 +109,16 @@ const exitPollIntervalInMilliseconds = 50;
  * could not see; the successor's start then launched a second, which
  * replaced the first in the middle of its work. Now the record is the
  * launch's own first step. If nobody is listening on descriptor 3 any
- * more, the shell is ended by SIGPIPE before the supervisor runs, leaving
- * a record of a process gone, which reads as a supervisor that exited.
+ * more, the shell is ended by SIGPIPE (or, were that ignored, exits on the
+ * failed write) before the supervisor runs, leaving a record of a process
+ * gone, which reads as a supervisor that exited.
  * A command that cannot be found ends it before anything is recorded,
  * with the shell's code for that, 127.
  */
 const launchScript = [
   'command -v -- "$2" > /dev/null || exit 127',
   'printf "%s" "$$" > "$1" || exit 126',
-  'printf "recorded\\n" >&3',
+  'printf "recorded\\n" >&3 || exit 1',
   "exec 3>&-",
   "shift",
   'exec "$@"',
