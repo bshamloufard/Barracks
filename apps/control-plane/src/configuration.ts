@@ -1,6 +1,12 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import {
+  type DatabaseConfiguration,
+  databaseEnvironmentShape,
+  describeProblems,
+  toDatabaseConfiguration,
+} from "./database/database-configuration.js";
 
 /**
  * The browser origins the web client is served from during local development:
@@ -43,6 +49,7 @@ const environmentSchema = z.object({
     .transform((directory) => resolve(directory))
     .optional(),
   BARRACK_LOG_LEVEL: z.enum(logLevels).default("info"),
+  ...databaseEnvironmentShape,
 });
 
 export type LogLevel = (typeof logLevels)[number];
@@ -55,6 +62,8 @@ export type ControlPlaneConfiguration = {
   /** Where the built web client is; when set, the control plane serves it. */
   webClientDirectory: string | undefined;
   logLevel: LogLevel;
+  /** Where thread history is stored; undefined keeps it in memory, where a restart loses it. */
+  database: DatabaseConfiguration | undefined;
 };
 
 export type ConfigurationResult =
@@ -65,10 +74,7 @@ export type ConfigurationResult =
 export function readConfiguration(environment: NodeJS.ProcessEnv): ConfigurationResult {
   const validation = environmentSchema.safeParse(environment);
   if (!validation.success) {
-    const problems = validation.error.issues.map(
-      (issue) => `${issue.path.join(".")}: ${issue.message}`,
-    );
-    return { ok: false, problems };
+    return { ok: false, problems: describeProblems(validation.error) };
   }
   const settings = validation.data;
   return {
@@ -80,6 +86,7 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
       allowedClientOrigins: settings.BARRACK_ALLOWED_CLIENT_ORIGINS,
       webClientDirectory: settings.BARRACK_WEB_CLIENT_DIRECTORY,
       logLevel: settings.BARRACK_LOG_LEVEL,
+      database: toDatabaseConfiguration(settings),
     },
   };
 }
