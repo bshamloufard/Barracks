@@ -8,7 +8,7 @@ import {
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { toolExecutionStarted } from "./test-support/example-agent-events.js";
+import { agentRunStarted, toolExecutionStarted } from "./test-support/example-agent-events.js";
 import {
   browserHeaders,
   TestControlPlane,
@@ -141,6 +141,42 @@ describe("each user's threads", () => {
       ]);
     },
   );
+
+  it("shows what the control plane records on its own, and messages waiting for an agent, only to the owner", async () => {
+    const graceThread = await controlPlane.createThread(graceToken);
+    const graceClient = await controlPlane.connectClient(graceThread.threadId, 0, graceToken);
+    const adaClient = await controlPlane.connectClient(adaThread.threadId, 0, adaToken);
+    const abandoningSupervisor = await controlPlane.connectSupervisor(adaThread);
+    abandoningSupervisor.sendAgentEvent(agentRunStarted);
+    await abandoningSupervisor.waitUntilRecorded(1);
+    await abandoningSupervisor.close();
+    adaClient.sendUserMessage("Waiting for the next supervisor");
+    await adaClient.waitForSequence(2);
+
+    const replacingSupervisor = await controlPlane.connectSupervisor(adaThread);
+    await adaClient.waitForSequence(3);
+    await replacingSupervisor.inbox.waitFor(
+      "the waiting message",
+      (message) => message.type === "deliver_user_message",
+    );
+    const graceOpeningAdaThread = await connectAndSend(
+      adaThread.threadId,
+      graceToken,
+      () => undefined,
+    );
+
+    expect(adaClient.threadEvents.map((recorded) => recorded.event.type)).toEqual([
+      "agent_run_started",
+      "user_message",
+      "agent_failed",
+    ]);
+    expect(graceOpeningAdaThread).toEqual({ closeCode: closeCodes.threadNotFound, received: [] });
+    expect(graceClient.inbox.messages.map((message) => message.type)).toEqual([
+      "replay_announcement",
+      "supervisor_connection_status",
+      "user_message_delivery_status",
+    ]);
+  });
 
   it("lets the owner use the thread", async () => {
     const supervisor = await controlPlane.connectSupervisor(adaThread);
