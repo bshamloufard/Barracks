@@ -15,8 +15,10 @@ import {
   FakeClientConnection,
   FakeSupervisorConnection,
 } from "../test-support/fake-connections.js";
+import { readWholeThread } from "../test-support/read-whole-thread.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
 import type { FakeSupervisor, TestClient } from "../test-support/test-peers.js";
+import { replayPageSize } from "./read-missed-events.js";
 import { ThreadRelay } from "./thread-relay.js";
 
 /*
@@ -82,7 +84,7 @@ function sendAgentEvent(
 }
 
 async function recordedEventTypes(threadEventLog: ControllableThreadEventLog): Promise<string[]> {
-  const recordedEvents = await threadEventLog.readAfter(threadId, 0);
+  const recordedEvents = await readWholeThread(threadEventLog, threadId);
   return recordedEvents.map((recordedEvent) => recordedEvent.event.type);
 }
 
@@ -131,7 +133,7 @@ describe("a client connecting to a thread", () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 5);
-    const readGates = controlPlane.threadEventLog.holdNextRead();
+    const readGates = controlPlane.threadEventLog.holdNextNewestSequenceRead();
 
     const connecting = controlPlane.connectClient(threadId, 2);
     // Recorded after the client subscribed but before the log is read: these
@@ -158,7 +160,7 @@ describe("a client connecting to a thread", () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const observer = await controlPlane.connectClient(threadId);
     await recordAgentEvents(supervisor, observer, 1, 2);
-    const readGates = controlPlane.threadEventLog.holdNextRead();
+    const readGates = controlPlane.threadEventLog.holdNextNewestSequenceRead();
 
     const connecting = controlPlane.connectClient(threadId);
     await readGates.beforeReading.reached;
@@ -198,7 +200,7 @@ describe("a client connecting to a thread", () => {
     relay.attachSupervisor(supervisor);
     sendAgentEvent(relay, supervisor, agentRunStarted);
     await allPendingWorkSettled();
-    const readGates = threadEventLog.holdNextRead();
+    const readGates = threadEventLog.holdNextNewestSequenceRead();
     const client = new FakeClientConnection();
 
     relay.attachClient(client, 0);
@@ -277,6 +279,54 @@ describe("a client connecting to a thread", () => {
     });
     expect(sequencesOf(client)).toEqual([1, 2]);
   });
+
+  it("is replayed a history longer than one page of the log in full and in order", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const eventCount = replayPageSize * 2 + 7;
+    for (let index = 1; index <= eventCount; index += 1) {
+      await threadEventLog.append(threadId, toolExecutionStarted(`call-${index}`));
+    }
+    const client = new FakeClientConnection();
+
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
+
+    expect(client.inbox.messages[0]).toEqual({
+      type: "replay_announcement",
+      firstSequence: 1,
+      lastSequence: eventCount,
+    });
+    expect(
+      client.inbox.messages.flatMap((message) =>
+        message.type === "thread_event" ? [message.sequence] : [],
+      ),
+    ).toEqual(Array.from({ length: eventCount }, (_, index) => index + 1));
+  });
+
+  it("is sent an event once when the log acknowledges recording it only after the client has replayed it", async () => {
+    const { relay, threadEventLog } = createRelayWithControllableLog();
+    const supervisor = new FakeSupervisorConnection();
+    relay.attachSupervisor(supervisor);
+    sendAgentEvent(relay, supervisor, agentRunStarted);
+    await allPendingWorkSettled();
+    const appendGates = threadEventLog.holdNextAppend();
+    appendGates.beforeRecording.release();
+    sendAgentEvent(relay, supervisor, toolExecutionStarted("call-1"));
+    await appendGates.afterRecording.reached;
+
+    const client = new FakeClientConnection();
+    relay.attachClient(client, 0);
+    await allPendingWorkSettled();
+    appendGates.afterRecording.release();
+    sendAgentEvent(relay, supervisor, agentRunSettled);
+    await allPendingWorkSettled();
+
+    expect(
+      client.inbox.messages.flatMap((message) =>
+        message.type === "thread_event" ? [message.sequence] : [],
+      ),
+    ).toEqual([1, 2, 3]);
+  });
 });
 
 describe("agent events from the supervisor", () => {
@@ -301,7 +351,7 @@ describe("agent events from the supervisor", () => {
       expect(client.threadEvents.map((recordedEvent) => recordedEvent.event)).toEqual(events);
       expect(sequencesOf(client)).toEqual([1, 2, 3, 4]);
     }
-    expect(await controlPlane.threadEventLog.readAfter(threadId, 0)).toEqual(
+    expect(await readWholeThread(controlPlane.threadEventLog, threadId)).toEqual(
       firstClient.threadEvents,
     );
   });
@@ -310,12 +360,13 @@ describe("agent events from the supervisor", () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const client = await controlPlane.connectClient(threadId);
     await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
-    const appendGate = controlPlane.threadEventLog.holdNextAppend();
+    const appendGates = controlPlane.threadEventLog.holdNextAppend();
 
     supervisor.sendAgentEvent(agentRunStarted);
-    await appendGate.reached;
+    await appendGates.beforeRecording.reached;
     const typesWhileRecording = messageTypesOf(client);
-    appendGate.release();
+    appendGates.beforeRecording.release();
+    appendGates.afterRecording.release();
     await client.waitForSequence(1);
 
     expect(typesWhileRecording).not.toContain("thread_event");
@@ -395,7 +446,7 @@ describe("stream fragments from the supervisor", () => {
       type: "stream_fragment",
       fragment: { type: "assistant_text_fragment", ...fragment },
     });
-    expect(await controlPlane.threadEventLog.readAfter(threadId, 0)).toEqual([]);
+    expect(await readWholeThread(controlPlane.threadEventLog, threadId)).toEqual([]);
   });
 
   it("reach a client that joins mid-message as the text so far, after its replay", async () => {
@@ -526,12 +577,13 @@ describe("user messages from a client", () => {
     const supervisor = await controlPlane.connectSupervisor(threadId);
     const client = await controlPlane.connectClient(threadId);
     await client.inbox.waitFor("the supervisor status", isSupervisorStatus(true));
-    const appendGate = controlPlane.threadEventLog.holdNextAppend();
+    const appendGates = controlPlane.threadEventLog.holdNextAppend();
 
     client.sendUserMessage("Please say hello");
-    await appendGate.reached;
+    await appendGates.beforeRecording.reached;
     const deliveriesWhileRecording = supervisor.inbox.messages.length;
-    appendGate.release();
+    appendGates.beforeRecording.release();
+    appendGates.afterRecording.release();
     const delivery = await supervisor.inbox.waitFor(
       "a delivered user message",
       (message) => message.type === "deliver_user_message",
@@ -565,7 +617,7 @@ describe("user messages from a client", () => {
       type: "client_message_rejected",
       reason: expect.stringContaining("No agent is connected"),
     });
-    expect(await controlPlane.threadEventLog.readAfter(threadId, 0)).toEqual([]);
+    expect(await readWholeThread(controlPlane.threadEventLog, threadId)).toEqual([]);
   });
 
   it("are recorded, and the sender told they were not delivered, when the supervisor's connection is closing", async () => {

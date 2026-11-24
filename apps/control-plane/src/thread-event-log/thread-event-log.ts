@@ -5,8 +5,9 @@ import type { RecordedThreadEvent, ThreadEvent } from "@barrack/protocol";
  * assigns sequences, so it is what makes "a reconnecting client receives
  * exactly what it missed" true.
  *
- * Methods are asynchronous because the implementation that follows the
- * in-memory one is backed by Postgres.
+ * Reads are bounded: a long thread holds tens of thousands of events, some
+ * of them tool output tens of kilobytes long, so history is read a page at a
+ * time rather than all at once.
  */
 export interface ThreadEventLog {
   /**
@@ -17,6 +18,23 @@ export interface ThreadEventLog {
    */
   append(threadId: string, event: ThreadEvent): Promise<RecordedThreadEvent>;
 
-  /** Every event of the thread with a sequence greater than `afterSequence`, in sequence order. */
-  readAfter(threadId: string, afterSequence: number): Promise<RecordedThreadEvent[]>;
+  /**
+   * The sequence of the thread's newest event, or 0 if it has none. Every
+   * event up to and including it can be read: an event is never visible
+   * here before every event ahead of it is.
+   */
+  readNewestSequence(threadId: string): Promise<number>;
+
+  /**
+   * At most `limit` of the thread's events with sequences after
+   * `afterSequence` and up to and including `throughSequence`, in sequence
+   * order, starting with the first of them.
+   */
+  readEvents(threadId: string, page: ThreadEventPage): Promise<RecordedThreadEvent[]>;
 }
+
+export type ThreadEventPage = {
+  afterSequence: number;
+  throughSequence: number;
+  limit: number;
+};
