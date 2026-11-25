@@ -46,6 +46,9 @@ let modelServer: MockModelServer;
 let controlPlane: TestControlPlane;
 let adaToken: string;
 let graceToken: string;
+/** Access tokens the stand-in for OpenAI's API refuses whatever the sign-in says, as an invalidated token is. */
+let refusedPlanTokens: Set<string>;
+let refusesEveryPlanToken: boolean;
 
 beforeEach(async () => {
   identityIssuer = await TestIdentityIssuer.start();
@@ -55,8 +58,13 @@ beforeEach(async () => {
     email: "ada@chatgpt.example",
     isEligible: true,
   });
+  refusedPlanTokens = new Set();
+  refusesEveryPlanToken = false;
   modelServer = await startMockModelServer("127.0.0.1", {
-    checkPlanToken: (token) => signInServer.checkAccessToken(token),
+    checkPlanToken: (token) =>
+      refusesEveryPlanToken || refusedPlanTokens.has(token)
+        ? { kind: "revoked" }
+        : signInServer.checkAccessToken(token),
   });
   controlPlane = await TestControlPlane.start({
     authentication: { kind: "test-issuer", issuer: identityIssuer },
@@ -206,22 +214,18 @@ describe("the model proxy on a ChatGPT plan", () => {
     ]);
   });
 
-  it("renews the sign-in at once when OpenAI refuses its token, and says to connect again when it cannot be", async () => {
+  it("answers a refused token with the plan's own refusal, to connect again, once OpenAI will not renew it", async () => {
     const { access } = await startThread(adaToken);
     signInServer.revokeEverySignInOf("chatgpt-ada");
 
     const refused = await callOnPlan(access, planShapedBody("Say hello"));
-    expect(refused.status).toBe(401);
-    expect(await refused.text()).toContain("subscription_sharing_invalid_user");
 
-    // The renewal follows the refused answer, once it is relayed.
-    await expect
-      .poll(async () => (await controlPlane.chatGptPlan.describe(ada.userId)).loss?.reason)
-      .toBe("sign_in_expired");
-    const next = await callOnPlan(access, planShapedBody("Say hello"));
-    expect(next.status).toBe(403);
-    expect(await next.text()).toContain("ChatGPT plan is not connected to Barrack");
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).toContain("ChatGPT plan is not connected to Barrack");
     expect(signInServer.refreshAttempts).toEqual([{ outcome: "refused" }]);
+    expect((await controlPlane.chatGptPlan.describe(ada.userId)).loss?.reason).toBe(
+      "sign_in_expired",
+    );
   });
 
   it("passes the plan's usage limit through, for the agent to report", async () => {
@@ -370,5 +374,75 @@ describe("a run open when its owner changes what OpenAI models spend", () => {
     expect(modelServer.receivedRequests.map((request) => request.credential)).toEqual([
       adasOpenAiKey,
     ]);
+  });
+});
+
+describe("a ChatGPT plan's access token refused by OpenAI", () => {
+  it("is renewed, and the request sent again with the new token, the agent seeing only the answer", async () => {
+    const { access } = await startThread(adaToken);
+    const refusedToken = await adasPlanAccessToken();
+    refusedPlanTokens.add(refusedToken);
+
+    const response = await callOnPlan(access, planShapedBody("Say hello"));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Hello");
+    const renewedToken = await adasPlanAccessToken();
+    expect(modelServer.receivedRequests.map((request) => request.credential)).toEqual([
+      refusedToken,
+      renewedToken,
+    ]);
+    expect(signInServer.refreshAttempts).toEqual([{ outcome: "renewed" }]);
+  });
+
+  it("is renewed once however many requests it was refused for at once", async () => {
+    const { access } = await startThread(adaToken);
+    refusedPlanTokens.add(await adasPlanAccessToken());
+
+    const responses = await Promise.all(
+      [1, 2, 3].map(() => callOnPlan(access, planShapedBody("Say hello"))),
+    );
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+    await Promise.all(responses.map((response) => response.text()));
+    expect(signInServer.refreshAttempts).toEqual([{ outcome: "renewed" }]);
+  });
+
+  it("is answered as the plan's sign-in refused, never as an API key, when the renewed token is refused too", async () => {
+    const { access } = await startThread(adaToken);
+    refusesEveryPlanToken = true;
+
+    const response = await callOnPlan(access, planShapedBody("Say hello"));
+
+    expect(response.status).toBe(401);
+    const answer = await response.text();
+    expect(answer).toContain("did not accept your ChatGPT plan's sign-in");
+    expect(answer).not.toContain("subscription_sharing_invalid_user");
+    expect(modelServer.receivedRequests).toHaveLength(2);
+  });
+
+  it("is not renewed before OpenAI allows it, the request answered as the plan's sign-in refused", async () => {
+    await controlPlane.close();
+    await signInServer.close();
+    signInServer = await FakeChatGptSignIn.start({ earliestRefreshDelayInSeconds: 600 });
+    signInServer.addAccount({
+      subject: "chatgpt-ada",
+      email: "ada@chatgpt.example",
+      isEligible: true,
+    });
+    controlPlane = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer: identityIssuer },
+      chatGptPlan: { signInIssuer: signInServer.issuer },
+      modelProxyUpstreamOrigin: modelServer.origin,
+    });
+    await connectAdasPlan();
+    const { access } = await startThread(adaToken);
+    refusedPlanTokens.add(await adasPlanAccessToken());
+
+    const response = await callOnPlan(access, planShapedBody("Say hello"));
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toContain("did not accept your ChatGPT plan's sign-in");
+    expect(signInServer.refreshAttempts).toEqual([]);
   });
 });

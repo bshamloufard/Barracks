@@ -52,6 +52,8 @@ export type AccessTokenCheck =
 export type FakeChatGptSignInOptions = {
   /** Seconds an access token lasts; the documentation says 3600. */
   accessTokenLifetimeInSeconds?: number;
+  /** Seconds after issuing tokens before they may be renewed (`earliest_refresh_at`); none by default. */
+  earliestRefreshDelayInSeconds?: number;
 };
 
 type SigningKey = {
@@ -94,6 +96,7 @@ export class FakeChatGptSignIn {
   readonly #server: Server;
   readonly #signingKey: SigningKey;
   readonly #accessTokenLifetimeInSeconds: number;
+  readonly #earliestRefreshDelayInSeconds: number;
   readonly #accounts = new Map<string, FakeChatGptAccount>();
   readonly #clients = new Map<string, IssuedClient>();
   readonly #codes = new Map<string, IssuedCode>();
@@ -122,6 +125,7 @@ export class FakeChatGptSignIn {
     this.issuer = `http://127.0.0.1:${port}`;
     this.#signingKey = signingKey;
     this.#accessTokenLifetimeInSeconds = options.accessTokenLifetimeInSeconds ?? 3600;
+    this.#earliestRefreshDelayInSeconds = options.earliestRefreshDelayInSeconds ?? 0;
   }
 
   static async start(options: FakeChatGptSignInOptions = {}): Promise<FakeChatGptSignIn> {
@@ -421,7 +425,7 @@ export class FakeChatGptSignIn {
       token_type: "Bearer",
       expires_in: this.#accessTokenLifetimeInSeconds,
       scope,
-      earliest_refresh_at: issuedAt,
+      earliest_refresh_at: issuedAt + this.#earliestRefreshDelayInSeconds,
     };
   }
 

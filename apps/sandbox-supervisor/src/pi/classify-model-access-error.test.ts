@@ -65,6 +65,18 @@ describe("classifying the model provider's errors", () => {
       `403: {"message":"Your ChatGPT plan is not connected to Barrack: its sign-in expired or was revoked. Connect your ChatGPT plan again in Settings, then send your message again.","type":"permission_error","code":null}`,
       "plan_sign_in_expired",
     ],
+    [
+      `401: {"type":"error","error":{"type":"authentication_error","message":"OpenAI did not accept your ChatGPT plan's sign-in for this request, even renewed. If it happens again, disconnect your ChatGPT plan in Settings and connect it again, then send your message again."}}`,
+      "plan_sign_in_expired",
+    ],
+    [
+      'OpenAI API error (403): 403 {"error":{"message":"Not authorized.","type":"invalid_request_error","code":"chatpass_v2_scope_not_authorized"}}',
+      "plan_sign_in_expired",
+    ],
+    [
+      'OpenAI API error (403): 403 {"error":{"message":"Not authorized.","type":"invalid_request_error","code":"chatpass_v2_invalid_authorization_context"}}',
+      "plan_sign_in_expired",
+    ],
   ])("recognises %s", (errorMessage, kind) => {
     expect(classifyModelAccessError(errorMessage)).toBe(kind);
   });

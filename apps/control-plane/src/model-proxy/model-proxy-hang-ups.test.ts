@@ -488,6 +488,7 @@ describe("a request whose response Node never closes", () => {
       body: Buffer.from(bodyAsking(text)),
       ownerCredential: ownersKey,
       limits,
+      holdsBackCredentialRefusal: false,
       cancellation,
     });
   }

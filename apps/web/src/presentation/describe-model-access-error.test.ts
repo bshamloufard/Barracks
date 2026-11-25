@@ -30,9 +30,10 @@ describe("describing why the model could not answer", () => {
     expect(description.nextStep).toContain("switch this thread to another model");
   });
 
-  it("sends the user to Settings to connect their plan again when its sign-in expired", () => {
+  it("sends the user to Settings to connect their plan again when OpenAI no longer accepts its sign-in", () => {
     expect(describeModelAccessError("plan_sign_in_expired")).toMatchObject({
-      nextStep: "Connect your ChatGPT plan again in Settings, then send your message again.",
+      nextStep:
+        "Connect your ChatGPT plan again in Settings (disconnect it first if it still shows as connected), then send your message again.",
       isFixedInSettings: true,
     });
   });

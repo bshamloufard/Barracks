@@ -187,13 +187,39 @@ export class ModelProxyAuthorization {
   }
 
   /**
-   * The provider refused the owner's ChatGPT plan's access token as no
-   * longer valid: the sign-in is renewed at once, or forgotten if OpenAI
-   * will not renew it, so the agent's next request is decided afresh.
+   * OpenAI refused the access token of the owner's ChatGPT plan that a
+   * request was sent with: the same owner's authorization with a token to
+   * send it again with, the sign-in renewed (or renewed since by another
+   * request), or why there is none. Throws when it cannot decide.
    */
-  async noteCredentialRefused(owner: OwnerAuthorization): Promise<void> {
-    if (owner.access === "chatgpt_plan") {
-      await this.#options.chatGptPlan.renewAfterRefusal(owner.ownerUserId, owner.ownerCredential);
+  async renewRefusedPlan(owner: OwnerAuthorization): Promise<ProxyAuthorization> {
+    try {
+      const renewal = await this.#options.chatGptPlan.renewAfterRefusal(
+        owner.ownerUserId,
+        owner.ownerCredential,
+      );
+      switch (renewal.kind) {
+        case "token":
+          return { ...owner, ownerCredential: renewal.accessToken };
+        case "not_connected":
+          return refused(
+            proxyRefusals.chatGptPlanNotConnected,
+            "OpenAI would not renew the owner's ChatGPT plan, which is forgotten",
+          );
+        case "not_renewable_yet":
+          return refused(
+            proxyRefusals.chatGptPlanSignInRefused,
+            "OpenAI refused the plan's access token, and its sign-in may not be renewed yet",
+          );
+      }
+    } catch (error) {
+      if (error instanceof PlanRenewalUnavailableError) {
+        return refused(
+          proxyRefusals.chatGptPlanRenewalUnavailable,
+          "OpenAI could not renew the owner's ChatGPT plan just now",
+        );
+      }
+      throw error;
     }
   }
 

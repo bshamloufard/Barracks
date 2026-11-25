@@ -129,7 +129,10 @@ export function mayReasonUnseen(
  * counts nothing. Estimates err high, by design.
  */
 export function describeAnswerUsage(
-  outcome: RelayOutcome,
+  outcome: Pick<
+    RelayOutcome,
+    "upstreamStatus" | "interruption" | "wasRequestSent" | "responseBytes" | "usage"
+  >,
   requested: RequestedAnswer,
 ): CountedUsage | undefined {
   const { usage, upstreamStatus } = outcome;

@@ -31,6 +31,13 @@ const revocationRetryDelaysInMilliseconds = [500, 1_000, 2_000];
 export type PlanAccessToken = { kind: "token"; accessToken: string } | { kind: "not_connected" };
 
 /**
+ * After OpenAI refused an access token: a token to try instead, none since
+ * the plan is no longer connected, or none yet, since OpenAI said the
+ * sign-in may not be renewed so soon (`earliest_refresh_at`).
+ */
+export type PlanRefusalRenewal = PlanAccessToken | { kind: "not_renewable_yet" };
+
+/**
  * OpenAI could not renew the sign-in just now (it could not be reached, or
  * failed): the sign-in is kept, and the request is worth retrying.
  */
@@ -74,6 +81,8 @@ export class ChatGptPlanAccess {
   readonly #sleep: (milliseconds: number) => Promise<void>;
   /** Each user's renewal under way in this process, which the others wait for rather than queue at the store. */
   readonly #renewalsUnderWay = new Map<string, Promise<PlanSignIn | undefined>>();
+  /** The same, for renewals after OpenAI refused a token, which requests refused meanwhile share. */
+  readonly #refusalRenewalsUnderWay = new Map<string, Promise<PlanSignIn | undefined>>();
 
   constructor(options: ChatGptPlanAccessOptions) {
     this.#settings = options.settings;
@@ -170,15 +179,50 @@ export class ChatGptPlanAccess {
 
   /**
    * OpenAI refused `refusedAccessToken` as no longer valid: renews the
-   * sign-in at once, unless it was renewed since, so the next request has
-   * a good token, or the user is told to connect again if it cannot be.
+   * sign-in at once, unless it was renewed since or OpenAI said it may not
+   * be renewed yet, or forgets it if OpenAI will not renew it. Requests on
+   * this control plane refused meanwhile share the one renewal, so however
+   * many are refused at once, a sign-in is renewed once, and no more often
+   * than OpenAI allows. Throws `PlanRenewalUnavailableError` when OpenAI
+   * cannot renew it just now.
    */
-  async renewAfterRefusal(ownerUserId: string, refusedAccessToken: string): Promise<void> {
-    await this.#store.renew(ownerUserId, (locked) =>
-      locked === undefined || locked.tokens.accessToken !== refusedAccessToken
-        ? Promise.resolve({ kind: "keep" })
-        : this.#renew(ownerUserId, locked),
-    );
+  async renewAfterRefusal(
+    ownerUserId: string,
+    refusedAccessToken: string,
+  ): Promise<PlanRefusalRenewal> {
+    const current = await this.#renewAfterRefusalOncePerProcess(ownerUserId, refusedAccessToken);
+    if (current === undefined) {
+      return { kind: "not_connected" };
+    }
+    return current.tokens.accessToken === refusedAccessToken
+      ? { kind: "not_renewable_yet" }
+      : { kind: "token", accessToken: current.tokens.accessToken };
+  }
+
+  #renewAfterRefusalOncePerProcess(
+    ownerUserId: string,
+    refusedAccessToken: string,
+  ): Promise<PlanSignIn | undefined> {
+    const underWay = this.#refusalRenewalsUnderWay.get(ownerUserId);
+    if (underWay !== undefined) {
+      return underWay;
+    }
+    const renewal = this.#store
+      .renew(ownerUserId, (locked) =>
+        locked === undefined ||
+        locked.tokens.accessToken !== refusedAccessToken ||
+        this.#isBeforeEarliestRenewal(locked)
+          ? Promise.resolve({ kind: "keep" })
+          : this.#renew(ownerUserId, locked),
+      )
+      .finally(() => this.#refusalRenewalsUnderWay.delete(ownerUserId));
+    this.#refusalRenewalsUnderWay.set(ownerUserId, renewal);
+    return renewal;
+  }
+
+  #isBeforeEarliestRenewal(signIn: PlanSignIn): boolean {
+    const earliest = signIn.earliestRenewalAt?.getTime();
+    return earliest !== undefined && this.#clock().getTime() < earliest;
   }
 
   /**

@@ -19,6 +19,14 @@ export type RelayOutcome = {
   interruption: RelayInterruption | undefined;
   /** Whether the whole request reached the provider, which may then bill it whatever follows. */
   wasRequestSent: boolean;
+  /**
+   * Whether the provider refused the credential (401) and, as asked, the
+   * answer was read and dropped rather than passed on, so the caller can
+   * send the request again, or say why not. Nothing of it reached the agent.
+   */
+  isRefusalHeldBack: boolean;
+  /** The provider's identifier for the request (`x-request-id`), if it gave one. */
+  upstreamRequestId: string | undefined;
   responseBytes: number;
   /** What the answer said it used; undefined if there was no answer to read. */
   usage: MeteredUsage | undefined;
@@ -43,6 +51,8 @@ export type RelayRequestOptions = {
   limits: ModelProxyLimits;
   /** Aborting it ends the request at once, wherever it is (the thread stopped, say). */
   cancellation: AbortSignal;
+  /** Holds back a refusal of the credential (401) instead of passing it on (see `isRefusalHeldBack`). */
+  holdsBackCredentialRefusal: boolean;
 };
 
 /**
@@ -78,6 +88,8 @@ class RequestRelay {
   #totalTimer: NodeJS.Timeout | undefined;
   #isFinished = false;
   #isRequestSent = false;
+  #isRefusalHeldBack = false;
+  #upstreamRequestId: string | undefined;
 
   constructor(options: RelayRequestOptions, resolve: (outcome: RelayOutcome) => void) {
     this.#options = options;
@@ -134,6 +146,12 @@ class RequestRelay {
     clearTimeout(this.#firstByteTimer);
     const status = upstreamResponse.statusCode ?? 502;
     this.#upstreamStatus = status;
+    const requestId = upstreamResponse.headers["x-request-id"];
+    this.#upstreamRequestId = typeof requestId === "string" ? requestId.slice(0, 200) : undefined;
+    if (status === 401 && this.#options.holdsBackCredentialRefusal) {
+      this.#holdBackRefusal(upstreamResponse);
+      return;
+    }
     const decompression = createDecompression(upstreamResponse.headers["content-encoding"]);
     if ((status >= 300 && status < 400) || decompression === "unsupported") {
       upstreamResponse.resume();
@@ -158,6 +176,14 @@ class RequestRelay {
         error instanceof ByteLimitExceededError ? "response_too_large" : "upstream_failed",
       );
     });
+  }
+
+  /** Reads the refusal to its end, so the connection can be kept, and passes none of it on. */
+  #holdBackRefusal(upstreamResponse: IncomingMessage): void {
+    this.#isRefusalHeldBack = true;
+    upstreamResponse.on("end", () => this.#finish());
+    upstreamResponse.on("error", () => this.#finish());
+    upstreamResponse.resume();
   }
 
   /**
@@ -197,6 +223,8 @@ class RequestRelay {
       upstreamStatus: this.#upstreamStatus,
       interruption: this.#interruption,
       wasRequestSent: this.#isRequestSent,
+      isRefusalHeldBack: this.#isRefusalHeldBack,
+      upstreamRequestId: this.#upstreamRequestId,
       responseBytes: this.#responseBody?.count ?? 0,
       usage: this.#meter?.finish(),
     });

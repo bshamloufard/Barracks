@@ -108,6 +108,12 @@ export const proxyRefusals = {
     message:
       "Your ChatGPT plan is not connected to Barrack: its sign-in expired or was revoked, it was disconnected, or this installation no longer offers ChatGPT plans. Connect your ChatGPT plan again in Settings, or switch OpenAI back to your API key there, then send your message again.",
   },
+  chatGptPlanSignInRefused: {
+    status: 401,
+    errorType: "authentication_error",
+    message:
+      "OpenAI did not accept your ChatGPT plan's sign-in for this request, even renewed. If it happens again, disconnect your ChatGPT plan in Settings and connect it again, then send your message again.",
+  },
   chatGptPlanRenewalUnavailable: {
     status: 503,
     errorType: "api_error",

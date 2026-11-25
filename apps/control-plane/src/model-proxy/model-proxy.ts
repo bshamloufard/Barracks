@@ -12,6 +12,7 @@ import {
 import type {
   ModelProxyAuthorization,
   OwnerAuthorization,
+  ProxyAuthorization,
   RequestedModels,
 } from "./model-proxy-authorization.js";
 import {
@@ -28,7 +29,7 @@ import {
   proxyRefusals,
   sendRefusal,
 } from "./proxy-refusals.js";
-import { relayRequest } from "./relay-request.js";
+import { type RelayOutcome, relayRequest } from "./relay-request.js";
 import { findRelayedRoute } from "./relayed-routes.js";
 import {
   inspectRequestBody,
@@ -553,24 +554,47 @@ export class ModelProxy {
     }
   }
 
+  /**
+   * Relays the request; on a ChatGPT plan, a refusal of its access token
+   * is held back, the sign-in renewed, and the request sent once more with
+   * the new token. A refusal the plan cannot recover from is answered with
+   * the proxy's own words, which say it is the plan's sign-in, since the
+   * provider's (a bare 401, or one with OpenAI's code) would read to the
+   * agent as a rejected API key.
+   */
   async #relay(
     exchange: ProxyExchange,
     body: RelayedRequestBody,
     owner: OwnerAuthorization,
   ): Promise<void> {
+    exchange.response.shouldKeepAlive = true;
+    const isOnPlan = owner.access === "chatgpt_plan";
+    const first = await this.#relayOnce(exchange, body, owner, isOnPlan);
+    if (!first.isRefusalHeldBack || this.#refuseIfEnded(exchange)) {
+      return;
+    }
+    const renewed = await this.#renewRefusedPlan(exchange, owner);
+    if (renewed.kind === "refused") {
+      exchange.logger.warn({ reason: renewed.reason }, "Refused a model request on a ChatGPT plan");
+      sendRefusal(exchange.response, exchange.route.format, renewed.refusal);
+      return;
+    }
+    if (this.#refuseIfEnded(exchange)) {
+      return;
+    }
+    const second = await this.#relayOnce(exchange, body, renewed, true);
+    if (second.isRefusalHeldBack) {
+      sendRefusal(exchange.response, exchange.route.format, proxyRefusals.chatGptPlanSignInRefused);
+    }
+  }
+
+  async #relayOnce(
+    exchange: ProxyExchange,
+    body: RelayedRequestBody,
+    owner: OwnerAuthorization,
+    holdsBackCredentialRefusal: boolean,
+  ): Promise<RelayOutcome> {
     const { request, response, target, route, logger } = exchange;
-    const requested: RequestedAnswer = {
-      model: body.model,
-      isStreamed: body.isStreamed,
-      estimatedInputTokens: body.estimatedInputTokens,
-      maximumOutputTokens: resolveMaximumOutputTokens(
-        target.providerId,
-        body.model,
-        body.maximumOutputTokens,
-      ),
-      mayReasonUnseen: mayReasonUnseen(target.providerId, body.model, body.reasoningRequest),
-    };
-    response.shouldKeepAlive = true;
     const startedAt = Date.now();
     const outcome = await relayRequest({
       request,
@@ -580,11 +604,12 @@ export class ModelProxy {
       ownerCredential: owner.ownerCredential,
       limits: this.#options.limits,
       cancellation: exchange.signal,
+      holdsBackCredentialRefusal,
     });
-    if (outcome.upstreamStatus === 401) {
-      await this.#noteCredentialRefused(exchange, owner);
-    }
-    const answerUsage = describeAnswerUsage(outcome, requested);
+    // A refusal held back was read and dropped: nothing of it is counted, as no answer is.
+    const answerUsage = outcome.isRefusalHeldBack
+      ? undefined
+      : describeAnswerUsage(outcome, describeRequestedAnswer(target.providerId, body));
     if (answerUsage !== undefined) {
       await this.#options.usage.record({
         ownerUserId: owner.ownerUserId,
@@ -598,6 +623,8 @@ export class ModelProxy {
         ownerUserId: owner.ownerUserId,
         access: owner.access,
         upstreamStatus: outcome.upstreamStatus ?? null,
+        upstreamRequestId: outcome.upstreamRequestId ?? null,
+        isRefusalHeldBack: outcome.isRefusalHeldBack,
         interruption: outcome.interruption ?? null,
         requestBytes: body.bytes.length,
         responseBytes: outcome.responseBytes,
@@ -605,14 +632,23 @@ export class ModelProxy {
       },
       "Relayed a model request",
     );
+    return outcome;
   }
 
-  /** A failure here leaves the agent's next request to find the sign-in as it is. */
-  async #noteCredentialRefused(exchange: ProxyExchange, owner: OwnerAuthorization): Promise<void> {
+  /** A failure to decide is answered as any other: the agent may try again. */
+  async #renewRefusedPlan(
+    exchange: ProxyExchange,
+    owner: OwnerAuthorization,
+  ): Promise<ProxyAuthorization> {
     try {
-      await this.#options.authorization.noteCredentialRefused(owner);
+      return await this.#options.authorization.renewRefusedPlan(owner);
     } catch (error) {
-      exchange.logger.warn({ err: error }, "Could not renew a ChatGPT plan its provider refused");
+      exchange.logger.error({ err: error }, "Could not renew a ChatGPT plan its provider refused");
+      return {
+        kind: "refused",
+        refusal: proxyRefusals.cannotDecide,
+        reason: "the plan's renewal could not be decided",
+      };
     }
   }
 
@@ -743,4 +779,19 @@ async function settledUnlessAborted(promise: Promise<unknown>, signal: AbortSign
   } finally {
     signal.removeEventListener("abort", stopWaiting);
   }
+}
+
+/** What the agent asked for, as far as counting its answer needs. */
+function describeRequestedAnswer(providerId: string, body: RelayedRequestBody): RequestedAnswer {
+  return {
+    model: body.model,
+    isStreamed: body.isStreamed,
+    estimatedInputTokens: body.estimatedInputTokens,
+    maximumOutputTokens: resolveMaximumOutputTokens(
+      providerId,
+      body.model,
+      body.maximumOutputTokens,
+    ),
+    mayReasonUnseen: mayReasonUnseen(providerId, body.model, body.reasoningRequest),
+  };
 }

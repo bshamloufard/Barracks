@@ -70,8 +70,9 @@ export function describeModelAccessError(kind: ModelAccessErrorKind): ModelAcces
       };
     case "plan_sign_in_expired":
       return {
-        what: "Your ChatGPT sign-in expired or was revoked, so Barrack can no longer use your plan.",
-        nextStep: "Connect your ChatGPT plan again in Settings, then send your message again.",
+        what: "OpenAI no longer accepts Barrack's sign-in to your ChatGPT plan: it expired or was revoked, or what you allowed does not cover this request.",
+        nextStep:
+          "Connect your ChatGPT plan again in Settings (disconnect it first if it still shows as connected), then send your message again.",
         isFixedInSettings: true,
       };
     case "plan_capability_unsupported":

@@ -39,13 +39,18 @@ const usageCapReachedPattern = /model usage cap/i;
  * The workplace limit's code is one OpenAI no longer documents but Pi still
  * recognises (pi-ai's `api/openai-responses.js`).
  *
- * The sign-in is gone either when OpenAI no longer accepts the user
- * (`subscription_sharing_invalid_user`) or when the control plane's model
- * proxy says the plan is not connected, which it says once it has had to
- * forget a sign-in OpenAI would not renew.
+ * The sign-in must be made again when OpenAI no longer accepts the user
+ * (`subscription_sharing_invalid_user`), when what it granted does not
+ * cover the request (`chatpass_v2_scope_not_authorized`,
+ * `chatpass_v2_invalid_authorization_context`, which the documentation
+ * says to fix in the grant rather than retry), or when the control plane's
+ * model proxy says the plan is not connected (it has had to forget a
+ * sign-in OpenAI would not renew) or that OpenAI did not accept the plan's
+ * sign-in even renewed: the proxy never passes OpenAI's own refusal of a
+ * plan's token on, since its bare 401 would read as a rejected API key.
  */
 const planSignInExpiredPattern =
-  /subscription_sharing_invalid_user|ChatGPT plan is not connected to Barrack/;
+  /subscription_sharing_invalid_user|chatpass_v2_scope_not_authorized|chatpass_v2_invalid_authorization_context|ChatGPT plan is not connected to Barrack|did not accept your ChatGPT plan's sign-in/;
 
 const planLimitReachedPattern =
   /subscription_sharing_usage_limit_exceeded|subscription_sharing_workplace_individual_usage_limit_exceeded/;
