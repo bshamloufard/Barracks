@@ -18,11 +18,13 @@
     "test": "pnpm build:packages && vitest run",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
     "sandbox-image:build": "docker build --file sandbox-image/Dockerfile --tag barrack-sandbox:dev .",
+    "sandbox-image:daytona-snapshot": "node --import tsx scripts/daytona-snapshot/main.ts",
     "test:docker": "pnpm sandbox-image:build && pnpm build:packages && BARRACK_DOCKER_TESTS=1 vitest run",
     "test-database:start": "docker run --detach --rm --name barrack-test-database --publish 127.0.0.1:54329:5432 --env POSTGRES_USER=barrack --env POSTGRES_PASSWORD=barrack --env POSTGRES_DB=barrack_test --tmpfs /var/lib/postgresql/data postgres:17.12-alpine && until docker exec barrack-test-database pg_isready --host 127.0.0.1 --username barrack --quiet; do sleep 0.2; done && echo 'Ready. Run: export BARRACK_TEST_DATABASE_URL=postgres://barrack:barrack@127.0.0.1:54329/barrack_test'",
     "test-database:stop": "docker stop barrack-test-database"
   },
   "devDependencies": {
+    "@daytona/sdk": "2.1.0",
     "@biomejs/biome": "2.6.8",
     "@types/node": "22.20.5",
     "railway": "3.16.0",

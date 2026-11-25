@@ -11,6 +11,9 @@ importers:
       '@biomejs/biome':
         specifier: 2.6.8
         version: 2.6.8
+      '@daytona/sdk':
+        specifier: 2.1.0
+        version: 2.1.0(@opentelemetry/api@1.10.0)
       '@types/node':
         specifier: 22.20.5
         version: 22.20.5
