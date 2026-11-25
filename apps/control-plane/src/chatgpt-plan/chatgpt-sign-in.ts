@@ -7,6 +7,7 @@ import {
   dynamicRegistrationClientId,
   IdTokenRejectedError,
   type IssuedTokens,
+  planScope,
   planUsageScope,
   type TokenFailure,
 } from "./chatgpt-sign-in-client.js";
@@ -146,7 +147,13 @@ export class ChatGptSignIn {
     if (exchanged.kind === "token_failure") {
       return this.#failExchange(ownerUserId, exchanged);
     }
-    return this.#connect(ownerUserId, clientId, taking.attempt, exchanged.tokens);
+    // What OpenAI granted: as the token answer says; where it does not, as
+    // the callback said; where neither does, what was asked (RFC 6749, 5.1).
+    const grantedScopes = exchanged.tokens.scopes ?? reading.scopes ?? planScope.split(" ");
+    return this.#connect(ownerUserId, clientId, taking.attempt, {
+      ...exchanged.tokens,
+      scopes: grantedScopes,
+    });
   }
 
   async #connect(
@@ -155,7 +162,7 @@ export class ChatGptSignIn {
     attempt: SignInAttempt,
     tokens: IssuedTokens,
   ): Promise<SignInFinish> {
-    if (!tokens.scopes.includes(planUsageScope)) {
+    if (!tokens.scopes?.includes(planUsageScope)) {
       await this.#client.revoke({ clientId, refreshToken: tokens.refreshToken });
       return this.#fail(ownerUserId, "plan_usage_not_granted", planUsageNotGrantedMessage);
     }

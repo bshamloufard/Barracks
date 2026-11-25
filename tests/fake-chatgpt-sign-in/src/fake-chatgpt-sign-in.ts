@@ -113,6 +113,12 @@ export class FakeChatGptSignIn {
   nextIdTokenClaims: Record<string, unknown> | undefined;
   /** The scopes the next token answer grants in place of the plan's, as a user declining plan usage. */
   nextGrantedScope: string | undefined;
+  /**
+   * Members of the next token answer replaced, or left out where given as
+   * undefined, to answer as a token endpoint the documentation does not pin
+   * down might.
+   */
+  nextTokenAnswerChanges: Record<string, unknown> | undefined;
   #now: () => number = Date.now;
 
   private constructor(
@@ -418,7 +424,9 @@ export class FakeChatGptSignIn {
       .sign(this.#signingKey.privateKey);
     const scope = this.nextGrantedScope ?? planScopes;
     this.nextGrantedScope = undefined;
-    return {
+    const changes = this.nextTokenAnswerChanges ?? {};
+    this.nextTokenAnswerChanges = undefined;
+    const answer: Record<string, unknown> = {
       access_token: accessToken,
       refresh_token: refreshToken,
       id_token: idToken,
@@ -426,7 +434,9 @@ export class FakeChatGptSignIn {
       expires_in: this.#accessTokenLifetimeInSeconds,
       scope,
       earliest_refresh_at: issuedAt + this.#earliestRefreshDelayInSeconds,
+      ...changes,
     };
+    return Object.fromEntries(Object.entries(answer).filter(([, value]) => value !== undefined));
   }
 
   #describeDiscovery(): object {

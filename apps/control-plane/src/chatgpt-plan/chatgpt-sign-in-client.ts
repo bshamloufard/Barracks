@@ -40,7 +40,11 @@ export type IssuedTokens = {
   refreshToken: string;
   idToken: string | undefined;
   expiresInSeconds: number;
-  scopes: readonly string[];
+  /**
+   * The scopes granted, or undefined where the answer does not say, which
+   * by RFC 6749 (section 5.1) means exactly those asked for.
+   */
+  scopes: readonly string[] | undefined;
   /** OpenAI's `earliest_refresh_at`, as a time, if it gave one that can be read. */
   earliestRenewalAt: Date | undefined;
 };
@@ -91,14 +95,26 @@ const discoverySchema = z.object({
   jwks_uri: z.string(),
 });
 
+/** How long an access token lasts where the answer does not say: an hour, as the documentation says. */
+const documentedAccessTokenLifetimeInSeconds = 3600;
+
+/**
+ * A successful token answer. Only the two tokens must be there and
+ * readable: a refresh token is spent once OpenAI answers, so an answer
+ * that carries its replacement is kept whatever else in it is odd, rather
+ * than dropped and the spent token presented again, which loses the
+ * sign-in. Anything else unreadable is left out: the ID token (a sign-in
+ * without one then fails its check), the lifetime (an hour, then), the
+ * scopes (as asked, then) and `earliest_refresh_at`. `token_type` is not
+ * read: the programme's tokens are bearer tokens whatever it says.
+ */
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1).max(16_384),
   refresh_token: z.string().min(1).max(16_384),
-  id_token: z.string().min(1).max(16_384).optional(),
-  token_type: z.string().regex(/^bearer$/i),
-  expires_in: z.number().int().positive(),
-  scope: z.string().default(""),
-  earliest_refresh_at: z.union([z.number(), z.string()]).optional(),
+  id_token: z.string().min(1).max(16_384).optional().catch(undefined),
+  expires_in: z.number().positive().optional().catch(undefined),
+  scope: z.string().max(4_096).optional().catch(undefined),
+  earliest_refresh_at: z.union([z.number(), z.string()]).optional().catch(undefined),
 });
 
 const tokenErrorSchema = z.object({
@@ -333,8 +349,11 @@ function readIssuedTokens(body: unknown): TokenOutcome {
       accessToken: answer.access_token,
       refreshToken: answer.refresh_token,
       idToken: answer.id_token,
-      expiresInSeconds: answer.expires_in,
-      scopes: answer.scope.split(" ").filter((scope) => scope !== ""),
+      expiresInSeconds: Math.max(
+        1,
+        Math.floor(answer.expires_in ?? documentedAccessTokenLifetimeInSeconds),
+      ),
+      scopes: answer.scope?.split(" ").filter((scope) => scope !== ""),
       earliestRenewalAt: readEarliestRenewal(answer.earliest_refresh_at),
     },
   };

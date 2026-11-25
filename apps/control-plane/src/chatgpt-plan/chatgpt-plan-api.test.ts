@@ -235,6 +235,29 @@ describe("a pasted address that cannot finish a sign-in", () => {
     expect(signInServer.isSignInRevoked("chatgpt-ada")).toBe(true);
   });
 
+  it("connects a plan whose token answer leaves the scopes out, granted as asked", async () => {
+    signInServer.nextTokenAnswerChanges = { scope: undefined };
+    const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
+
+    const response = await finishSignIn(adaToken, finalAddress);
+
+    expect(response.status).toBe(200);
+    expect((await readStatus(adaToken)).connection).not.toBeNull();
+  });
+
+  it("reads the scopes from the callback when the token answer leaves them out", async () => {
+    signInServer.nextTokenAnswerChanges = { scope: undefined };
+    const approved = new URL(signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada"));
+    approved.searchParams.set("scope", "openid profile email offline_access");
+
+    const response = await finishSignIn(adaToken, approved.href);
+
+    expect((await readRefusal(response)).message).toContain(
+      "did not allow Barrack to use your ChatGPT plan",
+    );
+    expect(signInServer.isSignInRevoked("chatgpt-ada")).toBe(true);
+  });
+
   it.each([
     ["another nonce", { nonce: "not-the-nonce-sent" }],
     ["another audience", { aud: ["oaiapp-someone-else"] }],

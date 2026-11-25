@@ -64,8 +64,12 @@ const signInColumns =
  * holding it, and writes the replacement before committing, so two
  * renewals of one sign-in, on one control plane or two, never overlap, and
  * a replacement OpenAI gave is never lost to a write that came after it.
- * A control plane that stops mid-renewal leaves the transaction to roll
- * back, and the next renewal finds the refresh token it would have spent.
+ * A renewal whose answer is lost (the control plane stops mid-renewal,
+ * the request times out, or OpenAI fails after rotating the token) leaves
+ * the transaction to roll back with the refresh token OpenAI may already
+ * have spent; the next renewal presents it again, and if OpenAI refuses it
+ * as reused the sign-in is forgotten and the user connects again. No
+ * design avoids that: the replacement existed only in the lost answer.
  */
 export class PostgresChatGptPlanStore implements ChatGptPlanStore {
   readonly #pool: Pool;

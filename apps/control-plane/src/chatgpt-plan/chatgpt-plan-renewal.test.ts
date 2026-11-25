@@ -127,6 +127,28 @@ function describeRenewal(storeName: string, createStore: () => Promise<StoreUnde
       expect(signInServer.refreshAttempts).toEqual([{ outcome: "renewed" }]);
     });
 
+    it("keeps the replacement refresh token from an answer whose other members are odd", async () => {
+      clock.advanceBy(untilRenewalIsDue);
+      signInServer.nextTokenAnswerChanges = {
+        expires_in: "3600",
+        token_type: "mac",
+        id_token: 5,
+        scope: undefined,
+        earliest_refresh_at: { at: "soon" },
+      };
+
+      const renewed = await accessTokenOf(view);
+      clock.advanceBy(untilRenewalIsDue);
+      const renewedAgain = await accessTokenOf(view);
+
+      expect(signInServer.checkAccessToken(renewed).kind).toBe("valid");
+      expect(signInServer.checkAccessToken(renewedAgain).kind).toBe("valid");
+      expect(signInServer.refreshAttempts).toEqual([
+        { outcome: "renewed" },
+        { outcome: "renewed" },
+      ]);
+    });
+
     it("renews once however many requests ask at once, every one of them getting the new token", async () => {
       clock.advanceBy(untilRenewalIsDue);
       signInServer.refreshDelayInMilliseconds = 200;
@@ -206,6 +228,9 @@ function describeRenewal(storeName: string, createStore: () => Promise<StoreUnde
 
     it("renews at once after OpenAI refuses the access token, and only once for that token", async () => {
       const refused = await accessTokenOf(view);
+      // The stand-in dates `earliest_refresh_at` by the real clock, to the
+      // second, which may be just past this test's clock, frozen before it.
+      clock.advanceBy(1_000);
 
       await view.access.renewAfterRefusal(owner, refused);
       await view.access.renewAfterRefusal(owner, refused);
