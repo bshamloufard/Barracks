@@ -168,11 +168,8 @@ function CapSummary({
         not count towards it.
       </p>
       <p className="quiet-note">
-        The cap counts tokens only. It limits the tokens used through Barrack, not your bill: it
-        does not count what a provider charges per call for its own tools (web search, code
-        execution and the like), requests already under way may finish past it, and some tokens are
-        estimated, which can count less than the provider bills. Set a spending limit with your
-        provider as well.
+        The cap is a best-effort limit on tokens through Barrack, not on your bill: it does not see
+        what each token costs, so set a spending limit with your provider as well.
       </p>
       {failure !== undefined && (
         <p className="error-notice" role="alert">
