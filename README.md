@@ -10,16 +10,16 @@ Barrack has four parts: clients (web first), an always-on **control plane** (the
 
 The project is built in the eight milestones of its plan:
 
-| Milestone                                                         | Status                   | What remains                                                                                                 |
-| ----------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| 1. Local proof: a prompt in a web page reaches the agent and back | Built and tested locally | Nothing                                                                                                      |
-| 2. One thread in the cloud (Railway, Supabase, Daytona)           | Built and tested locally | A first deployment: never run on Railway, Supabase or Daytona                                                |
-| 3. Many threads: sign-in, thread lifecycle, Git repositories      | Built and tested locally | Sign-in against a real Supabase project, and the GitHub flows against a real GitHub App                      |
-| 4. Bring your own model access                                    | Half built               | API keys work; signing in with a ChatGPT subscription awaits the owner's choice of route, then must be built |
-| 5. Live desktop and computer use                                  | Built and tested locally | A run on Daytona                                                                                             |
-| 6. Second sandbox provider (Docker beside Daytona)                | Built and tested locally | The same thread on Daytona: only Docker has ever run                                                         |
-| 7. Hardening: keys kept out of sandboxes, usage caps, recovery    | Built and tested locally | The model proxy against real providers; the gaps the [decision log](docs/decisions.md) still lists as open   |
-| 8. Native apps for iPhone and Mac                                 | Not built                | Everything: no Swift toolchain was available; deleting an account must be built first                        |
+| Milestone                                                         | Status                   | What remains                                                                                               |
+| ----------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 1. Local proof: a prompt in a web page reaches the agent and back | Built and tested locally | Nothing                                                                                                    |
+| 2. One thread in the cloud (Railway, Supabase, Daytona)           | Built and tested locally | A first deployment: never run on Railway, Supabase or Daytona                                              |
+| 3. Many threads: sign-in, thread lifecycle, Git repositories      | Built and tested locally | Sign-in against a real Supabase project, and the GitHub flows against a real GitHub App                    |
+| 4. Bring your own model access                                    | Half built               | API keys work; ChatGPT subscription sign-in is not built (route chosen: the official programme)            |
+| 5. Live desktop and computer use                                  | Built and tested locally | A run on Daytona                                                                                           |
+| 6. Second sandbox provider (Docker beside Daytona)                | Built and tested locally | The same thread on Daytona: only Docker has ever run                                                       |
+| 7. Hardening: keys kept out of sandboxes, usage caps, recovery    | Built and tested locally | The model proxy against real providers; the gaps the [decision log](docs/decisions.md) still lists as open |
+| 8. Native apps for iPhone and Mac                                 | Not built                | Everything: no Swift toolchain was available; deleting an account must be built first                      |
 
 **What works today, on one machine:** creating threads from a thread list, each in a sandbox of its own (a Docker container, or a plain local process for development); several threads at once; stopping, resuming and deleting a thread, and idle sandboxes stopping by themselves; history kept in Postgres and replayed after a restart, with nothing lost when the control plane or a supervisor is killed mid-run; sign-in and per-user access checks (tested with a stand-in token issuer); starting a thread from a Git repository and publishing its branch (tested with a stand-in for GitHub); each user's own model keys, stored encrypted, with a model per thread; the live desktop, which the user watches and can take over, and the agent's computer tool (a browser test drives it in Docker); and, for eight providers, the model proxy that keeps a user's key out of the sandbox and counts and caps usage.
 
