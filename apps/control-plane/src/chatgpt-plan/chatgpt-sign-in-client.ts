@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, errors as joseErrors, jwtVerify } from "jose";
 import { z } from "zod";
+import { readBoundedJson } from "./read-bounded-json.js";
 
 /**
  * The control plane's side of OpenAI's "Sign in with ChatGPT" programme: an
@@ -84,6 +85,10 @@ const unusableTokenCodes = new Set([
 
 const requestTimeoutInMilliseconds = 15_000;
 
+/** Bounds on OpenAI's answers, each many times the documented one's size. */
+const maximumDiscoveryBytes = 64 * 1024;
+const maximumTokenAnswerBytes = 128 * 1024;
+
 /** Seconds of clock difference allowed in an ID token's times, as OpenAI's own kit allows. */
 const clockToleranceInSeconds = 5;
 
@@ -139,7 +144,7 @@ export class ChatGptSignInClient {
   discover(): Promise<SignInEndpoints> {
     this.#endpoints ??= this.#readDiscovery().catch((error: unknown) => {
       this.#endpoints = undefined;
-      throw error;
+      throw new SignInUnreachableError(error);
     });
     return this.#endpoints;
   }
@@ -283,7 +288,7 @@ export class ChatGptSignInClient {
     if (!response.ok) {
       throw new Error(`OpenAI's sign-in discovery answered ${response.status}.`);
     }
-    const document = discoverySchema.parse(await response.json());
+    const document = discoverySchema.parse(await readBoundedJson(response, maximumDiscoveryBytes));
     if (document.issuer !== this.#issuer) {
       throw new Error("OpenAI's sign-in discovery names another issuer.");
     }
@@ -321,11 +326,23 @@ export class ChatGptSignInClient {
     } catch {
       return { kind: "token_failure", reason: "unavailable", code: undefined };
     }
-    const body: unknown = await response.json().catch(() => undefined);
+    const body: unknown = await readBoundedJson(response, maximumTokenAnswerBytes).catch(
+      () => undefined,
+    );
     if (response.ok) {
       return readIssuedTokens(body);
     }
     return describeTokenFailure(response.status, body);
+  }
+}
+
+/** OpenAI's sign-in could not be reached, or its discovery document could not be used. */
+export class SignInUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super("OpenAI's sign-in could not be reached, or its discovery document could not be used.", {
+      cause,
+    });
+    this.name = "SignInUnreachableError";
   }
 }
 

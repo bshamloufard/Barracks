@@ -2,6 +2,7 @@ import { findCatalogueProvider } from "@barrack/model-catalogue";
 import type { ChatGptPlanModel } from "@barrack/protocol";
 import { z } from "zod";
 import { type ChatGptPlanAccess, chatGptPlanProviderId } from "./chatgpt-plan-access.js";
+import { readBoundedJson } from "./read-bounded-json.js";
 
 /**
  * The models a user's ChatGPT plan offers, as OpenAI's programme documents
@@ -25,6 +26,9 @@ const modelListSchema = z.object({
 });
 
 const requestTimeoutInMilliseconds = 15_000;
+
+/** A bound on the model list, many times what a plan's list of models takes. */
+const maximumModelListBytes = 1024 * 1024;
 
 export type PlanModelListing =
   | { kind: "listed"; models: ChatGptPlanModel[] }
@@ -61,7 +65,17 @@ export class ChatGptPlanModels {
       await this.#access.renewAfterRefusal(ownerUserId, token.accessToken);
       return { kind: "unavailable" };
     }
-    const listed = modelListSchema.safeParse(response.ok ? await response.json() : undefined);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { kind: "unavailable" };
+    }
+    let answer: unknown;
+    try {
+      answer = await readBoundedJson(response, maximumModelListBytes);
+    } catch {
+      return { kind: "unavailable" };
+    }
+    const listed = modelListSchema.safeParse(answer);
     if (!listed.success) {
       return { kind: "unavailable" };
     }

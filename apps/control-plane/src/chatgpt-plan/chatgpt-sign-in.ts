@@ -132,7 +132,11 @@ export class ChatGptSignIn {
       return this.#fail(ownerUserId, "declined", declinedMessage);
     }
     if (reading.kind === "refused_by_openai") {
-      return this.#fail(ownerUserId, reading.error, describeOpenAiRefusal(reading.error));
+      return this.#fail(
+        ownerUserId,
+        reading.error,
+        describeOpenAiRefusal(reading.error, reading.description),
+      );
     }
     const clientId = chooseClientId(taking.attempt, reading.clientId);
     if (clientId === undefined) {
@@ -296,11 +300,17 @@ const declinedMessage = `You chose not to let Barrack use your ChatGPT plan, so 
  * carries; one naming a policy is taken as a workspace's administrator
  * refusing third-party apps, as earlier reports described.
  */
-function describeOpenAiRefusal(error: string): string {
+/**
+ * OpenAI's error code, and its own description where the address carries
+ * one (`error_description`, read from the address the user pasted, at
+ * most 512 characters), which may say more than the code.
+ */
+function describeOpenAiRefusal(error: string, description: string | undefined): string {
+  const said = description === undefined ? `"${error}"` : `"${error}": ${description}`;
   if (/policy/i.test(error)) {
-    return `Your ChatGPT workspace does not allow apps like Barrack to use its plan (OpenAI said "${error}"). Ask the workspace's administrator to allow it, or use your own API key instead.`;
+    return `Your ChatGPT workspace does not allow apps like Barrack to use its plan (OpenAI said ${said}). Ask the workspace's administrator to allow it, or use your own API key instead.`;
   }
-  return `OpenAI ended the sign-in with an error ("${error}"), so nothing was connected. ${beginAgain}`;
+  return `OpenAI ended the sign-in with an error (${said}), so nothing was connected. ${beginAgain}`;
 }
 
 const clientMismatchMessage = `OpenAI's answer named another app than the one this sign-in began with, so it was not used. ${beginAgain}`;

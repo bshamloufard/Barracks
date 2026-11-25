@@ -17,6 +17,7 @@ import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
+import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { ChatGptPlanAccess } from "./chatgpt-plan-access.js";
 import { ChatGptSignInClient } from "./chatgpt-sign-in-client.js";
 import { InMemoryChatGptPlanStore } from "./in-memory-chatgpt-plan-store.js";
@@ -502,5 +503,88 @@ describe("disconnecting when OpenAI's sign-in cannot be reached", () => {
 
     expect(await unreachable.disconnect(ada.userId)).toEqual({ revocation: "not_confirmed" });
     expect(await store.readSignIn(ada.userId)).toBeUndefined();
+  });
+});
+
+describe("signing in when something other than the sign-in fails", () => {
+  async function restartWith(options: {
+    threadStore?: InMemoryThreadStore;
+    chatGptPlanStore?: InMemoryChatGptPlanStore;
+  }): Promise<void> {
+    await controlPlane.close();
+    controlPlane = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer: identityIssuer },
+      chatGptPlan: { signInIssuer: signInServer.issuer },
+      chatGptPlanStore: options.chatGptPlanStore ?? store,
+      ...(options.threadStore === undefined ? {} : { threadStore: options.threadStore }),
+      modelProxyUpstreamOrigin: modelServer.origin,
+    });
+  }
+
+  it("says OpenAI could not be reached only when it could not", async () => {
+    await signInServer.close();
+
+    const response = await controlPlane.sendJson(
+      "POST",
+      chatGptPlanSignInApiPath,
+      { allowsBackgroundUse: true },
+      adaToken,
+    );
+
+    expect(response.status).toBe(503);
+    expect((await readRefusal(response)).message).toContain(
+      "OpenAI's sign-in could not be reached",
+    );
+    signInServer = await FakeChatGptSignIn.start();
+  });
+
+  it("says the control plane could not begin, when its own store fails", async () => {
+    const failingStore = new InMemoryChatGptPlanStore(new CredentialKeyring(Buffer.alloc(32, 7)));
+    failingStore.saveAttempt = () => Promise.reject(new Error("The database is unreachable."));
+    await restartWith({ chatGptPlanStore: failingStore });
+
+    const response = await controlPlane.sendJson(
+      "POST",
+      chatGptPlanSignInApiPath,
+      { allowsBackgroundUse: true },
+      adaToken,
+    );
+
+    expect(response.status).toBe(503);
+    expect((await readRefusal(response)).message).toContain(
+      "The control plane could not begin your sign-in",
+    );
+  });
+
+  it("answers a connected plan as connected even when its threads cannot be told at once", async () => {
+    const threadStore = new InMemoryThreadStore();
+    const listThreads = threadStore.listMostRecentlyActiveOwnedBy.bind(threadStore);
+    let listings = 0;
+    // The first listing, before the sign-in, notes the user's open runs; the next, after it, fails.
+    threadStore.listMostRecentlyActiveOwnedBy = (ownerUserId, limit) => {
+      listings += 1;
+      return listings === 1
+        ? listThreads(ownerUserId, limit)
+        : Promise.reject(new Error("The database is unreachable."));
+    };
+    await restartWith({ threadStore });
+    const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
+
+    const response = await finishSignIn(adaToken, finalAddress);
+
+    expect(response.status).toBe(200);
+    expect(chatGptPlanStatusSchema.parse(await response.json()).connection).not.toBeNull();
+  });
+
+  it("shows OpenAI's own description of an error that ended the sign-in", async () => {
+    const ended = new URL(signInServer.deny(await beginSignIn(adaToken)));
+    ended.searchParams.set("error", "server_error");
+    ended.searchParams.set("error_description", "The sign-in service is under maintenance.");
+
+    const response = await finishSignIn(adaToken, ended.href);
+
+    expect((await readRefusal(response)).message).toContain(
+      '"server_error": The sign-in service is under maintenance.',
+    );
   });
 });

@@ -17,6 +17,7 @@ import {
 } from "../chatgpt-plan/chatgpt-plan-access.js";
 import type { ChatGptPlanModels } from "../chatgpt-plan/chatgpt-plan-models.js";
 import type { ChatGptSignIn } from "../chatgpt-plan/chatgpt-sign-in.js";
+import { SignInUnreachableError } from "../chatgpt-plan/chatgpt-sign-in-client.js";
 import type { Logger } from "../logger.js";
 import type { ModelAccessChanges } from "../model-access/model-access-changes.js";
 import { respondWithApiError } from "./api-error.js";
@@ -93,7 +94,12 @@ async function startSignIn(
     return context.json(await dependencies.signIn.start(userId));
   } catch (error) {
     dependencies.logger.error({ err: error, userId }, "Could not begin a ChatGPT plan sign-in");
-    return respondUnavailable(context, "OpenAI's sign-in could not be reached; try again shortly.");
+    return respondUnavailable(
+      context,
+      error instanceof SignInUnreachableError
+        ? "OpenAI's sign-in could not be reached; try again shortly."
+        : "The control plane could not begin your sign-in; try again shortly.",
+    );
   }
 }
 
@@ -120,11 +126,30 @@ async function finishSignIn(
     if (finish.kind === "failed") {
       return respondWithApiError(context, 400, "chatgpt_sign_in_failed", finish.message);
     }
-    await dependencies.changes.ownerCredentialsChanged(userId);
+    await tellThreadsOfConnection(dependencies, userId);
     return context.json(await dependencies.access.describe(userId));
   } catch (error) {
     dependencies.logger.error({ err: error, userId }, "Could not finish a ChatGPT plan sign-in");
     return respondUnavailable(context, "The control plane could not finish your sign-in.");
+  }
+}
+
+/**
+ * The plan is connected by now, so a failure to tell the user's threads
+ * at once is logged rather than reported as a failed sign-in: each thread
+ * is told before its next message reaches its agent anyway.
+ */
+async function tellThreadsOfConnection(
+  dependencies: ChatGptPlanRoutesDependencies,
+  userId: string,
+): Promise<void> {
+  try {
+    await dependencies.changes.ownerCredentialsChanged(userId);
+  } catch (error) {
+    dependencies.logger.warn(
+      { err: error, userId },
+      "Connected a ChatGPT plan, but could not tell the user's threads at once",
+    );
   }
 }
 
