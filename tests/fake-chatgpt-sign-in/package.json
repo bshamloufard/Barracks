@@ -1,0 +1,17 @@
+{
+  "name": "@barrack/fake-chatgpt-sign-in",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A stand-in for OpenAI's \"Sign in with ChatGPT\" authorization server, so tests can connect a ChatGPT plan with no OpenAI account.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/fake-chatgpt-sign-in.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "jose": "6.2.18"
+  }
+}
