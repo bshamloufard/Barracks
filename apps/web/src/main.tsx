@@ -1,3 +1,4 @@
+import "./parse-without-eval";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { takeSignInReturn } from "./authentication/sign-in-link";

@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
  */
 export type BrowserPage = {
   goto(url: string): Promise<unknown>;
+  addInitScript(script: () => void): Promise<void>;
   screenshot(options: { path: string; fullPage?: boolean }): Promise<unknown>;
   evaluate<Result, Argument>(
     script: (argument: Argument) => Result | Promise<Result>,
@@ -19,7 +20,7 @@ export type BrowserPage = {
   ): Promise<Result>;
   getByTestId(testId: string): BrowserLocator;
   getByRole(role: "button", options: { name: string }): BrowserLocator;
-  mouse: { click(x: number, y: number): Promise<void> };
+  mouse: { click(x: number, y: number): Promise<void>; move(x: number, y: number): Promise<void> };
   keyboard: {
     type(text: string, options?: { delay?: number }): Promise<void>;
     press(key: string): Promise<void>;
@@ -30,10 +31,13 @@ export type BrowserPage = {
     options: { timeout: number },
   ): Promise<unknown>;
   on(event: "console", listener: (message: { type(): string; text(): string }) => void): void;
+  on(event: "request", listener: (request: { url(): string; method(): string }) => void): void;
+  getByLabel(label: string): BrowserLocator;
 };
 
 export type BrowserLocator = {
   click(): Promise<void>;
+  fill(value: string): Promise<void>;
   textContent(): Promise<string | null>;
   boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
   waitFor(options: { timeout: number }): Promise<void>;

@@ -95,6 +95,16 @@ Tokens are verified against the Supabase project's published public keys (issuer
 
 Threads created before sign-in existed have no owner and are shown to nobody; give one an owner with `update barrack.threads set owner_user_id = '<user id>' where thread_id = '<thread id>';` once that user has signed in.
 
+## Browser security headers
+
+Every answer of the HTTP app carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: same-origin` ([`src/http/security-headers.ts`](src/http/security-headers.ts)). The built web client's files, the page and its assets, carry a Content-Security-Policy worked out from what the client does ([`src/http/web-client-content-security-policy.ts`](src/http/web-client-content-security-policy.ts)); for `https://<domain>` signing in with `https://<ref>.supabase.co`:
+
+```
+default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' wss://<domain> https://<ref>.supabase.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+```
+
+`connect-src` lists the WebSocket form of each origin in `BARRACK_ALLOWED_CLIENT_ORIGINS` and the origin of `BARRACK_SUPABASE_URL` (none in development mode); `data:` images are how noVNC draws the desktop's JPEG rectangles and its cursor. API answers, `/health` and refusals carry `default-src 'none'; frame-ancestors 'none'` instead. `Strict-Transport-Security: max-age=31536000` is sent only when the proxy in front says the browser came over HTTPS (`X-Forwarded-Proto: https`, which Railway's edge sets) and the `Host` is not a loopback name, so `http://localhost` installations, `pnpm dev` and Railway's health check never get it. In `pnpm dev` the page is Vite's, which sends none of the page's headers; Vite's development page needs inline scripts the policy would refuse. An end-to-end test runs the built client under the policy in Chromium ([`web-client-security-policy.test.ts`](../../tests/end-to-end/src/web-client-security-policy.test.ts)).
+
 ## How it is organised
 
 | Path                          | What it holds                                                                                                                                                                                      |
@@ -103,7 +113,7 @@ Threads created before sign-in existed have no owner and are shown to nobody; gi
 | `src/migrate.ts`              | Applies pending database migrations and exits.                                                                                                                                                     |
 | `src/configuration.ts`        | Environment variables, validated together at startup.                                                                                                                                              |
 | `src/control-plane-server.ts` | One HTTP server on one port: HTTP routes plus the WebSocket endpoints.                                                                                                                             |
-| `src/http/`                   | `GET /health`, the client configuration, the threads API, the sign-in middleware and origin check, and the built web client when configured (Hono).                                                |
+| `src/http/`                   | `GET /health`, the client configuration, the threads API, the sign-in middleware and origin check, the browser security headers, and the built web client when configured (Hono).                  |
 | `src/authentication/`         | Sign-in settings, verifying Supabase's (and development mode's) access tokens, the allow-list, and the `Authenticator` both transports use.                                                        |
 | `src/users/`                  | The `UserStore` interface and its implementations.                                                                                                                                                 |
 | `src/threads/`                | The `ThreadStore` interface, its guarded state changes and implementations, supervisor tokens and environment.                                                                                     |
