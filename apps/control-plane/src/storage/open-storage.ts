@@ -1,7 +1,10 @@
 import type { Pool } from "pg";
 import type { ChatGptPlanStore } from "../chatgpt-plan/chatgpt-plan-store.js";
 import { InMemoryChatGptPlanStore } from "../chatgpt-plan/in-memory-chatgpt-plan-store.js";
+import { InMemoryOpenAiAccessAllowanceStore } from "../chatgpt-plan/in-memory-openai-access-allowance-store.js";
+import type { OpenAiAccessAllowanceStore } from "../chatgpt-plan/openai-access-allowance-store.js";
 import { PostgresChatGptPlanStore } from "../chatgpt-plan/postgres-chatgpt-plan-store.js";
+import { PostgresOpenAiAccessAllowanceStore } from "../chatgpt-plan/postgres-openai-access-allowance-store.js";
 import { type DatabaseConfiguration, locationOf } from "../database/database-configuration.js";
 import {
   type DatabaseKeepAlive,
@@ -58,6 +61,7 @@ export type OpenStorage = {
   modelUsageStore: ModelUsageStore;
   /** The model before a switch, still relayed for the run open on it. */
   modelSwitchAllowanceStore: ModelSwitchAllowanceStore;
+  openAiAccessAllowanceStore: OpenAiAccessAllowanceStore;
   /** Users' ChatGPT plans, their sign-ins sealed under `keyring`. */
   chatGptPlanStore: ChatGptPlanStore;
   /** Releases what storage holds open, such as its database connections. */
@@ -100,6 +104,7 @@ export async function openStorage(
       modelProxyTokenStore: new InMemoryModelProxyTokenStore(),
       modelUsageStore: new InMemoryModelUsageStore(),
       modelSwitchAllowanceStore: new InMemoryModelSwitchAllowanceStore(),
+      openAiAccessAllowanceStore: new InMemoryOpenAiAccessAllowanceStore(),
       chatGptPlanStore: new InMemoryChatGptPlanStore(keyring),
       close: async () => undefined,
     };
@@ -133,6 +138,7 @@ export async function openStorage(
     modelProxyTokenStore: new PostgresModelProxyTokenStore(pool),
     modelUsageStore: new PostgresModelUsageStore(pool),
     modelSwitchAllowanceStore: new PostgresModelSwitchAllowanceStore(pool),
+    openAiAccessAllowanceStore: new PostgresOpenAiAccessAllowanceStore(pool),
     chatGptPlanStore: new PostgresChatGptPlanStore(pool, keyring),
     close: async () => {
       await keepAlive?.stop();

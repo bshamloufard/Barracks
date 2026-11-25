@@ -1,3 +1,5 @@
+import type { ProviderAccess } from "@barrack/protocol";
+import type { OpenAiAccessAllowances } from "../chatgpt-plan/openai-access-allowances.js";
 import type { ModelSwitchAllowances } from "../model-proxy/model-switch-allowances.js";
 import type { ThreadRecord, ThreadStore } from "../threads/thread-store.js";
 
@@ -16,15 +18,20 @@ export class ModelAccessChanges {
   readonly #threadStore: ThreadStore;
   readonly #relays: ModelAccessRefresher;
   readonly #modelSwitchAllowances: ModelSwitchAllowances;
+  readonly #openAiAccessAllowances: OpenAiAccessAllowances;
 
   constructor(
     threadStore: ThreadStore,
     relays: ModelAccessRefresher,
-    modelSwitchAllowances: ModelSwitchAllowances,
+    allowances: {
+      modelSwitches: ModelSwitchAllowances;
+      openAiAccess: OpenAiAccessAllowances;
+    },
   ) {
     this.#threadStore = threadStore;
     this.#relays = relays;
-    this.#modelSwitchAllowances = modelSwitchAllowances;
+    this.#modelSwitchAllowances = allowances.modelSwitches;
+    this.#openAiAccessAllowances = allowances.openAiAccess;
   }
 
   /**
@@ -48,14 +55,30 @@ export class ModelAccessChanges {
     return thread;
   }
 
+  /**
+   * Before the owner's OpenAI access may change from `currentAccess`
+   * (connecting a plan, choosing the key or the plan, disconnecting): each
+   * of their threads with a run open keeps what the run began with, so the
+   * model proxy goes on spending it for that run (see
+   * `OpenAiAccessAllowances`). Only threads whose sandbox runs can have a
+   * run open.
+   */
+  async openAiAccessMayChange(ownerUserId: string, currentAccess: ProviderAccess): Promise<void> {
+    for (const thread of await this.#listToldAtOnce(ownerUserId)) {
+      if (thread.sandbox.state === "running") {
+        await this.#openAiAccessAllowances.noteBeforeChange(thread.threadId, currentAccess);
+      }
+    }
+  }
+
   async ownerCredentialsChanged(ownerUserId: string): Promise<void> {
-    const threads = await this.#threadStore.listMostRecentlyActiveOwnedBy(
-      ownerUserId,
-      threadsToldAtOnce,
-    );
-    for (const thread of threads) {
+    for (const thread of await this.#listToldAtOnce(ownerUserId)) {
       this.#relays.refreshModelAccess(thread.threadId);
     }
+  }
+
+  #listToldAtOnce(ownerUserId: string): Promise<ThreadRecord[]> {
+    return this.#threadStore.listMostRecentlyActiveOwnedBy(ownerUserId, threadsToldAtOnce);
   }
 }
 

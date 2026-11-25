@@ -78,3 +78,21 @@ create table chatgpt_sign_in_attempts (
 create index chatgpt_sign_in_attempts_by_expiry on chatgpt_sign_in_attempts (expires_at);
 
 alter table chatgpt_sign_in_attempts enable row level security;
+
+-- When a user changes what their OpenAI models spend (connecting a plan,
+-- choosing their key or their plan, disconnecting) while one of their
+-- threads has a run open, that run carries on with what it began with,
+-- since the agent shapes its requests for it and is set up again only
+-- between runs; the model proxy goes on spending that for that one run,
+-- for at most a bounded time, as `model_switch_allowances` does for a
+-- model. One row per thread at most: the access the run began with, the
+-- run (by the sequence of the `agent_run_started` that began it), and
+-- until when.
+create table openai_access_allowances (
+  thread_id text primary key references threads (thread_id) on delete cascade,
+  run_access text not null check (run_access in ('api_key', 'chatgpt_plan')),
+  run_started_at_sequence bigint not null check (run_started_at_sequence > 0),
+  allowed_until timestamptz not null
+);
+
+alter table openai_access_allowances enable row level security;

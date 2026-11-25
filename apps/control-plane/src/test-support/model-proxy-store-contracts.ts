@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type {
+  OpenAiAccessAllowance,
+  OpenAiAccessAllowanceStore,
+} from "../chatgpt-plan/openai-access-allowance-store.js";
 import type { ModelProxyTokenStore } from "../model-proxy/model-proxy-token-store.js";
 import type {
   ModelSwitchAllowance,
@@ -133,6 +137,46 @@ export function describeModelSwitchAllowanceStoreContract(
 
       expect(await second.find("thread-a")).toEqual(
         allowance({ previousModel: "openai/model-later", runStartedAtSequence: 9 }),
+      );
+      expect(await second.find("thread-b")).toEqual(allowance({ threadId: "thread-b" }));
+    });
+
+    it("removes a thread's allowance, and no other's", async () => {
+      const [first, second] = await createStores();
+      await first.save(allowance());
+      await first.save(allowance({ threadId: "thread-b" }));
+
+      await second.remove("thread-a");
+      await second.remove("thread-a");
+
+      expect(await first.find("thread-a")).toBeUndefined();
+      expect(await first.find("thread-b")).toEqual(allowance({ threadId: "thread-b" }));
+    });
+  });
+}
+
+export function describeOpenAiAccessAllowanceStoreContract(
+  implementationName: string,
+  createStores: () => Promise<[OpenAiAccessAllowanceStore, OpenAiAccessAllowanceStore]>,
+): void {
+  describe(`${implementationName} as an OpenAI access allowance store`, () => {
+    const allowance = (overrides: Partial<OpenAiAccessAllowance> = {}): OpenAiAccessAllowance => ({
+      threadId: "thread-a",
+      runAccess: "chatgpt_plan",
+      runStartedAtSequence: 7,
+      allowedUntil: new Date(Date.UTC(2026, 10, 25, 12, 30)),
+      ...overrides,
+    });
+
+    it("keeps one allowance per thread, the newest, seen from either instance", async () => {
+      const [first, second] = await createStores();
+
+      await first.save(allowance());
+      await first.save(allowance({ runAccess: "api_key", runStartedAtSequence: 9 }));
+      await first.save(allowance({ threadId: "thread-b" }));
+
+      expect(await second.find("thread-a")).toEqual(
+        allowance({ runAccess: "api_key", runStartedAtSequence: 9 }),
       );
       expect(await second.find("thread-b")).toEqual(allowance({ threadId: "thread-b" }));
     });

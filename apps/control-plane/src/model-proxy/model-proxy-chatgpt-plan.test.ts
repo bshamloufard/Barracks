@@ -5,12 +5,15 @@ import {
   startMockModelServer,
 } from "@barrack/mock-model-server";
 import {
+  type AgentEvent,
   buildThreadModelUsageApiPath,
   type ConfigureModelAccess,
   chatGptPlanApiPath,
+  chatGptPlanOpenAiAccessApiPath,
   chatGptPlanSignInApiPath,
   chatGptPlanSignInCompletionApiPath,
   chatGptPlanSignInStartSchema,
+  type ProviderAccess,
   threadModelUsageResponseSchema,
 } from "@barrack/protocol";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
@@ -301,5 +304,71 @@ describe("a request in flight on a ChatGPT plan, checked again", () => {
     await controlPlane.sendJson("DELETE", chatGptPlanApiPath, {}, adaToken);
 
     await expect(inFlight.text()).rejects.toThrow();
+  });
+});
+
+/** Sends a supervisor's agent events one at a time, each recorded before the next. */
+function runEventsOf(supervisor: FakeSupervisor) {
+  let eventNumber = 0;
+  return async (event: AgentEvent): Promise<void> => {
+    eventNumber += 1;
+    supervisor.sendAgentEventNumbered(eventNumber, event);
+    await supervisor.waitUntilRecorded(eventNumber);
+  };
+}
+
+async function chooseOpenAiAccess(access: ProviderAccess): Promise<void> {
+  const response = await controlPlane.sendJson(
+    "PUT",
+    chatGptPlanOpenAiAccessApiPath,
+    { access },
+    adaToken,
+  );
+  expect(response.status).toBe(200);
+}
+
+describe("a run open when its owner changes what OpenAI models spend", () => {
+  const adasOpenAiKey = "fake-openai-key-of-ada-0001";
+  const keyShapedBody = JSON.stringify({
+    ...relayedFormatExamples.openai.body("Go on"),
+    model: "gpt-6.1-sol",
+  });
+
+  it("carries on spending what it began with, and the next run spends the new choice", async () => {
+    await controlPlane.saveModelCredential("openai", adasOpenAiKey, adaToken);
+    const { supervisor, access } = await startThread(adaToken);
+    const sendAgentEvent = runEventsOf(supervisor);
+    const planAccessToken = await adasPlanAccessToken();
+    await sendAgentEvent({ type: "agent_run_started" });
+
+    await chooseOpenAiAccess("api_key");
+    const duringTheRun = await callOnPlan(access, planShapedBody("Go on"));
+    await duringTheRun.text();
+    await sendAgentEvent({ type: "agent_run_settled", wasInterrupted: false });
+    await sendAgentEvent({ type: "agent_run_started" });
+    const inTheNextRun = await callOnPlan(access, keyShapedBody);
+    await inTheNextRun.text();
+
+    expect([duringTheRun.status, inTheNextRun.status]).toEqual([200, 200]);
+    expect(modelServer.receivedRequests.map((request) => request.credential)).toEqual([
+      planAccessToken,
+      adasOpenAiKey,
+    ]);
+  });
+
+  it("keeps spending the key for the run open when the plan is chosen during it", async () => {
+    await controlPlane.saveModelCredential("openai", adasOpenAiKey, adaToken);
+    await chooseOpenAiAccess("api_key");
+    const { supervisor, access } = await startThread(adaToken);
+    await runEventsOf(supervisor)({ type: "agent_run_started" });
+
+    await chooseOpenAiAccess("chatgpt_plan");
+    const duringTheRun = await callOnPlan(access, keyShapedBody);
+    await duringTheRun.text();
+
+    expect(duringTheRun.status).toBe(200);
+    expect(modelServer.receivedRequests.map((request) => request.credential)).toEqual([
+      adasOpenAiKey,
+    ]);
   });
 });

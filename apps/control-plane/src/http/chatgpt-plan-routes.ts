@@ -11,7 +11,10 @@ import {
   startChatGptPlanSignInRequestSchema,
 } from "@barrack/protocol";
 import type { Context, Hono } from "hono";
-import type { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
+import {
+  type ChatGptPlanAccess,
+  chatGptPlanProviderId,
+} from "../chatgpt-plan/chatgpt-plan-access.js";
 import type { ChatGptPlanModels } from "../chatgpt-plan/chatgpt-plan-models.js";
 import type { ChatGptSignIn } from "../chatgpt-plan/chatgpt-sign-in.js";
 import type { Logger } from "../logger.js";
@@ -112,6 +115,7 @@ async function finishSignIn(
   }
   const { userId } = signedInUserOf(context);
   try {
+    await noteOpenAiAccessMayChange(dependencies, userId);
     const finish = await dependencies.signIn.finish(userId, request.data.finalAddress);
     if (finish.kind === "failed") {
       return respondWithApiError(context, 400, "chatgpt_sign_in_failed", finish.message);
@@ -130,6 +134,7 @@ async function disconnect(
 ): Promise<Response> {
   const { userId } = signedInUserOf(context);
   try {
+    await noteOpenAiAccessMayChange(dependencies, userId);
     const disconnection = await dependencies.access.disconnect(userId);
     if (disconnection === undefined) {
       return respondWithApiError(context, 404, "not_found", "No ChatGPT plan is connected.");
@@ -161,6 +166,7 @@ async function changeOpenAiAccess(
   }
   const { userId } = signedInUserOf(context);
   try {
+    await noteOpenAiAccessMayChange(dependencies, userId);
     if (!(await dependencies.access.setOpenAiAccess(userId, request.data.access))) {
       return refuseNotConnected(context);
     }
@@ -170,6 +176,20 @@ async function changeOpenAiAccess(
     dependencies.logger.error({ err: error, userId }, "Could not change a user's OpenAI access");
     return respondUnavailable(context, "The control plane could not save your choice.");
   }
+}
+
+/**
+ * Before what the user's OpenAI models spend may change, so their runs
+ * open now carry on with what they began with (see
+ * `ModelAccessChanges.openAiAccessMayChange`). Noted even if it then does
+ * not change, which leaves those runs as they are.
+ */
+async function noteOpenAiAccessMayChange(
+  dependencies: ChatGptPlanRoutesDependencies,
+  userId: string,
+): Promise<void> {
+  const currentAccess = await dependencies.access.findAccess(userId, chatGptPlanProviderId);
+  await dependencies.changes.openAiAccessMayChange(userId, currentAccess);
 }
 
 async function listModels(

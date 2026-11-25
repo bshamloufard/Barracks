@@ -7,6 +7,8 @@ import {
   DevelopmentSingleUserVerifier,
   developmentAccessToken,
 } from "../authentication/development-single-user.js";
+import { InMemoryOpenAiAccessAllowanceStore } from "../chatgpt-plan/in-memory-openai-access-allowance-store.js";
+import { OpenAiAccessAllowances } from "../chatgpt-plan/openai-access-allowances.js";
 import { InMemoryGithubConnectionStore } from "../github/in-memory-github-connection-store.js";
 import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { InMemoryModelCredentialStore } from "../model-access/in-memory-model-credential-store.js";
@@ -67,15 +69,17 @@ function createApp() {
   });
   const keyring = new CredentialKeyring(Buffer.alloc(32, 1));
   const chatGptPlan = createUnofferedChatGptPlan(keyring);
-  const modelAccessChanges = new ModelAccessChanges(
-    threadStore,
-    relays,
-    new ModelSwitchAllowances({
+  const modelAccessChanges = new ModelAccessChanges(threadStore, relays, {
+    modelSwitches: new ModelSwitchAllowances({
       store: new InMemoryModelSwitchAllowanceStore(),
       threadEventLog,
       tokens: new ModelProxyTokens(new InMemoryModelProxyTokenStore()),
     }),
-  );
+    openAiAccess: new OpenAiAccessAllowances({
+      store: new InMemoryOpenAiAccessAllowanceStore(),
+      threadEventLog,
+    }),
+  });
   return createHttpApp({
     authenticator: new Authenticator({
       verifier: new DevelopmentSingleUserVerifier(),

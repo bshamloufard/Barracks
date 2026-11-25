@@ -3,8 +3,10 @@ import { type ProviderAccess, parseModelReference } from "@barrack/protocol";
 import type { OwnerAdmission } from "../authentication/owner-admission.js";
 import {
   type ChatGptPlanAccess,
+  chatGptPlanProviderId,
   PlanRenewalUnavailableError,
 } from "../chatgpt-plan/chatgpt-plan-access.js";
+import type { OpenAiAccessAllowances } from "../chatgpt-plan/openai-access-allowances.js";
 import { UnreadableCredentialError } from "../model-access/credential-keyring.js";
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import { describeReachedCap, type ModelUsage } from "../model-usage/model-usage.js";
@@ -34,6 +36,7 @@ export type RequestedModels = {
 export type ModelProxyAuthorizationOptions = {
   threadStore: ThreadStore;
   modelSwitchAllowances: ModelSwitchAllowances;
+  openAiAccessAllowances: OpenAiAccessAllowances;
   tokens: ModelProxyTokens;
   credentials: ModelCredentials;
   ownerAdmission: OwnerAdmission;
@@ -71,7 +74,8 @@ export type ProxyAuthorization = OwnerAuthorization | ProxyRefused;
  * that of the model before a switch made while the run still open began
  * (see `ModelSwitchAllowances`); its owner still admitted; the owner's own
  * key for that provider, or, where they chose it for OpenAI, a current
- * access token for their ChatGPT plan; and the owner's usage cap not
+ * access token for their ChatGPT plan (or, for a run open when they
+ * changed that, what the run began with: see `OpenAiAccessAllowances`); and the owner's usage cap not
  * reached (plan usage counts towards it like any other). Last, once
  * the body is read (`checkRequestedModels`), the model it names the
  * thread's own or that one before a switch. A request in flight is
@@ -130,7 +134,7 @@ export class ModelProxyAuthorization {
       return owner;
     }
     const { ownerUserId, threadModel } = owner;
-    const access = await this.#options.chatGptPlan.findAccess(ownerUserId, request.providerId);
+    const access = await this.#findAccess(request, ownerUserId);
     const credential =
       access === "chatgpt_plan"
         ? await this.#readPlanToken(ownerUserId)
@@ -251,6 +255,23 @@ export class ModelProxyAuthorization {
       return refused(proxyRefusals.ownerNotAdmitted, "the owner is not admitted");
     }
     return { kind: "owner", ownerUserId, threadModel: thread.model };
+  }
+
+  /**
+   * What the owner chose to spend on the provider, unless they changed it
+   * while the thread's run was open: then what the run began with, for
+   * that run (see `OpenAiAccessAllowances`).
+   */
+  async #findAccess(
+    request: ProxyAuthorizationRequest,
+    ownerUserId: string,
+  ): Promise<ProviderAccess> {
+    const { chatGptPlan, openAiAccessAllowances } = this.#options;
+    const current = await chatGptPlan.findAccess(ownerUserId, request.providerId);
+    if (request.providerId !== chatGptPlanProviderId) {
+      return current;
+    }
+    return (await openAiAccessAllowances.findRunAccess(request.threadId)) ?? current;
   }
 
   async #checkCredentialStillHeld(

@@ -5,6 +5,7 @@ import { ChatGptPlanAccess, chatGptPlanProviderId } from "./chatgpt-plan/chatgpt
 import { ChatGptPlanModels } from "./chatgpt-plan/chatgpt-plan-models.js";
 import { ChatGptSignIn } from "./chatgpt-plan/chatgpt-sign-in.js";
 import { ChatGptSignInClient } from "./chatgpt-plan/chatgpt-sign-in-client.js";
+import { OpenAiAccessAllowances } from "./chatgpt-plan/openai-access-allowances.js";
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
@@ -88,6 +89,10 @@ async function main(): Promise<void> {
     threadEventLog: storage.threadEventLog,
     tokens: proxyTokens,
   });
+  const openAiAccessAllowances = new OpenAiAccessAllowances({
+    store: storage.openAiAccessAllowanceStore,
+    threadEventLog: storage.threadEventLog,
+  });
   const modelUsage = new ModelUsage({
     store: storage.modelUsageStore,
     settings: configuration.modelUsageCap,
@@ -124,6 +129,7 @@ async function main(): Promise<void> {
   const modelProxy = assembleModelProxy({
     threadStore: storage.threadStore,
     modelSwitchAllowances,
+    openAiAccessAllowances,
     userStore: storage.userStore,
     admission: authentication.admission,
     credentials,
@@ -145,11 +151,10 @@ async function main(): Promise<void> {
     repositoryServices,
     modelAccess: {
       credentials,
-      changes: new ModelAccessChanges(
-        storage.threadStore,
-        threadServices.relays,
-        modelSwitchAllowances,
-      ),
+      changes: new ModelAccessChanges(storage.threadStore, threadServices.relays, {
+        modelSwitches: modelSwitchAllowances,
+        openAiAccess: openAiAccessAllowances,
+      }),
       isModelRequired,
     },
     modelProxy,

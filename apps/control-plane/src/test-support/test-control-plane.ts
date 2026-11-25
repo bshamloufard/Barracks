@@ -22,6 +22,9 @@ import type { ChatGptPlanStore } from "../chatgpt-plan/chatgpt-plan-store.js";
 import { ChatGptSignIn } from "../chatgpt-plan/chatgpt-sign-in.js";
 import { ChatGptSignInClient } from "../chatgpt-plan/chatgpt-sign-in-client.js";
 import { InMemoryChatGptPlanStore } from "../chatgpt-plan/in-memory-chatgpt-plan-store.js";
+import { InMemoryOpenAiAccessAllowanceStore } from "../chatgpt-plan/in-memory-openai-access-allowance-store.js";
+import type { OpenAiAccessAllowanceStore } from "../chatgpt-plan/openai-access-allowance-store.js";
+import { OpenAiAccessAllowances } from "../chatgpt-plan/openai-access-allowances.js";
 import { startControlPlaneServer } from "../control-plane-server.js";
 import type { GithubConnectionStore } from "../github/github-connection-store.js";
 import type { GithubSettings } from "../github/github-settings.js";
@@ -130,6 +133,7 @@ export type TestControlPlaneOptions = {
   /** Defaults to an in-memory store. */
   modelProxyTokenStore?: ModelProxyTokenStore;
   modelSwitchAllowanceStore?: ModelSwitchAllowanceStore;
+  openAiAccessAllowanceStore?: OpenAiAccessAllowanceStore;
   /** Defaults to an in-memory store. */
   modelUsageStore?: ModelUsageStore;
   /** No cap by default, over a day. */
@@ -291,6 +295,11 @@ export class TestControlPlane {
       tokens: modelProxyTokens,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
+    const openAiAccessAllowances = new OpenAiAccessAllowances({
+      store: options.openAiAccessAllowanceStore ?? new InMemoryOpenAiAccessAllowanceStore(),
+      threadEventLog,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
     const modelUsage = new ModelUsage({
       store: options.modelUsageStore ?? new InMemoryModelUsageStore(),
       settings: { installationCapTokens: undefined, windowHours: 24, ...options.modelUsageCap },
@@ -333,6 +342,7 @@ export class TestControlPlane {
     const modelProxy = assembleModelProxy({
       threadStore,
       modelSwitchAllowances,
+      openAiAccessAllowances,
       userStore,
       admission,
       credentials: modelCredentials,
@@ -359,7 +369,10 @@ export class TestControlPlane {
       repositoryServices,
       modelAccess: {
         credentials: modelCredentials,
-        changes: new ModelAccessChanges(threadStore, threadServices.relays, modelSwitchAllowances),
+        changes: new ModelAccessChanges(threadStore, threadServices.relays, {
+          modelSwitches: modelSwitchAllowances,
+          openAiAccess: openAiAccessAllowances,
+        }),
         isModelRequired,
       },
       modelProxy,

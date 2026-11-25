@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { afterAll, beforeAll } from "vitest";
+import { InMemoryOpenAiAccessAllowanceStore } from "../chatgpt-plan/in-memory-openai-access-allowance-store.js";
+import { PostgresOpenAiAccessAllowanceStore } from "../chatgpt-plan/postgres-openai-access-allowance-store.js";
 import { InMemoryModelProxyTokenStore } from "../model-proxy/in-memory-model-proxy-token-store.js";
 import { InMemoryModelSwitchAllowanceStore } from "../model-proxy/in-memory-model-switch-allowance-store.js";
 import { PostgresModelProxyTokenStore } from "../model-proxy/postgres-model-proxy-token-store.js";
@@ -10,6 +12,7 @@ import {
   describeModelProxyTokenStoreContract,
   describeModelSwitchAllowanceStoreContract,
   describeModelUsageStoreContract,
+  describeOpenAiAccessAllowanceStoreContract,
 } from "../test-support/model-proxy-store-contracts.js";
 import { recordTestThread } from "../test-support/record-test-thread.js";
 import {
@@ -24,6 +27,11 @@ import { PostgresModelUsageStore } from "./postgres-model-usage-store.js";
 
 describeModelProxyTokenStoreContract("InMemoryModelProxyTokenStore", async () => {
   const store = new InMemoryModelProxyTokenStore();
+  return [store, store];
+});
+
+describeOpenAiAccessAllowanceStoreContract("InMemoryOpenAiAccessAllowanceStore", async () => {
+  const store = new InMemoryOpenAiAccessAllowanceStore();
   return [store, store];
 });
 
@@ -81,6 +89,14 @@ describeWithTestDatabase("the Postgres model proxy and usage stores", () => {
     return [
       new PostgresModelSwitchAllowanceStore(firstInstance, schema),
       new PostgresModelSwitchAllowanceStore(secondInstance, schema),
+    ];
+  });
+
+  describeOpenAiAccessAllowanceStoreContract("PostgresOpenAiAccessAllowanceStore", async () => {
+    const schema = await createSchemaWithThreads();
+    return [
+      new PostgresOpenAiAccessAllowanceStore(firstInstance, schema),
+      new PostgresOpenAiAccessAllowanceStore(secondInstance, schema),
     ];
   });
 

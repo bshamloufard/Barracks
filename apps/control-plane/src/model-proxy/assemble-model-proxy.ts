@@ -1,6 +1,7 @@
 import { OwnerAdmission } from "../authentication/owner-admission.js";
 import type { UserAdmission } from "../authentication/user-admission.js";
 import type { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
+import type { OpenAiAccessAllowances } from "../chatgpt-plan/openai-access-allowances.js";
 import type { Logger } from "../logger.js";
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import type { ModelUsage } from "../model-usage/model-usage.js";
@@ -16,6 +17,7 @@ import type { ModelSwitchAllowances } from "./model-switch-allowances.js";
 export type ModelProxyAssembly = {
   threadStore: ThreadStore;
   modelSwitchAllowances: ModelSwitchAllowances;
+  openAiAccessAllowances: OpenAiAccessAllowances;
   userStore: UserStore;
   admission: UserAdmission;
   credentials: ModelCredentials;
@@ -43,6 +45,7 @@ export function assembleModelProxy(assembly: ModelProxyAssembly): ModelProxy {
     authorization: new ModelProxyAuthorization({
       threadStore: assembly.threadStore,
       modelSwitchAllowances: assembly.modelSwitchAllowances,
+      openAiAccessAllowances: assembly.openAiAccessAllowances,
       tokens,
       credentials: assembly.credentials,
       chatGptPlan: assembly.chatGptPlan,
