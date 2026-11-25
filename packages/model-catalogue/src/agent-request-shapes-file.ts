@@ -8,9 +8,10 @@ import type { ProviderApiFormat } from "./relayed-providers.js";
  *
  * Per wire format, the `type` an object may have at each place where the
  * format puts its conversation's items, their parts and the tools (`null`
- * where the agent sends such an object without a `type`), and Anthropic's
- * `anthropic-beta` header values; and, per provider, each top-level member
- * the agent sends and the values it may hold.
+ * where the agent sends such an object without a `type`), Anthropic's
+ * `anthropic-beta` header values, and the members of the conversation
+ * items that carry settings; and, per provider, each top-level member the
+ * agent sends and the values it may hold.
  */
 export type AgentRequestShapes = {
   agent: { name: string; version: string };
@@ -37,6 +38,22 @@ export type FormatRequestShapes = {
   betaHeaderValues: string[];
   /** The top-level members each provider's requests in this format may have. */
   membersByProvider: Record<string, Record<string, MemberRule>>;
+  /** The conversation items that carry settings, and what each may hold. */
+  settingItems: SettingItemRule[];
+};
+
+/**
+ * A kind of conversation item that carries settings the provider honours,
+ * such as how hard to reason, so that its members are checked as the top
+ * level's are: the item is known by the value of one of its members (its
+ * `type`, or for Anthropic its `role`), and may have only the members
+ * listed, each holding what `members` allows (`scanned` for its kind and for
+ * the parts or tools it holds, which the proxy checks as they arrive).
+ */
+export type SettingItemRule = {
+  kindMember: "type" | "role";
+  kind: string;
+  members: Record<string, MemberRule>;
 };
 
 /**

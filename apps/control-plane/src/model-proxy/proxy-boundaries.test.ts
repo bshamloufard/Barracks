@@ -16,6 +16,7 @@ import {
   readPresentedToken,
 } from "./proxy-headers.js";
 import { findRelayedRoute } from "./relayed-routes.js";
+import { requestBodyShapeLimits } from "./request-body.js";
 import { maximumReadMemberBytes } from "./request-body-members.js";
 import { redactedSecretMarker, SecretRedaction } from "./secret-redaction.js";
 
@@ -180,17 +181,43 @@ describe("settings the agent never writes so", () => {
     const parsedAtMost = relayedProviders.flatMap(({ providerId, apis }) =>
       apis.map(({ format }) => {
         const members = Object.values(findAgentRequestShape(providerId, format)?.members ?? {});
-        return members.filter((rule) => rule !== "scanned").length * maximumReadMemberBytes;
+        const topLevel = members.filter((rule) => rule !== "scanned").length;
+        // And the settings given in conversation items, each different one once.
+        return (
+          topLevel * maximumReadMemberBytes + requestBodyShapeLimits.maximumDistinctItemSettingBytes
+        );
       }),
     );
 
     expect(Math.max(...parsedAtMost)).toBeLessThanOrEqual(16 * 1024);
+    expect(requestBodyShapeLimits.maximumItemSettingBytes).toBe(maximumReadMemberBytes);
     expect(
       outcomeOf(
         `{"model":"m","reasoning":{"effort":"high","summary":"auto","x":"${"a".repeat(2_000)}"},"input":[]}`,
         "openai_responses",
       ),
     ).toMatch(/too long/);
+    const updates = Array.from({ length: 1_000 }, (_, index) => ({
+      type: "configuration_update",
+      reasoning: { effort: "high", [`x${index}`]: 1 },
+    }));
+    expect(outcomeOf(JSON.stringify({ model: "m", input: updates }), "openai_responses")).toBe(
+      "not_relayed",
+    );
+  });
+
+  it.each([
+    ["an effort the agent never gives there", '{"effort":"ultra"}'],
+    ["the agent's value written with a space", '{"effort": "high"}'],
+    ["the agent's value written with an escape", '{"effort":"hig\\u0068"}'],
+    ["the agent's value with a member repeated", '{"effort":"none","effort":"high"}'],
+  ])("refuses, in a conversation item, %s", (_description, reasoning) => {
+    const body = `{"model":"m","input":[{"type":"configuration_update","reasoning":${reasoning}}]}`;
+    const inspection = inspectWholeBody("openai_responses", body);
+
+    expect(inspection.kind === "refused" && inspection.reason).toMatch(
+      /the value given for `reasoning` in a `configuration_update` item/,
+    );
   });
 
   it("relays the agent's own settings", () => {
@@ -200,6 +227,12 @@ describe("settings the agent never writes so", () => {
     expect(
       outcomeOf(
         '{"model":"m","reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],"store":false,"input":[]}',
+        "openai_responses",
+      ),
+    ).toBe("relayable");
+    expect(
+      outcomeOf(
+        '{"model":"m","input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}',
         "openai_responses",
       ),
     ).toBe("relayable");

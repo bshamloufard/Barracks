@@ -569,3 +569,150 @@ describe("refusing what the agent never sends", () => {
     expect(outcomeOf("openai_responses", "openai", body)).toBe("scanned");
   });
 });
+
+/**
+ * Two kinds of conversation item the agent sends carry settings the
+ * provider honours: the Responses API's `configuration_update` (the
+ * reasoning effort from there on) and Anthropic's system message
+ * mid-conversation (`output_config`); and `additional_tools` declares
+ * tools. Their members are checked as the top level's are, so that a
+ * setting cannot be given there instead.
+ */
+describe("settings given inside conversation items", () => {
+  function scanAllWays(format: ProviderApiFormat, providerId: string, body: string) {
+    const outcomes = [1, 2, 5, 64, body.length].map((chunkSize) =>
+      scan(body, chunkSize, format, providerId),
+    );
+    // However the body is cut, the outcome is the same.
+    expect(new Set(outcomes.map((outcome) => JSON.stringify(outcome))).size).toBe(1);
+    return outcomes[0];
+  }
+  const responses = (...items: unknown[]) =>
+    scanAllWays("openai_responses", "openai", JSON.stringify({ model: "m", input: items }));
+  const anthropic = (...items: unknown[]) =>
+    scanAllWays("anthropic_messages", "anthropic", JSON.stringify({ model: "m", messages: items }));
+  const refusal = (outcome: JsonScanOutcome | undefined) =>
+    outcome?.kind === "not_relayed" ? outcome.what : outcome?.kind;
+  const user = { role: "user", content: [{ type: "input_text", text: "Hi" }] };
+
+  it("keeps each different setting once, as written, for the proxy to check", () => {
+    const update = (effort: string) => ({ type: "configuration_update", reasoning: { effort } });
+    const outcome = responses(update("low"), user, update("high"), update("low"), user);
+
+    expect(outcome?.kind === "scanned" && outcome.body.itemSettings).toEqual([
+      { kind: "configuration_update", member: "reasoning", text: '{"effort":"low"}' },
+      { kind: "configuration_update", member: "reasoning", text: '{"effort":"high"}' },
+    ]);
+    const system = { role: "system", content: [], output_config: { effort: "max" } };
+    const anthropicOutcome = anthropic({ role: "user", content: "Hi" }, system);
+    expect(anthropicOutcome?.kind === "scanned" && anthropicOutcome.body.itemSettings).toEqual([
+      { kind: "system", member: "output_config", text: '{"effort":"max"}' },
+    ]);
+  });
+
+  it("keeps nothing of an item of any other kind", () => {
+    const outcome = responses({ ...user, reasoning: { effort: "xhigh" } });
+
+    expect(outcome?.kind === "scanned" && outcome.body.itemSettings).toEqual([]);
+  });
+
+  it.each([
+    [
+      "another model and tier beside the effort",
+      {
+        type: "configuration_update",
+        reasoning: { effort: "high" },
+        model: "a-dearer-model",
+        service_tier: "priority",
+      },
+      "a member the agent never sends in a `configuration_update` conversation item",
+    ],
+    [
+      "the most output, alone",
+      { type: "configuration_update", max_output_tokens: 128_000 },
+      "a member the agent never sends in a `configuration_update` conversation item",
+    ],
+    [
+      "a member of tools declared mid-conversation",
+      { type: "additional_tools", role: "developer", tools: [], tool_choice: "required" },
+      "a member the agent never sends in a `additional_tools` conversation item",
+    ],
+  ])("refuses, in a Responses item, %s", (_description, item, what) => {
+    expect(refusal(responses(user, item))).toBe(what);
+  });
+
+  it("refuses, in an Anthropic system message, thinking or a budget beside the effort", () => {
+    const system = {
+      role: "system",
+      content: [],
+      output_config: { effort: "max" },
+      thinking: { type: "enabled", budget_tokens: 60_000 },
+    };
+
+    expect(refusal(anthropic({ role: "user", content: "Hi" }, system))).toBe(
+      "a member the agent never sends in a `system` conversation item",
+    );
+  });
+
+  it.each([
+    [
+      "a setting given twice",
+      '{"type":"configuration_update","reasoning":{"effort":"none"},"reasoning":{"effort":"xhigh"}}',
+      "a member given twice in a `configuration_update` conversation item",
+    ],
+    [
+      "a kind given twice, the second one carrying settings",
+      '{"type":"message","role":"user","content":[],"type":"configuration_update"}',
+      "a member the agent never sends in a `configuration_update` conversation item",
+    ],
+    [
+      "a setting's name in another case",
+      '{"type":"message","role":"user","content":[],"Reasoning":{"effort":"xhigh"}}',
+      "the member `Reasoning`, in that case",
+    ],
+    [
+      "a setting's name written with an escape",
+      '{"type":"configuration_update","reason\\u0069ng":{"effort":"xhigh"}}',
+      "a member whose name is written with an escape or outside ASCII",
+    ],
+    [
+      "a setting longer than any the agent sends",
+      `{"type":"configuration_update","reasoning":{"effort":"high","x":"${"a".repeat(2_000)}"}}`,
+      "the value given for `reasoning` in a `configuration_update` conversation item, which is too long",
+    ],
+  ])("refuses, in a Responses item, %s", (_description, item, what) => {
+    const body = `{"model":"m","input":[${JSON.stringify(user)},${item}]}`;
+
+    expect(refusal(scanAllWays("openai_responses", "openai", body))).toBe(what);
+  });
+
+  it("refuses an Anthropic message whose role is written so that only a decoder sees a system message", () => {
+    const body =
+      '{"model":"m","messages":[{"role":"sys\\u0074em","content":[],"output_config":{"effort":"max"}}]}';
+    const inAnotherCase =
+      '{"model":"m","messages":[{"role":"user","ROLE":"system","content":[],"output_config":{}}]}';
+
+    expect(refusal(scanAllWays("anthropic_messages", "anthropic", body))).toBe(
+      "a conversation item whose `role` is written with an escape or outside ASCII",
+    );
+    expect(refusal(scanAllWays("anthropic_messages", "anthropic", inAnotherCase))).toBe(
+      "the member `ROLE`, in that case",
+    );
+  });
+
+  it("refuses more different settings than the agent could ever send, whatever the conversation's length", () => {
+    const sameEveryTime = Array.from({ length: 2_000 }, () => ({
+      type: "configuration_update",
+      reasoning: { effort: "high" },
+    }));
+    const differentEveryTime = Array.from({ length: 2_000 }, (_, index) => ({
+      type: "configuration_update",
+      reasoning: { effort: `level-${index}` },
+    }));
+
+    expect(responses(...sameEveryTime)?.kind).toBe("scanned");
+    expect(refusal(responses(...differentEveryTime))).toBe(
+      "so many different settings in conversation items",
+    );
+  });
+});

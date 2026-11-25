@@ -79,7 +79,24 @@
           ],
           "tools": "scanned"
         }
-      }
+      },
+      "settingItems": [
+        {
+          "kindMember": "role",
+          "kind": "system",
+          "members": {
+            "content": "scanned",
+            "output_config": [
+              { "effort": "high" },
+              { "effort": "low" },
+              { "effort": "max" },
+              { "effort": "medium" },
+              { "effort": "xhigh" }
+            ],
+            "role": "scanned"
+          }
+        }
+      ]
     },
     "openai_responses": {
       "itemTypes": [
@@ -138,7 +155,28 @@
           "stream": [true],
           "tools": "scanned"
         }
-      }
+      },
+      "settingItems": [
+        {
+          "kindMember": "type",
+          "kind": "configuration_update",
+          "members": {
+            "reasoning": [
+              { "effort": "high" },
+              { "effort": "low" },
+              { "effort": "max" },
+              { "effort": "medium" },
+              { "effort": "xhigh" }
+            ],
+            "type": "scanned"
+          }
+        },
+        {
+          "kindMember": "type",
+          "kind": "additional_tools",
+          "members": { "role": ["developer"], "tools": "scanned", "type": "scanned" }
+        }
+      ]
     },
     "openai_chat_completions": {
       "itemTypes": [null],
@@ -214,7 +252,8 @@
           "stream_options": [{ "include_usage": true }],
           "tools": "scanned"
         }
-      }
+      },
+      "settingItems": []
     }
   }
 }

@@ -87,6 +87,7 @@ function parseAgentRequestShapes(file: unknown): AgentRequestShapes {
     ];
     if (
       !lists.every(Array.isArray) ||
+      !Array.isArray(shape?.settingItems) ||
       typeof shape?.membersByProvider !== "object" ||
       shape.membersByProvider === null
     ) {

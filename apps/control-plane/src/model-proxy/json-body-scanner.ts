@@ -33,6 +33,16 @@
  * regardless of case; a `type` is compared as written, so one spelt with an
  * escape is one the agent never sends. Everywhere else (a tool's schema, a
  * tool call's arguments, the text of a message) nothing is policed.
+ *
+ * A conversation item of a kind that carries settings (`settingItems` of
+ * the shape: Anthropic's system message, the Responses API's
+ * `configuration_update` and `additional_tools`) has its members' names
+ * checked too: each must be one the agent gives such an item, and given
+ * once. The value of each member that is a setting is kept, as written,
+ * each different one once, for the proxy to parse and check
+ * (`request-body.ts`): its kind is known only once the item has closed, so
+ * the values are kept until then. Such values are bounded, each and in
+ * all, so what they cost to parse stays small whatever the body holds.
  */
 
 import type { AgentRequestShape, ObjectType, ProviderApiFormat } from "@barrack/model-catalogue";
@@ -44,6 +54,21 @@ export type JsonBodyScannerLimits = {
   maximumTopLevelMembers: number;
   /** The longest top-level key accepted, in bytes. */
   maximumTopLevelKeyBytes: number;
+  /** The longest setting accepted in a conversation item that carries settings, in bytes. */
+  maximumItemSettingBytes: number;
+  /** The most bytes of such settings in one body, each different one counted once. */
+  maximumDistinctItemSettingBytes: number;
+};
+
+/**
+ * A setting given in a conversation item that carries settings (`reasoning`
+ * in a `configuration_update`, say), as written; each different one once.
+ */
+export type ItemSetting = {
+  /** The item's kind, its `type` or `role` (`SettingItemRule.kind`). */
+  kind: string;
+  member: string;
+  text: string;
 };
 
 /** Where one member of the top-level object lies, as byte offsets into the body. */
@@ -67,6 +92,8 @@ export type ScannedJsonBody = {
   base64ImageBytes: number;
   /** Images the body sends or refers to, however it does. */
   imageCount: number;
+  /** The settings given in conversation items that carry them, each different one once. */
+  itemSettings: ItemSetting[];
 };
 
 export type JsonScanOutcome = { kind: "scanned"; body: ScannedJsonBody } | JsonScanProblem;
@@ -171,6 +198,7 @@ const keyKinds = {
   tool: 10,
   definition: 11,
   cacheControl: 12,
+  role: 13,
 } as const;
 
 /**
@@ -212,18 +240,58 @@ const placeNames: ReadonlyMap<number, string> = new Map([
 /** The types allowed in one place; `allowsNone` for an object without one. */
 type AllowedTypes = { allowsNone: boolean; types: Buffer[] };
 
+/**
+ * A kind of conversation item that carries settings, as the scanner checks
+ * it: the members it may have and those that are settings, each a set of
+ * bits standing for names in `CompiledShape.settingItemNames`.
+ */
+type CompiledSettingItem = {
+  kind: string;
+  kindKey: number;
+  kindBytes: Buffer;
+  allowedNames: number;
+  settingNames: number;
+};
+
 /** The allow-list as the scanner compares it: bytes, by place. */
 type CompiledShape = {
   topLevelMembers: Buffer[];
   typesAt: ReadonlyMap<number, AllowedTypes>;
+  settingItems: CompiledSettingItem[];
+  /** Every name a setting-carrying item may have, of any kind; a name's index is its bit. */
+  settingItemNames: Buffer[];
+  /** The names that are a setting in some kind of item, whose values are kept. */
+  settingNames: number;
 };
+
+/** Names are sets of bits in a 32-bit number. */
+const mostSettingItemNames = 31;
+
+/** A conversation item's kind when its `type` or `role` names two kinds of setting item. */
+const conflictingKinds = -1;
 
 function compileShape(shape: AgentRequestShape): CompiledShape {
   const allowed = (types: readonly ObjectType[]): AllowedTypes => ({
     allowsNone: types.includes(null),
     types: types.flatMap((type) => (type === null ? [] : [Buffer.from(type)])),
   });
+  const names = [...new Set(shape.settingItems.flatMap((item) => Object.keys(item.members)))];
+  if (names.length > mostSettingItemNames) {
+    throw new Error("The conversation items that carry settings have too many members to check.");
+  }
+  const bitsOf = (wanted: (name: string) => boolean) =>
+    names.reduce((bits, name, index) => (wanted(name) ? bits | (1 << index) : bits), 0);
+  const settingItems = shape.settingItems.map((item) => ({
+    kind: item.kind,
+    kindKey: item.kindMember === "role" ? keyKinds.role : keyKinds.type,
+    kindBytes: Buffer.from(item.kind),
+    allowedNames: bitsOf((name) => Object.hasOwn(item.members, name)),
+    settingNames: bitsOf((name) => Array.isArray(item.members[name])),
+  }));
   return {
+    settingItems,
+    settingItemNames: names.map((name) => Buffer.from(name)),
+    settingNames: settingItems.reduce((bits, item) => bits | item.settingNames, 0),
     topLevelMembers: Object.keys(shape.members).map((name) => Buffer.from(name)),
     typesAt: new Map([
       [positions.conversationItem, allowed(shape.itemTypes)],
@@ -276,6 +344,7 @@ function recognisedKeysFor(format: ProviderApiFormat): ReadonlyArray<[Buffer, nu
     [Buffer.from("tool"), keyKinds.tool],
     [Buffer.from("definition"), keyKinds.definition],
     [Buffer.from("cache_control"), keyKinds.cacheControl],
+    [Buffer.from("role"), keyKinds.role],
   ];
 }
 
@@ -319,6 +388,26 @@ export class JsonBodyScanner {
   #base64ImageBytes = 0;
   #base64Images = 0;
   #imageTypeMarks = 0;
+  // The conversation item open now, as one that may carry settings: items
+  // never nest, so one at a time. Its kind is the index of the setting item
+  // it names plus one, 0 for none yet, or `conflictingKinds`.
+  #itemKind = 0;
+  #itemNamesSeen = 0;
+  #itemHasOtherName = false;
+  #itemHasNameTwice = false;
+  #itemSettings: Array<{ name: number; bytes: Buffer | undefined }> = [];
+  // The setting being kept as it is read: its name's index, and where it began.
+  #nextSettingName = -1;
+  #keptSettingName = -1;
+  #keptSettingDepth = 0;
+  #keptSettingStart = 0;
+  #keptSettingParts: Buffer[] = [];
+  #keptSettingLength = 0;
+  /** The chunk being scanned. */
+  #chunk: Buffer = Buffer.alloc(0);
+  // Every different setting kept, by kind, name and text, and their bytes in all.
+  readonly #distinctItemSettings = new Map<string, ItemSetting>();
+  #distinctItemSettingBytes = 0;
 
   /**
    * `format` is the relayed format the body is in, which says where it may
@@ -346,7 +435,9 @@ export class JsonBodyScanner {
   /** Scans the next chunk; returns the problem once the body is known to be refused. */
   write(chunk: Buffer): JsonScanProblem | undefined {
     if (this.#problem === undefined) {
+      this.#chunk = chunk;
       this.#scan(chunk);
+      this.#keepSettingUpTo(chunk.length);
       this.#chunkOffset += chunk.length;
     }
     return this.#problem;
@@ -368,6 +459,7 @@ export class JsonBodyScanner {
         insignificantBytes: this.#insignificantBytes,
         base64ImageBytes: this.#base64ImageBytes,
         imageCount: Math.max(this.#imageTypeMarks, this.#base64Images),
+        itemSettings: [...this.#distinctItemSettings.values()],
       },
     };
   }
@@ -503,6 +595,9 @@ export class JsonBodyScanner {
     if (this.#depth === 1) {
       this.#member.valueStart = offset;
     }
+    if (this.#nextSettingName !== -1) {
+      this.#beginKeepingSetting(offset);
+    }
     if (current !== byte.quote && this.#isPolicedTypeKey()) {
       return this.#refuse(`a ${this.#placeName()} whose \`type\` is not text`);
     }
@@ -566,6 +661,140 @@ export class JsonBodyScanner {
       }
     }
     this.#checkPolicedKey();
+    if (this.#positionAt[this.#depth] === positions.conversationItem) {
+      this.#noteItemMemberName();
+    }
+  }
+
+  /**
+   * A member's name in a conversation item, as an item that may carry
+   * settings: which of the names such items have it is, if any, and whether
+   * it was given before; a setting's value is kept as it is read.
+   */
+  #noteItemMemberName(): void {
+    const names = this.#shape?.settingItemNames ?? [];
+    const index = names.findIndex((name) => this.#stringIs(name));
+    if (index === -1) {
+      this.#itemHasOtherName = true;
+      return;
+    }
+    const bit = 1 << index;
+    if ((this.#itemNamesSeen & bit) !== 0) {
+      this.#itemHasNameTwice = true;
+      return;
+    }
+    this.#itemNamesSeen |= bit;
+    if (((this.#shape?.settingNames ?? 0) & bit) !== 0) {
+      this.#nextSettingName = index;
+    }
+  }
+
+  #beginKeepingSetting(offset: number): void {
+    this.#keptSettingName = this.#nextSettingName;
+    this.#nextSettingName = -1;
+    this.#keptSettingDepth = this.#depth;
+    this.#keptSettingStart = offset;
+    this.#keptSettingParts = [];
+    this.#keptSettingLength = 0;
+  }
+
+  /** Keeps the setting being read up to `end` in this chunk, while it is short enough to keep. */
+  #keepSettingUpTo(end: number): void {
+    if (this.#keptSettingName === -1) {
+      return;
+    }
+    const maximum = this.#limits.maximumItemSettingBytes;
+    if (this.#keptSettingLength <= maximum) {
+      const part = this.#chunk.subarray(
+        Math.max(this.#keptSettingStart - this.#chunkOffset, 0),
+        end,
+      );
+      this.#keptSettingLength += part.length;
+      this.#keptSettingParts =
+        this.#keptSettingLength <= maximum ? [...this.#keptSettingParts, part] : [];
+    }
+  }
+
+  #finishKeepingSetting(endOffset: number): void {
+    this.#keepSettingUpTo(endOffset - this.#chunkOffset);
+    const parts = this.#keptSettingParts;
+    this.#itemSettings.push({
+      name: this.#keptSettingName,
+      bytes:
+        this.#keptSettingLength > this.#limits.maximumItemSettingBytes
+          ? undefined
+          : parts.length === 1
+            ? parts[0]
+            : Buffer.concat(parts),
+    });
+    this.#keptSettingName = -1;
+    this.#keptSettingParts = [];
+  }
+
+  /** The conversation item's `type` or `role`, which may name a kind of item that carries settings. */
+  #noteItemKind(keyKind: number): void {
+    const items = this.#shape?.settingItems ?? [];
+    if (!items.some((item) => item.kindKey === keyKind)) {
+      return;
+    }
+    // A type is compared as written; a role is not otherwise policed, so it must be written plainly.
+    if (keyKind === keyKinds.role && (this.#stringHasEscape || this.#stringHasNonAscii)) {
+      this.#refuse("a conversation item whose `role` is written with an escape or outside ASCII");
+      return;
+    }
+    const index = items.findIndex(
+      (item) => item.kindKey === keyKind && this.#stringIs(item.kindBytes),
+    );
+    if (index !== -1) {
+      this.#itemKind =
+        this.#itemKind === 0 || this.#itemKind === index + 1 ? index + 1 : conflictingKinds;
+    }
+  }
+
+  /**
+   * As a conversation item closes, if it is of a kind that carries settings:
+   * its members must be those the agent gives such an item, each once, and
+   * each setting's value is kept, each different one once, within bounds.
+   */
+  #settleItem(): void {
+    const shape = this.#shape;
+    if (shape === undefined || this.#itemKind === 0) {
+      return;
+    }
+    const item = shape.settingItems[this.#itemKind - 1];
+    if (item === undefined) {
+      this.#refuse("a conversation item of two kinds at once");
+      return;
+    }
+    const where = `a \`${item.kind}\` conversation item`;
+    if (this.#itemHasOtherName || (this.#itemNamesSeen & ~item.allowedNames) !== 0) {
+      this.#refuse(`a member the agent never sends in ${where}`);
+      return;
+    }
+    if (this.#itemHasNameTwice) {
+      this.#refuse(`a member given twice in ${where}`);
+      return;
+    }
+    for (const { name, bytes } of this.#itemSettings) {
+      const member = shape.settingItemNames[name]?.toString("latin1") ?? "";
+      if ((item.settingNames & (1 << name)) === 0) {
+        continue;
+      }
+      if (bytes === undefined) {
+        this.#refuse(`the value given for \`${member}\` in ${where}, which is too long`);
+        return;
+      }
+      const text = bytes.toString("utf8");
+      const key = `${item.kind}\u0000${member}\u0000${text}`;
+      if (!this.#distinctItemSettings.has(key)) {
+        this.#distinctItemSettingBytes += bytes.length;
+        if (this.#distinctItemSettingBytes > this.#limits.maximumDistinctItemSettingBytes) {
+          this.#refuse("so many different settings in conversation items");
+          return;
+        }
+        this.#distinctItemSettings.set(key, { kind: item.kind, member, text });
+      }
+    }
   }
 
   /**
@@ -727,6 +956,13 @@ export class JsonBodyScanner {
     this.#pendingBase64BytesAt[this.#depth] = 0;
     this.#pendingImagesAt[this.#depth] = 0;
     this.#expecting = isObject ? expecting.keyOrObjectEnd : expecting.valueOrArrayEnd;
+    if (position === positions.conversationItem) {
+      this.#itemKind = 0;
+      this.#itemNamesSeen = 0;
+      this.#itemHasOtherName = false;
+      this.#itemHasNameTwice = false;
+      this.#itemSettings.length = 0;
+    }
   }
 
   /** Where a container opened now lies, from where its parent lies and the key it is under. */
@@ -811,6 +1047,12 @@ export class JsonBodyScanner {
     if (isObject) {
       this.#settleImages();
     }
+    if (isObject && this.#positionAt[this.#depth] === positions.conversationItem) {
+      this.#settleItem();
+      if (this.#problem !== undefined) {
+        return;
+      }
+    }
     this.#depth -= 1;
     if (this.#depth === 0) {
       this.#closingBraceOffset = offset;
@@ -822,6 +1064,9 @@ export class JsonBodyScanner {
 
   #completeValue(endOffset: number): void {
     this.#expecting = expecting.commaOrEnd;
+    if (this.#keptSettingName !== -1 && this.#depth === this.#keptSettingDepth) {
+      this.#finishKeepingSetting(endOffset);
+    }
     if (this.#depth !== 1) {
       return;
     }
@@ -852,6 +1097,12 @@ export class JsonBodyScanner {
     const depth = this.#depth;
     const keyKind = this.#isObjectAt[depth] === 1 ? this.#keyKindAt[depth] : keyKinds.otherKey;
     const position = this.#positionAt[depth] ?? positions.elsewhere;
+    if (
+      position === positions.conversationItem &&
+      (keyKind === keyKinds.type || keyKind === keyKinds.role)
+    ) {
+      this.#noteItemKind(keyKind);
+    }
     if (keyKind === keyKinds.type) {
       this.#noteType(depth, position);
     } else if (this.#isImageData(keyKind, position)) {
@@ -974,13 +1225,21 @@ export class JsonBodyScanner {
     return placeNames.get(this.#positionAt[this.#depth] ?? positions.elsewhere) ?? "member";
   }
 
-  /** Whether the key just read is one the scanner reads, written in other letters' cases. */
+  /**
+   * Whether the key just read is one the scanner reads, or in a conversation
+   * item one that items carrying settings have, written in other letters' cases.
+   */
   #isRecognisedKeyInAnotherCase(): boolean {
-    return this.#recognisedKeys.some(
-      ([key]) =>
-        this.#stringLength === key.length &&
-        this.#stringPrefixLength >= key.length &&
-        key.every((letter, index) => lowerCase(this.#stringPrefix[index] ?? 0) === letter),
+    const isInAnotherCase = (key: Buffer) =>
+      this.#stringLength === key.length &&
+      this.#stringPrefixLength >= key.length &&
+      key.every((letter, index) => lowerCase(this.#stringPrefix[index] ?? 0) === letter);
+    return (
+      this.#recognisedKeys.some(([key]) => isInAnotherCase(key)) ||
+      (this.#positionAt[this.#depth] === positions.conversationItem &&
+        (this.#shape?.settingItemNames ?? []).some(
+          (key) => !this.#stringIs(key) && isInAnotherCase(key),
+        ))
     );
   }
 

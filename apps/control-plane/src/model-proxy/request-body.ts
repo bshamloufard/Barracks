@@ -5,6 +5,7 @@ import {
 } from "@barrack/model-catalogue";
 import { maximumModelIdLength } from "@barrack/protocol";
 import { estimateInputTokens } from "./answer-usage.js";
+import { readItemSettings } from "./item-settings.js";
 import type { JsonBodyScannerLimits, ScannedJsonBody } from "./json-body-scanner.js";
 import { notRelayedRefusal, type ProxyRefusal, proxyRefusals } from "./proxy-refusals.js";
 import {
@@ -12,19 +13,25 @@ import {
   type ReasoningRequest,
   readReasoningRequest,
 } from "./reasoning-request.js";
-import { readTopLevelMembers } from "./request-body-members.js";
+import { maximumReadMemberBytes, readTopLevelMembers } from "./request-body-members.js";
 
 /**
  * How a request's JSON may be shaped. The pinned agent's own requests, for
  * a conversation of a thousand turns with its tools and screenshots in each
  * relayed format, nest at most eleven deep and have eight top-level
  * members; these leave ample room for anything it sends and stop a body
- * built to exhaust the scanner's memory.
+ * built to exhaust the scanner's memory. The settings it gives in
+ * conversation items are an effort or a role, a few dozen bytes each and
+ * a few hundred in all however long the conversation, since each different
+ * one is counted once; with the top-level settings
+ * (`maximumReadMemberBytes` each), no body has more than 16 KiB parsed.
  */
 export const requestBodyShapeLimits: JsonBodyScannerLimits = {
   maximumDepth: 128,
   maximumTopLevelMembers: 256,
   maximumTopLevelKeyBytes: 256,
+  maximumItemSettingBytes: maximumReadMemberBytes,
+  maximumDistinctItemSettingBytes: 4 * 1024,
 };
 
 /**
@@ -62,7 +69,10 @@ export type BodyInspection =
  * agent sends as a setting (all but its conversation, tools and system
  * prompt) is parsed and must hold one of the values the agent gives it
  * (`AgentRequestShape.members`), so no count, tier or model the agent never
- * sends reaches the provider. Refused besides: a body that names no model.
+ * sends reaches the provider; and so must every setting given inside a
+ * conversation item that carries settings (`item-settings.ts`), whose
+ * members the scanner has checked. Refused besides: a body that names no
+ * model.
  */
 export function inspectRequestBody(
   format: ProviderApiFormat,
@@ -84,6 +94,11 @@ export function inspectRequestBody(
       const what = `the value given for \`${name}\``;
       return refused(notRelayedRefusal(what), `it holds ${what}, which the agent never sends`);
     }
+  }
+  const itemSettings = readItemSettings(shape, scanned.itemSettings);
+  if (itemSettings.kind === "refused") {
+    const { what } = itemSettings;
+    return refused(notRelayedRefusal(what), `it holds ${what}, which the agent never sends`);
   }
   const fields = Object.fromEntries(members.values) as RequestFields;
   const model = fields.model;
@@ -108,7 +123,7 @@ export function inspectRequestBody(
       isStreamed,
       maximumOutputTokens: readMaximumOutputTokens(format, fields),
       estimatedInputTokens: estimateInputTokens(bytes.length, scanned),
-      reasoningRequest: readReasoningRequest(fields),
+      reasoningRequest: readReasoningRequest(fields, itemSettings.settings),
     },
   };
 }

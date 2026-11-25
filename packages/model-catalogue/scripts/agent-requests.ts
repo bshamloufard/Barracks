@@ -292,6 +292,9 @@ function buildConversations(model: RuntimeModel): Conversations {
     api: from.api,
     provider: from.provider,
     model: from.id,
+    // The effort Pi noted for an earlier answer of this model's, which it
+    // restates before that answer to the models that take it mid-conversation.
+    ...(from === model ? { providerThinkingLevel: "high" } : {}),
     usage,
     stopReason: "toolUse",
     timestamp: 2,

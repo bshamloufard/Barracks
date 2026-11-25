@@ -276,23 +276,40 @@ describe("what one body costs, whatever its shape", () => {
       `[${"9e20,".repeat(Math.floor(room / 5) - 1)}9e20]`,
   };
 
+  /** Conversations of the largest size, each shaped to cost the scanner's own checks as much as it can. */
+  const hostileConversations: Record<string, (room: number) => string> = {
+    "a setting restated in every item": (room) => {
+      const item = '{"role":"system","content":[],"output_config":{"effort":"high"}}';
+      return Array.from({ length: Math.floor(room / (item.length + 1)) }, () => item).join(",");
+    },
+  };
+
+  /** Where a body is relayed unread (the arguments of a tool call), or the conversation itself. */
+  function hostileBody(shape: string): Buffer {
+    const conversation = hostileConversations[shape];
+    const [head, tail] =
+      conversation === undefined
+        ? [
+            '{"model":"a-model","max_tokens":8,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":',
+            "}]}]}",
+          ]
+        : ['{"model":"a-model","max_tokens":8,"messages":[', "]}"];
+    const room = 32 * mebibyte - head.length - tail.length;
+    return Buffer.from(`${head}${(conversation ?? hostileShapes[shape])?.(room) ?? ""}${tail}`);
+  }
+
   // The delay is measured on the clock, so a busy machine can add to it (a
   // full run beside other work once measured 101 ms against the 100 allowed,
   // where a quiet one measures about 56). A body that truly holds the loop
   // does so every time, so the test may be tried three times: noise passes on
   // another try, and a real hold-up fails all three.
-  it.each(Object.keys(hostileShapes))(
+  it.each([...Object.keys(hostileShapes), ...Object.keys(hostileConversations)])(
     "keeps the event loop free and the heap small for a body of %s at the largest size",
     { timeout: 60_000, retry: 2 },
     async (shape) => {
       await start();
       const { access } = await startThread(ada);
-      // Where a body is relayed unread: the arguments of a tool call.
-      const head =
-        '{"model":"a-model","max_tokens":8,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":';
-      const tail = "}]}]}";
-      const room = 32 * mebibyte - head.length - tail.length;
-      const body = Buffer.from(`${head}${hostileShapes[shape]?.(room) ?? ""}${tail}`);
+      const body = hostileBody(shape);
       const before = process.memoryUsage();
       let peakGrowth = 0;
       const sampling = setInterval(() => {

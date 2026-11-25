@@ -8,6 +8,9 @@
  *
  * - Anthropic's Messages API: `thinking` (`enabled` or `adaptive`, or
  *   `disabled`). https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
+ *   Its `output_config.effort` is taken as asking too: the agent sends it
+ *   only with thinking on, and in a system message mid-conversation it sets
+ *   the effort of the replies after it.
  * - OpenAI's Responses API: `reasoning.effort`, `none` turning it off.
  *   https://platform.openai.com/docs/api-reference/responses/create
  * - Chat Completions, as the agent sends it to each relayed host:
@@ -18,23 +21,38 @@
  *   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
  *   https://docs.together.ai/docs/inference/chat/reasoning
  *   https://inference-docs.cerebras.ai/capabilities/reasoning
- * Only these fields, with the values the agent gives them, reach here
- * (see `agent-request-shapes.json`). A request that says both is taken as
- * `on`, which errs high.
+ *
+ * These are read at the top level and in each conversation item that
+ * carries settings (Anthropic's system message, the Responses API's
+ * `configuration_update`), which can restate them for the rest of the
+ * conversation. Only these fields, with the values the agent gives them in
+ * each place, reach here (see `agent-request-shapes.json`). A request is
+ * `on` if any of them asks, wherever it is, even if another says not to,
+ * which errs high.
  */
 export type ReasoningRequest = "on" | "off" | "unstated";
 
-/** The top-level fields read for it. */
-export const reasoningFields = ["thinking", "reasoning", "reasoning_effort"] as const;
+/** The fields read for it. */
+export const reasoningFields = [
+  "thinking",
+  "reasoning",
+  "reasoning_effort",
+  "output_config",
+] as const;
 
 export type ReasoningFields = Partial<Record<(typeof reasoningFields)[number], unknown>>;
 
-export function readReasoningRequest(fields: ReasoningFields): ReasoningRequest {
-  const signals = [
-    thinkingSignal(fields.thinking),
-    effortSignal(fields.reasoning_effort),
-    reasoningObjectSignal(fields.reasoning),
-  ];
+/** From the top-level fields and those of each conversation item that carries settings. */
+export function readReasoningRequest(
+  fields: ReasoningFields,
+  itemSettings: readonly ReasoningFields[] = [],
+): ReasoningRequest {
+  const signals = [fields, ...itemSettings].flatMap((stated) => [
+    thinkingSignal(stated.thinking),
+    effortSignal(stated.reasoning_effort),
+    reasoningObjectSignal(stated.reasoning),
+    outputConfigSignal(stated.output_config),
+  ]);
   if (signals.includes("on")) {
     return "on";
   }
@@ -60,6 +78,10 @@ function reasoningObjectSignal(reasoning: unknown): ReasoningRequest {
     return "unstated";
   }
   return reasoning.enabled === false || reasoning.effort === "none" ? "off" : "on";
+}
+
+function outputConfigSignal(outputConfig: unknown): ReasoningRequest {
+  return isObject(outputConfig) && outputConfig.effort !== undefined ? "on" : "unstated";
 }
 
 /** The members of these fields' objects that say whether to reason. */

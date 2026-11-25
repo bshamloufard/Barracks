@@ -2,7 +2,9 @@ import {
   type AgentRequestShapes,
   countPlaceholder,
   type FormatRequestShapes,
+  type MemberRule,
   type ObjectType,
+  type SettingItemRule,
   textPlaceholder,
 } from "../src/agent-request-shapes-file.js";
 import type { ProviderApiFormat } from "../src/relayed-providers.js";
@@ -13,8 +15,10 @@ import { readPinnedAgentVersion } from "./read-agent-catalogue.js";
  * Reads what the pinned Pi's requests hold (`agent-requests.ts`) into the
  * allow-list the model proxy relays against (`agent-request-shapes.json`):
  * every top-level member and each value it took, the `type` of every object
- * at each place the format gives a meaning to, and every `anthropic-beta`
- * value. Nothing is added by hand: what Pi does not send is not on it.
+ * at each place the format gives a meaning to, every `anthropic-beta`
+ * value, and every member of the conversation items that carry settings
+ * and each value it took. Nothing is added by hand: what Pi does not send
+ * is not on it.
  *
  * The places are those the proxy's scanner finds as a body arrives
  * (`json-body-scanner.ts` in the control plane), found here from the parsed
@@ -42,7 +46,7 @@ export async function readAgentRequestShapes(): Promise<{
     "openai_responses",
     "openai_chat_completions",
   ] as const) {
-    formats[format] = finishCollection(collected.get(format) ?? emptyCollection());
+    formats[format] = finishCollection(format, collected.get(format) ?? emptyCollection());
   }
   return {
     shapes: { agent: { name: "Pi", version: await readPinnedAgentVersion() }, formats },
@@ -60,14 +64,47 @@ export const scannedMembers: Readonly<Record<ProviderApiFormat, readonly string[
 /** Members whose text is an identifier of the request's own, never a setting: any text will do. */
 const freeTextMembers = new Set(["model", "prompt_cache_key"]);
 
-type TypeLists = Omit<FormatRequestShapes, "betaHeaderValues" | "membersByProvider">;
+/**
+ * The conversation items that carry settings the provider honours, as Pi's
+ * request builders write them (pi-ai's `anthropic-messages.js` and
+ * `openai-responses-shared.js`): Anthropic's system message mid-conversation,
+ * which carries `output_config` (the effort of the replies after it) or a
+ * tool change; the Responses API's `configuration_update`, which carries
+ * `reasoning`; and its `additional_tools`, which declares tools. Their
+ * members are checked as the top level's are, so that a setting Pi never
+ * puts there cannot be given there instead. Every other item, part and tool
+ * Pi sends is checked by its `type` alone (see `docs/decisions.md`).
+ */
+export const settingItemKinds: Readonly<
+  Record<ProviderApiFormat, ReadonlyArray<Pick<SettingItemRule, "kindMember" | "kind">>>
+> = {
+  anthropic_messages: [{ kindMember: "role", kind: "system" }],
+  openai_responses: [
+    { kindMember: "type", kind: "configuration_update" },
+    { kindMember: "type", kind: "additional_tools" },
+  ],
+  openai_chat_completions: [],
+};
+
+/** Members of a setting item the proxy checks as they arrive, by the types of what they hold. */
+const scannedItemMembers = new Set(["content", "output", "tools"]);
+
+type TypeLists = Omit<
+  FormatRequestShapes,
+  "betaHeaderValues" | "membersByProvider" | "settingItems"
+>;
 type Place = keyof TypeLists;
+
+/** By member, the distinct values as JSON. */
+type CollectedMembers = Map<string, Set<string>>;
 
 type CollectedFormat = {
   types: Record<Place, Set<ObjectType>>;
   betaHeaderValues: Set<string>;
-  /** By provider, then member, the distinct values as JSON. */
-  members: Map<string, Map<string, Set<string>>>;
+  /** By provider, then member. */
+  members: Map<string, CollectedMembers>;
+  /** By the index of its kind in `settingItemKinds`, then member. */
+  settingItems: Map<number, CollectedMembers>;
 };
 
 function emptyCollection(): CollectedFormat {
@@ -82,6 +119,7 @@ function emptyCollection(): CollectedFormat {
     },
     betaHeaderValues: new Set(),
     members: new Map(),
+    settingItems: new Map(),
   };
 }
 
@@ -95,11 +133,41 @@ function collectRequest(collected: CollectedFormat, request: AgentRequest): void
   const members = collected.members.get(request.providerId) ?? new Map<string, Set<string>>();
   collected.members.set(request.providerId, members);
   for (const [name, value] of Object.entries(body)) {
-    const values = members.get(name) ?? new Set<string>();
-    members.set(name, values);
-    values.add(JSON.stringify(describeValue(request.format, name, value)));
+    noteValue(members, name, describeValue(request.format, name, value));
   }
   walkTopLevel(request.format, body, (place, type) => collected.types[place].add(type));
+  collectSettingItems(collected, request.format, body);
+}
+
+function collectSettingItems(
+  collected: CollectedFormat,
+  format: ProviderApiFormat,
+  body: Record<string, unknown>,
+): void {
+  const kinds = settingItemKinds[format];
+  for (const item of objectsIn(body[conversationKey(format)])) {
+    const index = kinds.findIndex(({ kindMember, kind }) => item[kindMember] === kind);
+    const kindMember = kinds[index]?.kindMember;
+    if (kindMember === undefined) {
+      continue;
+    }
+    const members = collected.settingItems.get(index) ?? new Map<string, Set<string>>();
+    collected.settingItems.set(index, members);
+    for (const [name, value] of Object.entries(item)) {
+      const isScanned = name === kindMember || scannedItemMembers.has(name);
+      noteValue(members, name, isScanned ? "scanned" : replaceCounts(value));
+    }
+  }
+}
+
+function noteValue(members: CollectedMembers, name: string, value: unknown): void {
+  const values = members.get(name) ?? new Set<string>();
+  members.set(name, values);
+  values.add(JSON.stringify(value));
+}
+
+function conversationKey(format: ProviderApiFormat): string {
+  return format === "openai_responses" ? "input" : "messages";
 }
 
 function describeValue(format: ProviderApiFormat, name: string, value: unknown): unknown {
@@ -136,8 +204,7 @@ export function walkTopLevel(
   body: Record<string, unknown>,
   noteType: NoteType,
 ): void {
-  const conversationKey = format === "openai_responses" ? "input" : "messages";
-  for (const item of objectsIn(body[conversationKey])) {
+  for (const item of objectsIn(body[conversationKey(format)])) {
     walkObject(format, "itemTypes", item, noteType);
   }
   for (const tool of objectsIn(body["tools"])) {
@@ -221,21 +288,13 @@ function objectsIn(value: unknown): Array<Record<string, unknown>> {
     : [];
 }
 
-function finishCollection(collected: CollectedFormat): FormatRequestShapes {
+function finishCollection(
+  format: ProviderApiFormat,
+  collected: CollectedFormat,
+): FormatRequestShapes {
   const membersByProvider: FormatRequestShapes["membersByProvider"] = {};
   for (const providerId of [...collected.members.keys()].sort()) {
-    const members = collected.members.get(providerId) ?? new Map();
-    membersByProvider[providerId] = Object.fromEntries(
-      [...members.keys()].sort().map((name) => {
-        const values = [...(members.get(name) ?? [])].sort();
-        return [
-          name,
-          values.length === 1 && values[0] === '"scanned"'
-            ? "scanned"
-            : values.map((value) => JSON.parse(value)),
-        ];
-      }),
-    );
+    membersByProvider[providerId] = finishMembers(collected.members.get(providerId));
   }
   return {
     itemTypes: sortedTypes(collected.types.itemTypes),
@@ -246,7 +305,26 @@ function finishCollection(collected: CollectedFormat): FormatRequestShapes {
     cacheControlTypes: sortedTypes(collected.types.cacheControlTypes),
     betaHeaderValues: [...collected.betaHeaderValues].sort(),
     membersByProvider,
+    settingItems: settingItemKinds[format].map((kind, index) => ({
+      ...kind,
+      members: finishMembers(collected.settingItems.get(index)),
+    })),
   };
+}
+
+function finishMembers(members: CollectedMembers | undefined): Record<string, MemberRule> {
+  const collected = members ?? new Map<string, Set<string>>();
+  return Object.fromEntries(
+    [...collected.keys()].sort().map((name) => {
+      const values = [...(collected.get(name) ?? [])].sort();
+      return [
+        name,
+        values.length === 1 && values[0] === '"scanned"'
+          ? "scanned"
+          : values.map((value) => JSON.parse(value)),
+      ];
+    }),
+  );
 }
 
 /** `null` (no `type`) first, then the types in order. */

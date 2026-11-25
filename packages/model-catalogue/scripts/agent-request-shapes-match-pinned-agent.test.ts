@@ -69,6 +69,10 @@ describe("the shapes of the agent's requests the proxy relays", () => {
           ...(shape?.toolChangeTypes ?? []),
           ...(shape?.cacheControlTypes ?? []),
           ...(shape?.betaHeaderValues ?? []),
+          ...(shape?.settingItems ?? []).flatMap((item) => [
+            item.kind,
+            ...Object.keys(item.members),
+          ]),
         ]) {
           if (name !== null && !replayedFromProviderAnswers.has(name)) {
             named.add(name);

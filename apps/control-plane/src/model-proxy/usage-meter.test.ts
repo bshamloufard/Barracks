@@ -549,6 +549,32 @@ describe("an answer cut short after reasoning it did not show", () => {
     expect(reasoningOf(chat, "groq", {})).toBe("unstated");
   });
 
+  it("reads reasoning asked for inside a conversation item as asked, whatever the top level says", () => {
+    const reasoningOf = (format: Parameters<typeof inspectWholeBody>[0], body: object) => {
+      const inspection = inspectWholeBody(format, { model: "m", ...body });
+      return inspection.kind === "relayable" ? inspection.body.reasoningRequest : inspection.kind;
+    };
+    const update = (effort: string) => ({ type: "configuration_update", reasoning: { effort } });
+    const effortMessage = { role: "system", content: [], output_config: { effort: "max" } };
+
+    expect(
+      reasoningOf("openai_responses", { reasoning: { effort: "none" }, input: [update("xhigh")] }),
+    ).toBe("on");
+    expect(reasoningOf("openai_responses", { input: [update("low")] })).toBe("on");
+    expect(
+      reasoningOf("anthropic_messages", {
+        thinking: { type: "disabled" },
+        messages: [{ role: "user", content: "Hi" }, effortMessage],
+      }),
+    ).toBe("on");
+    expect(
+      reasoningOf("anthropic_messages", {
+        thinking: { type: "disabled" },
+        messages: [{ role: "system", content: [{ type: "text", text: "Tools changed." }] }],
+      }),
+    ).toBe("off");
+  });
+
   it("takes a model to reason unless told not to, but for Anthropic's, which reason only when asked", () => {
     expect(mayReasonUnseen("anthropic", "claude-haiku-4-5", "unstated")).toBe(false);
     expect(mayReasonUnseen("anthropic", "claude-haiku-4-5", "on")).toBe(true);
