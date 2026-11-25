@@ -90,6 +90,54 @@ describe("signing in", () => {
     });
   });
 
+  it("takes the code of an email the user already has, saying none was just sent", () => {
+    const refused = apply([
+      signedOut,
+      { type: "email_requested", emailAddress: "ada@example.com" },
+      { type: "attempt_failed", errorMessage: "No email was sent" },
+    ]);
+    const enteringCode = reduceSignInState(refused, {
+      type: "code_entry_chosen",
+      emailAddress: "ada@example.com",
+    });
+    const checkingCode = reduceSignInState(enteringCode, { type: "code_submitted" });
+
+    expect(enteringCode).toEqual({
+      name: "signed_out",
+      step: "enter_code",
+      emailAddress: "ada@example.com",
+      isBusy: false,
+      errorMessage: undefined,
+    });
+    expect(checkingCode).toMatchObject({ step: "enter_code", isBusy: true });
+    expect(reduceSignInState(checkingCode, signedInAsAda)).toEqual({
+      name: "signed_in",
+      emailAddress: "ada@example.com",
+    });
+  });
+
+  it("says an email is on its way once one is sent from the code step", () => {
+    const state = apply([
+      signedOut,
+      { type: "code_entry_chosen", emailAddress: "ada@example.com" },
+      { type: "email_requested", emailAddress: "ada@example.com" },
+      { type: "email_sent" },
+    ]);
+
+    expect(state).toMatchObject({ step: "check_email", emailAddress: "ada@example.com" });
+  });
+
+  it("leaves the code step alone while an email is being asked for, whose answer decides", () => {
+    const sending = apply([
+      signedOut,
+      { type: "email_requested", emailAddress: "ada@example.com" },
+    ]);
+
+    expect(
+      reduceSignInState(sending, { type: "code_entry_chosen", emailAddress: "ada@example.com" }),
+    ).toBe(sending);
+  });
+
   it("starts again from the email address when the user chooses a different one", () => {
     const state = apply([
       signedOut,

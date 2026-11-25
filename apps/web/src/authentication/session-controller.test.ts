@@ -107,6 +107,23 @@ describe("the page's session", () => {
     expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
   });
 
+  it("signs in with the code of an email the user already has, sending none", async () => {
+    const service = new FakeSignInService(undefined);
+    const session = new SessionController(service);
+    session.start();
+    await settle();
+
+    session.enterCodeFromEarlierEmail("ada@example.com");
+    const enteringCode = session.getState();
+    session.submitCode("12345678");
+    await settle();
+
+    expect(enteringCode).toMatchObject({ step: "enter_code", emailAddress: "ada@example.com" });
+    expect(service.sentEmails).toEqual([]);
+    expect(service.verifiedCodes).toEqual(["12345678"]);
+    expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
+  });
+
   it.each(["123456", "12345678", "1234567890"])(
     "accepts a code of %s, as long as Supabase may send",
     async (code) => {

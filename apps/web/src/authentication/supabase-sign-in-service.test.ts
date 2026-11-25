@@ -17,6 +17,7 @@ const publishableKey = "sb_publishable_test";
 
 let sent: SentRequest[];
 let answerToken: () => Response;
+let answerEmailRequest: () => Response;
 
 const issuedSession = {
   access_token: "access-token-1",
@@ -36,13 +37,14 @@ const issuedSession = {
 beforeEach(() => {
   sent = [];
   answerToken = () => Response.json(issuedSession);
+  answerEmailRequest = () => Response.json({});
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       sent.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
       if (url.startsWith(`${supabaseUrl}/auth/v1/otp`)) {
-        return Response.json({});
+        return answerEmailRequest();
       }
       if (url === `${supabaseUrl}/auth/v1/token?grant_type=pkce`) {
         return answerToken();
@@ -55,6 +57,24 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+/** Supabase's refusal of an email, as its API answers it. */
+function refuseEmail(message: string): () => Response {
+  return () =>
+    Response.json(
+      { code: 429, error_code: "over_email_send_rate_limit", msg: message },
+      { status: 429 },
+    );
+}
+
+/** The PKCE challenge of a verifier (RFC 7636, S256), to tell which email a verifier belongs to. */
+async function challengeOf(verifier: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(verifier)));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
 
 function serviceAt(pageAddress = "https://barrack.example.com/"): SupabaseSignInService {
   return new SupabaseSignInService(supabaseUrl, publishableKey, pageAddress);
@@ -138,5 +158,44 @@ describe("signing in with Supabase by email", () => {
     await expect(service.finishSignInWithLink("second")).rejects.toThrow(
       "not asked for in this browser",
     );
+  });
+
+  it("says the project may send no more for now when Supabase's sender has reached its limit", async () => {
+    const service = serviceAt();
+    answerEmailRequest = refuseEmail("email rate limit exceeded");
+
+    await expect(service.sendSignInEmail("ada@example.com")).rejects.toThrow(
+      "No email was sent: this installation's email sender has sent as many emails as it may for now.",
+    );
+  });
+
+  it("says how long to wait when Supabase refuses another email to the address so soon", async () => {
+    const service = serviceAt();
+    answerEmailRequest = refuseEmail(
+      "For security purposes, you can only request this after 37 seconds.",
+    );
+
+    await expect(service.sendSignInEmail("ada@example.com")).rejects.toThrow(
+      "Try again in 37 seconds",
+    );
+  });
+
+  it("keeps the link of the email asked for before working when the next is refused", async () => {
+    const service = serviceAt();
+    await service.sendSignInEmail("ada@example.com");
+    const earlierChallenge = sent[0]?.body["code_challenge"];
+    answerEmailRequest = refuseEmail("email rate limit exceeded");
+    await service.sendSignInEmail("ada@example.com").catch(() => undefined);
+
+    await service.finishSignInWithLink("auth-code-of-the-earlier-email");
+
+    expect(sent.map(({ url }) => new URL(url).pathname)).toEqual([
+      "/auth/v1/otp",
+      "/auth/v1/otp",
+      "/auth/v1/token",
+    ]);
+    expect(sent[1]?.body["code_challenge"]).not.toBe(earlierChallenge);
+    expect(await challengeOf(sent[2]?.body["code_verifier"])).toBe(earlierChallenge);
+    expect(await service.restoreSession()).toMatchObject({ status: "signed_in" });
   });
 });

@@ -1,15 +1,20 @@
 /**
  * Where the page is in signing the user in, changed only by this pure
  * reducer: signed out (asking for an email address, then saying the email
- * is on its way, where a code from it can be typed), signed in, or signed
- * in but refused by this installation.
+ * is on its way, where a code from it can be typed, or taking the code of
+ * an email the user already has, with none sent), signed in, or signed in
+ * but refused by this installation.
  */
 export type SignInState =
   | { name: "restoring" }
   | { name: "unavailable"; reason: string }
   | {
       name: "signed_out";
-      step: "email" | "check_email";
+      /**
+       * `check_email`: an email was sent just now. `enter_code`: none was;
+       * the user said they already have one, for when sending is refused.
+       */
+      step: "email" | "check_email" | "enter_code";
       emailAddress: string;
       isBusy: boolean;
       errorMessage: string | undefined;
@@ -22,6 +27,8 @@ export type SignInAction =
   | { type: "session_changed"; emailAddress: string | undefined; isSignedIn: boolean }
   | { type: "email_requested"; emailAddress: string }
   | { type: "email_sent" }
+  /** The user already has an email for this address, and will enter its code. */
+  | { type: "code_entry_chosen"; emailAddress: string }
   | { type: "code_submitted" }
   | { type: "attempt_failed"; errorMessage: string }
   /** A sign-in link the page opened from did not sign the user in. */
@@ -85,6 +92,16 @@ function applySignInStep(state: SignedOutState, action: SignInAction): SignInSta
       return { ...state, emailAddress: action.emailAddress, isBusy: true, errorMessage: undefined };
     case "email_sent":
       return { ...state, step: "check_email", isBusy: false };
+    case "code_entry_chosen":
+      // Not while an email is being asked for: its answer decides the step.
+      return state.isBusy
+        ? state
+        : {
+            ...state,
+            step: "enter_code",
+            emailAddress: action.emailAddress,
+            errorMessage: undefined,
+          };
     case "code_submitted":
       return { ...state, isBusy: true, errorMessage: undefined };
     case "attempt_failed":

@@ -7,6 +7,8 @@ import {
   type Session,
   type SupabaseClient,
 } from "@supabase/supabase-js";
+import { RevertibleStorage } from "./revertible-storage";
+import { describeSignInEmailFailure } from "./sign-in-email-failure";
 import {
   describeSignInLinkFailure,
   linkFailureOfErrorCode,
@@ -46,6 +48,7 @@ import { interpretSessionAnswer } from "./supabase-session-answer";
 export class SupabaseSignInService implements SignInService {
   readonly hasSignIn = true;
   readonly #client: SupabaseClient;
+  readonly #storage = new RevertibleStorage();
   readonly #linkTarget: string;
 
   /**
@@ -62,6 +65,7 @@ export class SupabaseSignInService implements SignInService {
         flowType: "pkce",
         autoRefreshToken: true,
         persistSession: true,
+        storage: this.#storage,
         // The page reads a link's return itself (`takeSignInReturn`).
         // supabase-js's own detection (`_initialize` in its GoTrueClient)
         // would take any `?code=` for Supabase's while a verifier is stored,
@@ -95,15 +99,22 @@ export class SupabaseSignInService implements SignInService {
   /**
    * Supabase sends the link to the redirect only if it is the project's
    * Site URL's origin or on its Redirect URLs, and to the Site URL
-   * otherwise, so both must name this installation.
+   * otherwise, so both must name this installation. A refused request
+   * leaves this browser's storage as it was, so the link of an email asked
+   * for before still works (see `RevertibleStorage`).
    */
   async sendSignInEmail(emailAddress: string): Promise<void> {
-    const { error } = await this.#client.auth.signInWithOtp({
-      email: emailAddress,
-      options: { emailRedirectTo: this.#linkTarget },
-    });
+    const { error } = await this.#storage.revertUnless(
+      () =>
+        this.#client.auth.signInWithOtp({
+          email: emailAddress,
+          options: { emailRedirectTo: this.#linkTarget },
+        }),
+      (answer) => answer.error === null,
+    );
     if (error !== null) {
-      throw new Error(`Could not send the email: ${error.message}`);
+      const errorCode = isAuthApiError(error) ? error.code : undefined;
+      throw new Error(describeSignInEmailFailure(errorCode, error.message));
     }
   }
 

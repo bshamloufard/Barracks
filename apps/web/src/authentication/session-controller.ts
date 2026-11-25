@@ -100,6 +100,14 @@ export class SessionController {
     );
   }
 
+  /**
+   * Goes to the code step for an email the user already has, sending none:
+   * the way in when Supabase will send no more for now.
+   */
+  enterCodeFromEarlierEmail(emailAddress: string): void {
+    this.#dispatch({ type: "code_entry_chosen", emailAddress });
+  }
+
   /** On success the service reports the new session, which signs the page in. */
   submitCode(code: string): void {
     const state = this.#state;
