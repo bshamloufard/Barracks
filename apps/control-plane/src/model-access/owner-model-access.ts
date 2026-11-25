@@ -6,6 +6,7 @@ import {
   parseModelReference,
   type ReportedModelUsage,
 } from "@barrack/protocol";
+import type { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
 import type { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
 import { describeReachedCap, type ModelUsage } from "../model-usage/model-usage.js";
 import type {
@@ -26,6 +27,8 @@ export const unrecognisedModelId = "(unrecognised model)";
 export type OwnerModelAccessOptions = {
   threadStore: ThreadStore;
   credentials: ModelCredentials;
+  /** Whether the owner's OpenAI models run on their ChatGPT plan, and whether it is connected. */
+  chatGptPlan: ChatGptPlanAccess;
   /** The agent cannot run without a model (Pi); the fake agent can. */
   isModelRequired: boolean;
   proxyTokens: ModelProxyTokens;
@@ -43,7 +46,9 @@ export type OwnerModelAccessOptions = {
  * For a provider whose traffic the control plane relays, that is not the
  * key but a token for the model proxy, minted once per supervisor
  * connection and provider, with the proxy's address for this thread and
- * provider; the key stays here. For any other, it is the key.
+ * provider, and what the proxy spends: the owner's key, or for OpenAI their
+ * ChatGPT plan if they chose it; the key, and the plan's tokens, stay here.
+ * For any other provider, it is the key.
  *
  * When the credential is sealed under a key this control plane does not
  * hold, `describe` throws rather than describe no credential: the relay
@@ -145,14 +150,20 @@ export class OwnerModelAccess implements ThreadModelAccess {
     return key === undefined ? null : { kind: "api_key", ...key };
   }
 
-  /** The key itself is not opened: the sandbox never receives it. */
+  /** The key itself is not opened, nor the plan's tokens read: the sandbox never receives them. */
   async #describeRelayedCredential(
     threadId: string,
     ownerUserId: string,
     providerId: string,
     connection: ModelAccessConnection,
   ): Promise<ModelCredential | null> {
-    if (!(await this.#options.credentials.has(ownerUserId, providerId))) {
+    const { chatGptPlan, credentials } = this.#options;
+    const access = await chatGptPlan.findAccess(ownerUserId, providerId);
+    const isUsable =
+      access === "chatgpt_plan"
+        ? await chatGptPlan.isConnected(ownerUserId)
+        : await credentials.has(ownerUserId, providerId);
+    if (!isUsable) {
       return null;
     }
     // A switch retires other providers' tokens, so one handed out before
@@ -169,7 +180,7 @@ export class OwnerModelAccess implements ThreadModelAccess {
       kind: "proxy_token",
       secret: token,
       baseUrl: `${this.#options.controlPlaneUrlForSandboxes}${buildModelProxyBasePath(threadId, providerId)}`,
-      access: "api_key",
+      access,
     };
   }
 }

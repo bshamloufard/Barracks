@@ -11,6 +11,11 @@ import {
   readAuthenticationConfiguration,
 } from "./authentication/authentication-configuration.js";
 import {
+  type ChatGptPlanSettings,
+  chatGptPlanVariableNames,
+  readChatGptPlanSettings,
+} from "./chatgpt-plan/chatgpt-plan-settings.js";
+import {
   type DatabaseConfiguration,
   databaseEnvironmentShape,
   describeProblems,
@@ -195,6 +200,7 @@ export const controlPlaneVariableNames = [
   ...Object.keys(environmentSchema.shape),
   ...authenticationVariableNames,
   ...githubVariableNames,
+  ...chatGptPlanVariableNames,
 ];
 
 export type LogLevel = (typeof logLevels)[number];
@@ -232,6 +238,8 @@ export type ControlPlaneConfiguration = {
   modelProxyUpstreamOrigin: string | undefined;
   /** How many bytes of request bodies the model proxy holds at once, past which it answers busy. */
   modelProxyRequestBodiesHeldInBytes: number;
+  /** Whether users may run threads on their ChatGPT plan, and where OpenAI's sign-in is. */
+  chatGptPlan: ChatGptPlanSettings;
 };
 
 export type ConfigurationResult =
@@ -244,13 +252,24 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
   const authentication = readAuthenticationConfiguration(environment);
   const sandboxProvider = readSandboxProviderConfiguration(environment);
   const github = readGithubSettings(environment);
+  const chatGptPlan = authentication.ok
+    ? readChatGptPlanSettings(environment, authentication.configuration)
+    : undefined;
   const problems = [
     ...(validation.success ? [] : describeProblems(validation.error)),
     ...(authentication.ok ? [] : authentication.problems),
     ...(sandboxProvider.ok ? [] : sandboxProvider.problems),
     ...(github.ok ? [] : github.problems),
+    ...(chatGptPlan === undefined || chatGptPlan.ok ? [] : chatGptPlan.problems),
   ];
-  if (!validation.success || !authentication.ok || !sandboxProvider.ok || !github.ok) {
+  if (
+    !validation.success ||
+    !authentication.ok ||
+    !sandboxProvider.ok ||
+    !github.ok ||
+    chatGptPlan === undefined ||
+    !chatGptPlan.ok
+  ) {
     return { ok: false, problems };
   }
   const settings = validation.data;
@@ -270,6 +289,7 @@ export function readConfiguration(environment: NodeJS.ProcessEnv): Configuration
       authentication.configuration,
       sandboxProvider.configuration,
       github.settings,
+      chatGptPlan.settings,
       environment,
     ),
   };
@@ -280,6 +300,7 @@ function toConfiguration(
   authentication: AuthenticationConfiguration,
   sandboxProvider: SandboxProviderConfiguration,
   github: GithubSettings,
+  chatGptPlan: ChatGptPlanSettings,
   environment: NodeJS.ProcessEnv,
 ): ControlPlaneConfiguration {
   return {
@@ -316,6 +337,7 @@ function toConfiguration(
     modelProxyUpstreamOrigin: settings.BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN,
     modelProxyRequestBodiesHeldInBytes:
       settings.BARRACK_MODEL_PROXY_REQUEST_BODIES_MEBIBYTES * bytesPerMebibyte,
+    chatGptPlan,
   };
 }
 

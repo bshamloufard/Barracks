@@ -1,6 +1,10 @@
 import { findModelLimits } from "@barrack/model-catalogue";
-import { parseModelReference } from "@barrack/protocol";
+import { type ProviderAccess, parseModelReference } from "@barrack/protocol";
 import type { OwnerAdmission } from "../authentication/owner-admission.js";
+import {
+  type ChatGptPlanAccess,
+  PlanRenewalUnavailableError,
+} from "../chatgpt-plan/chatgpt-plan-access.js";
 import { UnreadableCredentialError } from "../model-access/credential-keyring.js";
 import type { ModelCredentials } from "../model-access/model-credentials.js";
 import { describeReachedCap, type ModelUsage } from "../model-usage/model-usage.js";
@@ -34,13 +38,20 @@ export type ModelProxyAuthorizationOptions = {
   credentials: ModelCredentials;
   ownerAdmission: OwnerAdmission;
   usage: ModelUsage;
+  chatGptPlan: ChatGptPlanAccess;
 };
 
-/** The owner may spend their key on the thread's requests: whose key, the key, and the thread's model. */
+/**
+ * The owner may spend their access on the thread's requests: whose, what
+ * (their API key, or for OpenAI possibly their ChatGPT plan), the secret
+ * the provider is sent for it, and the thread's model.
+ */
 export type OwnerAuthorization = {
   kind: "allowed";
   ownerUserId: string;
-  ownerKey: string;
+  access: ProviderAccess;
+  /** The owner's API key, or their plan's current access token. */
+  ownerCredential: string;
   threadModel: string | undefined;
 };
 
@@ -59,13 +70,16 @@ export type ProxyAuthorization = OwnerAuthorization | ProxyRefused;
  * thread's sandbox recorded running; the provider the thread's model's, or
  * that of the model before a switch made while the run still open began
  * (see `ModelSwitchAllowances`); its owner still admitted; the owner's own
- * key for that provider; and the owner's usage cap not reached. Last, once
+ * key for that provider, or, where they chose it for OpenAI, a current
+ * access token for their ChatGPT plan; and the owner's usage cap not
+ * reached (plan usage counts towards it like any other). Last, once
  * the body is read (`checkRequestedModels`), the model it names the
  * thread's own or that one before a switch.
  *
- * The owner and the key come from the thread named in the request path,
- * which is the thread the token was minted for, so a token can only ever
- * spend its own thread's owner's key: there is no way to name a user.
+ * The owner and the key or plan come from the thread named in the request
+ * path, which is the thread the token was minted for, so a token can only
+ * ever spend its own thread's owner's key or plan: there is no way to name
+ * a user.
  */
 export class ModelProxyAuthorization {
   readonly #options: ModelProxyAuthorizationOptions;
@@ -126,15 +140,36 @@ export class ModelProxyAuthorization {
     if (!(await this.#options.ownerAdmission.isStillAdmitted(ownerUserId))) {
       return refused(proxyRefusals.ownerNotAdmitted, "the owner is not admitted");
     }
-    const ownerKey = await this.#readOwnerKey(ownerUserId, providerId);
-    if (ownerKey === undefined) {
-      return refused(credentialMissingRefusal(providerId), "the owner has no key for it");
+    const access = await this.#options.chatGptPlan.findAccess(ownerUserId, providerId);
+    const credential =
+      access === "chatgpt_plan"
+        ? await this.#readPlanToken(ownerUserId)
+        : await this.#readOwnerKey(ownerUserId, providerId);
+    if (credential.kind === "refused") {
+      return credential;
     }
     const cap = await this.#options.usage.checkCap(ownerUserId);
     if (cap.isReached) {
       return refused(usageCapRefusal(describeReachedCap(cap)), "the owner's usage cap is reached");
     }
-    return { kind: "allowed", ownerUserId, ownerKey, threadModel: thread.model };
+    return {
+      kind: "allowed",
+      ownerUserId,
+      access,
+      ownerCredential: credential.secret,
+      threadModel: thread.model,
+    };
+  }
+
+  /**
+   * The provider refused the owner's ChatGPT plan's access token as no
+   * longer valid: the sign-in is renewed at once, or forgotten if OpenAI
+   * will not renew it, so the agent's next request is decided afresh.
+   */
+  async noteCredentialRefused(owner: OwnerAuthorization): Promise<void> {
+    if (owner.access === "chatgpt_plan") {
+      await this.#options.chatGptPlan.renewAfterRefusal(owner.ownerUserId, owner.ownerCredential);
+    }
   }
 
   /**
@@ -207,13 +242,41 @@ export class ModelProxyAuthorization {
   }
 
   /**
+   * A plan's access token, renewed first if it is due; a plan no longer
+   * connected is refused for good, one OpenAI cannot renew just now as
+   * worth retrying.
+   */
+  async #readPlanToken(ownerUserId: string): Promise<OwnerCredential> {
+    try {
+      const token = await this.#options.chatGptPlan.findAccessToken(ownerUserId);
+      return token.kind === "token"
+        ? { kind: "found", secret: token.accessToken }
+        : refused(
+            proxyRefusals.chatGptPlanNotConnected,
+            "the owner's ChatGPT plan is not connected",
+          );
+    } catch (error) {
+      if (error instanceof PlanRenewalUnavailableError) {
+        return refused(
+          proxyRefusals.chatGptPlanRenewalUnavailable,
+          "OpenAI could not renew the owner's ChatGPT plan just now",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * A key sealed under a key this instance does not hold (another instance
    * rotated it, during a redeploy's overlap) is a reason to try again, not
    * a missing key: the agent retries, and normally reaches the other.
    */
-  async #readOwnerKey(ownerUserId: string, providerId: string): Promise<string | undefined> {
+  async #readOwnerKey(ownerUserId: string, providerId: string): Promise<OwnerCredential> {
     try {
-      return (await this.#options.credentials.read(ownerUserId, providerId))?.secret;
+      const key = (await this.#options.credentials.read(ownerUserId, providerId))?.secret;
+      return key === undefined
+        ? refused(credentialMissingRefusal(providerId), "the owner has no key for it")
+        : { kind: "found", secret: key };
     } catch (error) {
       if (error instanceof UnreadableCredentialError) {
         throw new Error("The owner's key is sealed under a key this instance does not hold", {
@@ -244,6 +307,8 @@ function modelIdFor(model: string | undefined, providerId: string): string | und
   const reference = parseModelReference(model);
   return reference.providerId === providerId ? reference.modelId : undefined;
 }
+
+type OwnerCredential = { kind: "found"; secret: string } | ProxyRefused;
 
 function refused(refusal: ProxyRefusal, reason: string): ProxyRefused {
   return { kind: "refused", refusal, reason };

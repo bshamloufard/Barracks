@@ -7,6 +7,7 @@ import {
   modelProviderIdSchema,
   parseModelReference,
 } from "@barrack/protocol";
+import type { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
 import type { Logger } from "../logger.js";
 import { UnreadableCredentialError } from "./credential-keyring.js";
 import type {
@@ -28,11 +29,19 @@ export type SaveCredentialOutcome =
  */
 export class ModelCredentials {
   readonly #store: ModelCredentialStore;
+  readonly #chatGptPlan: ChatGptPlanAccess;
   readonly #clock: () => Date;
   readonly #logger: Logger;
 
-  constructor(options: { store: ModelCredentialStore; clock?: () => Date; logger: Logger }) {
+  /** `chatGptPlan` says when a user's OpenAI models run on their plan rather than a key. */
+  constructor(options: {
+    store: ModelCredentialStore;
+    chatGptPlan: ChatGptPlanAccess;
+    clock?: () => Date;
+    logger: Logger;
+  }) {
     this.#store = options.store;
+    this.#chatGptPlan = options.chatGptPlan;
     this.#clock = options.clock ?? (() => new Date());
     this.#logger = options.logger;
   }
@@ -108,7 +117,9 @@ export class ModelCredentials {
 
   /**
    * Why the owner cannot run `model`, for the user: which key to add and
-   * where, ending with what to do then. Undefined when they have the key.
+   * where, or, for an OpenAI model they chose to run on their ChatGPT plan,
+   * that the plan is not connected; ending with what to do then. Undefined
+   * when they can.
    */
   async describeMissingCredential(
     ownerUserId: string,
@@ -116,6 +127,11 @@ export class ModelCredentials {
     nextStep: string,
   ): Promise<string | undefined> {
     const { providerId } = parseModelReference(model);
+    if ((await this.#chatGptPlan.findAccess(ownerUserId, providerId)) === "chatgpt_plan") {
+      return (await this.#chatGptPlan.isConnected(ownerUserId))
+        ? undefined
+        : `${model} runs on your ChatGPT plan, which is not connected now. Connect it again in Settings, under ChatGPT plan, or switch OpenAI to your API key there, then ${nextStep}.`;
+    }
     if (await this.#store.has(ownerUserId, providerId)) {
       return undefined;
     }

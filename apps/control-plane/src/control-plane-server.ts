@@ -6,6 +6,7 @@ import type { Authenticator } from "./authentication/authenticator.js";
 import type { ControlPlaneConfiguration } from "./configuration.js";
 import { type DesktopFlowLimits, defaultDesktopFlowLimits } from "./desktop/desktop-splice.js";
 import type { ThreadDesktops } from "./desktop/thread-desktops.js";
+import type { ChatGptPlanRoutesDependencies } from "./http/chatgpt-plan-routes.js";
 import { createHttpApp } from "./http/http-app.js";
 import { routeHttpRequest } from "./http/route-http-request.js";
 import type { ThreadModelAccessDependencies } from "./http/threads-routes.js";
@@ -64,6 +65,8 @@ export type ControlPlaneServerOptions = {
   modelAccess: ThreadModelAccessDependencies;
   modelProxy: ModelProxy;
   modelUsage: ModelUsage;
+  /** Users' ChatGPT plans; changes to them are passed on through `modelAccess.changes`. */
+  chatGptPlan: Omit<ChatGptPlanRoutesDependencies, "changes" | "logger">;
   publisher: ThreadPublisher;
   authenticator: Authenticator;
   /** What clients are told about signing in. */
@@ -126,6 +129,7 @@ export async function startControlPlaneServer(
       logger,
     },
     modelUsage: { usage: options.modelUsage, threadStore, logger },
+    chatGptPlan: { ...options.chatGptPlan, changes: options.modelAccess.changes, logger },
     webClientDirectory: configuration.webClientDirectory,
     acceptOnlyLoopbackHosts,
   });

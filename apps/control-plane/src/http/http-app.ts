@@ -8,6 +8,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Authenticator } from "../authentication/authenticator.js";
 import { respondWithApiError } from "./api-error.js";
+import { addChatGptPlanRoutes, type ChatGptPlanRoutesDependencies } from "./chatgpt-plan-routes.js";
 import { addGithubRoutes, type GithubRoutesDependencies } from "./github-routes.js";
 import { addModelAccessRoutes } from "./model-access-routes.js";
 import { addModelUsageRoutes, type ModelUsageRoutesDependencies } from "./model-usage-routes.js";
@@ -25,6 +26,7 @@ export type HttpAppOptions = {
   github: GithubRoutesDependencies;
   publication: PublicationRoutesDependencies;
   modelUsage: ModelUsageRoutesDependencies;
+  chatGptPlan: ChatGptPlanRoutesDependencies;
   /** Where the built web client is; when set, it is served from `/`. */
   webClientDirectory: string | undefined;
   /** Answer only requests addressed to loopback, as development mode must. */
@@ -68,6 +70,7 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
   addThreadsRoutes(app, options.threads);
   addModelAccessRoutes(app, { ...options.threads.modelAccess, logger: options.threads.logger });
   addModelUsageRoutes(app, options.modelUsage);
+  addChatGptPlanRoutes(app, options.chatGptPlan);
   addGithubRoutes(app, options.github);
   addPublicationRoutes(app, options.publication);
   app.all("/api/*", (context) =>

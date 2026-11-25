@@ -15,6 +15,12 @@ import {
 } from "../authentication/development-single-user.js";
 import { SupabaseAccessTokenVerifier } from "../authentication/supabase-access-token-verifier.js";
 import type { UserAdmission } from "../authentication/user-admission.js";
+import { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
+import { ChatGptPlanModels } from "../chatgpt-plan/chatgpt-plan-models.js";
+import type { ChatGptPlanStore } from "../chatgpt-plan/chatgpt-plan-store.js";
+import { ChatGptSignIn } from "../chatgpt-plan/chatgpt-sign-in.js";
+import { ChatGptSignInClient } from "../chatgpt-plan/chatgpt-sign-in-client.js";
+import { InMemoryChatGptPlanStore } from "../chatgpt-plan/in-memory-chatgpt-plan-store.js";
 import { startControlPlaneServer } from "../control-plane-server.js";
 import type { GithubConnectionStore } from "../github/github-connection-store.js";
 import type { GithubSettings } from "../github/github-settings.js";
@@ -129,6 +135,14 @@ export type TestControlPlaneOptions = {
   modelUsageCap?: Partial<ModelUsageCapSettings>;
   /** Where the model proxy sends every provider's requests; the providers' own hosts by default. */
   modelProxyUpstreamOrigin?: string;
+  /**
+   * Not offered by default. `signInIssuer` offers ChatGPT plans, signing in
+   * at that stand-in for OpenAI's sign-in; their models are listed where
+   * the model proxy sends OpenAI's requests.
+   */
+  chatGptPlan?: { signInIssuer: string };
+  /** Defaults to an in-memory store, sealing under a key of its own. */
+  chatGptPlanStore?: ChatGptPlanStore;
   /** Replaces some of the proxy's default limits. */
   modelProxyLimits?: Partial<ModelProxyLimits>;
   /** Whether threads must have a model, as with the real agent; not by default, as with the fake one. */
@@ -180,6 +194,7 @@ export class TestControlPlane {
   readonly threadServices: ThreadServices;
   readonly repositoryServices: RepositoryServices;
   readonly modelCredentials: ModelCredentials;
+  readonly chatGptPlan: ChatGptPlanAccess;
   readonly modelUsage: ModelUsage;
   readonly modelProxyTokens: ModelProxyTokens;
   /** The model proxy itself, whose activity a test can read. */
@@ -197,6 +212,7 @@ export class TestControlPlane {
     threadServices: ThreadServices;
     repositoryServices: RepositoryServices;
     modelCredentials: ModelCredentials;
+    chatGptPlan: ChatGptPlanAccess;
     modelUsage: ModelUsage;
     modelProxyTokens: ModelProxyTokens;
     modelProxy: ModelProxy;
@@ -211,6 +227,7 @@ export class TestControlPlane {
     this.threadServices = fields.threadServices;
     this.repositoryServices = fields.repositoryServices;
     this.modelCredentials = fields.modelCredentials;
+    this.chatGptPlan = fields.chatGptPlan;
     this.modelUsage = fields.modelUsage;
     this.modelProxyTokens = fields.modelProxyTokens;
     this.modelProxy = fields.modelProxy;
@@ -239,10 +256,26 @@ export class TestControlPlane {
         : { maximumBundleSizeInBytes: options.maximumBundleSizeInBytes }),
       ...(options.gitChildLimits === undefined ? {} : { gitChildLimits: options.gitChildLimits }),
     });
+    const keyring = new CredentialKeyring(randomBytes(32));
+    const chatGptPlanStore = options.chatGptPlanStore ?? new InMemoryChatGptPlanStore(keyring);
+    const signInClient =
+      options.chatGptPlan === undefined
+        ? undefined
+        : new ChatGptSignInClient(options.chatGptPlan.signInIssuer);
+    const chatGptPlan = new ChatGptPlanAccess({
+      settings:
+        options.chatGptPlan === undefined
+          ? { isOffered: false }
+          : { isOffered: true, issuer: options.chatGptPlan.signInIssuer },
+      store: chatGptPlanStore,
+      client: signInClient,
+      logger,
+      sleep: async () => undefined,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
     const modelCredentials = new ModelCredentials({
-      store:
-        options.modelCredentialStore ??
-        new InMemoryModelCredentialStore(new CredentialKeyring(randomBytes(32))),
+      store: options.modelCredentialStore ?? new InMemoryModelCredentialStore(keyring),
+      chatGptPlan,
       logger,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
@@ -274,6 +307,7 @@ export class TestControlPlane {
       modelAccess: new OwnerModelAccess({
         threadStore,
         credentials: modelCredentials,
+        chatGptPlan,
         isModelRequired,
         proxyTokens: modelProxyTokens,
         usage: modelUsage,
@@ -301,6 +335,7 @@ export class TestControlPlane {
       userStore,
       admission,
       credentials: modelCredentials,
+      chatGptPlan,
       tokens: modelProxyTokens,
       usage: modelUsage,
       endings: threadServices.relays,
@@ -328,6 +363,25 @@ export class TestControlPlane {
       },
       modelProxy,
       modelUsage,
+      chatGptPlan: {
+        access: chatGptPlan,
+        signIn:
+          signInClient === undefined
+            ? undefined
+            : new ChatGptSignIn({
+                store: chatGptPlanStore,
+                client: signInClient,
+                logger,
+                ...(options.clock === undefined ? {} : { clock: options.clock }),
+              }),
+        models:
+          signInClient === undefined
+            ? undefined
+            : new ChatGptPlanModels(
+                chatGptPlan,
+                `${options.modelProxyUpstreamOrigin ?? "https://api.openai.com"}/v1`,
+              ),
+      },
       publisher: repositoryServices.createPublisher(threadServices.relays),
       ...authentication,
       logger,
@@ -346,6 +400,7 @@ export class TestControlPlane {
       threadServices,
       repositoryServices,
       modelCredentials,
+      chatGptPlan,
       modelUsage,
       modelProxyTokens,
       modelProxy,

@@ -6,6 +6,7 @@ import { ModelProxyTokens } from "../model-proxy/model-proxy-tokens.js";
 import { InMemoryModelUsageStore } from "../model-usage/in-memory-model-usage-store.js";
 import { ModelUsage } from "../model-usage/model-usage.js";
 import { recordTestThread } from "../test-support/record-test-thread.js";
+import { createUnofferedChatGptPlan } from "../test-support/unoffered-chatgpt-plan.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { CredentialKeyring } from "./credential-keyring.js";
 import { InMemoryModelCredentialStore } from "./in-memory-model-credential-store.js";
@@ -30,12 +31,16 @@ async function startThreadOn(model: string) {
     settings: { installationCapTokens: undefined, windowHours: 24 },
     logger,
   });
+  const keyring = new CredentialKeyring(randomBytes(32));
+  const chatGptPlan = createUnofferedChatGptPlan(keyring);
   const access = new OwnerModelAccess({
     threadStore,
     credentials: new ModelCredentials({
-      store: new InMemoryModelCredentialStore(new CredentialKeyring(randomBytes(32))),
+      store: new InMemoryModelCredentialStore(keyring),
+      chatGptPlan,
       logger,
     }),
+    chatGptPlan,
     isModelRequired: true,
     proxyTokens: new ModelProxyTokens(new InMemoryModelProxyTokenStore()),
     usage,

@@ -78,6 +78,7 @@ describe("the control plane configuration", () => {
         },
         modelUsageCap: { installationCapTokens: undefined, windowHours: 24 },
         modelProxyUpstreamOrigin: undefined,
+        chatGptPlan: { isOffered: false },
         modelProxyRequestBodiesHeldInBytes: 128 * 1024 * 1024,
       },
     });

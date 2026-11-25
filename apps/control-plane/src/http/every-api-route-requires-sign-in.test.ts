@@ -25,6 +25,7 @@ import {
   testLifecycleSettings,
   testSupervisorEnvironment,
 } from "../test-support/test-control-plane.js";
+import { createUnofferedChatGptPlan } from "../test-support/unoffered-chatgpt-plan.js";
 import { InMemoryThreadEventLog } from "../thread-event-log/in-memory-thread-event-log.js";
 import { InMemoryThreadStore } from "../threads/in-memory-thread-store.js";
 import { InMemoryUserStore } from "../users/in-memory-user-store.js";
@@ -64,6 +65,17 @@ function createApp() {
     settings: testLifecycleSettings,
     logger,
   });
+  const keyring = new CredentialKeyring(Buffer.alloc(32, 1));
+  const chatGptPlan = createUnofferedChatGptPlan(keyring);
+  const modelAccessChanges = new ModelAccessChanges(
+    threadStore,
+    relays,
+    new ModelSwitchAllowances({
+      store: new InMemoryModelSwitchAllowanceStore(),
+      threadEventLog,
+      tokens: new ModelProxyTokens(new InMemoryModelProxyTokenStore()),
+    }),
+  );
   return createHttpApp({
     authenticator: new Authenticator({
       verifier: new DevelopmentSingleUserVerifier(),
@@ -88,18 +100,11 @@ function createApp() {
       },
       modelAccess: {
         credentials: new ModelCredentials({
-          store: new InMemoryModelCredentialStore(new CredentialKeyring(Buffer.alloc(32, 1))),
+          store: new InMemoryModelCredentialStore(keyring),
+          chatGptPlan,
           logger,
         }),
-        changes: new ModelAccessChanges(
-          threadStore,
-          relays,
-          new ModelSwitchAllowances({
-            store: new InMemoryModelSwitchAllowanceStore(),
-            threadEventLog,
-            tokens: new ModelProxyTokens(new InMemoryModelProxyTokenStore()),
-          }),
-        ),
+        changes: modelAccessChanges,
         isModelRequired: true,
       },
       logger,
@@ -118,6 +123,13 @@ function createApp() {
         logger,
       }),
       threadStore,
+      logger,
+    },
+    chatGptPlan: {
+      access: chatGptPlan,
+      signIn: undefined,
+      models: undefined,
+      changes: modelAccessChanges,
       logger,
     },
     webClientDirectory: undefined,

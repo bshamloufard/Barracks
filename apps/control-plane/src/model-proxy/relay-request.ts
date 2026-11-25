@@ -38,7 +38,8 @@ export type RelayRequestOptions = {
   route: RelayedRoute;
   /** The request's body, read whole and checked (see `request-body.ts`). */
   body: Buffer;
-  ownerKey: string;
+  /** The owner's API key, or their ChatGPT plan's access token: sent upstream, and redacted from the answer. */
+  ownerCredential: string;
   limits: ModelProxyLimits;
   /** Aborting it ends the request at once, wherever it is (the thread stopped, say). */
   cancellation: AbortSignal;
@@ -84,7 +85,7 @@ class RequestRelay {
   }
 
   start(): void {
-    const { request, response, route, body, ownerKey, limits, cancellation } = this.#options;
+    const { request, response, route, body, ownerCredential, limits, cancellation } = this.#options;
     if (cancellation.aborted || response.destroyed) {
       // Ended, or hung up, before anything was sent: nothing reaches the provider.
       this.#interruption = interruptionFor(cancellation.reason);
@@ -95,7 +96,7 @@ class RequestRelay {
     const upstreamRequest = client.request(route.upstreamUrl, {
       method: "POST",
       headers: {
-        ...buildUpstreamHeaders(route.format, request.headers, ownerKey),
+        ...buildUpstreamHeaders(route.format, request.headers, ownerCredential),
         "content-length": body.length,
       },
       signal: this.#abortController.signal,
@@ -129,7 +130,7 @@ class RequestRelay {
   }
 
   #relayAnswer(upstreamResponse: IncomingMessage): void {
-    const { response, route, ownerKey, limits } = this.#options;
+    const { response, route, ownerCredential, limits } = this.#options;
     clearTimeout(this.#firstByteTimer);
     const status = upstreamResponse.statusCode ?? 502;
     this.#upstreamStatus = status;
@@ -144,12 +145,12 @@ class RequestRelay {
     this.#responseBody = new ByteCounter(limits.maximumResponseBytes, (chunk) =>
       meter.write(chunk),
     );
-    response.writeHead(status, buildDownstreamHeaders(upstreamResponse.headers, ownerKey));
+    response.writeHead(status, buildDownstreamHeaders(upstreamResponse.headers, ownerCredential));
     const stages: Array<NodeJS.ReadableStream | Transform | ServerResponse> = [
       upstreamResponse,
       ...(decompression === undefined ? [] : [decompression]),
       this.#responseBody,
-      new SecretRedaction(ownerKey),
+      new SecretRedaction(ownerCredential),
       response,
     ];
     pipeline(stages).catch((error: unknown) => {

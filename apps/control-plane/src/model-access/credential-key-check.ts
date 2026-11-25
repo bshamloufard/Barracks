@@ -1,6 +1,41 @@
 import type { Logger } from "../logger.js";
 import type { CredentialKeyring } from "./credential-keyring.js";
-import type { ModelCredentialStore } from "./model-credential-store.js";
+import type { ModelCredentialStore, ResealingOutcome } from "./model-credential-store.js";
+
+/**
+ * What the check and resealing need of a store of things sealed under the
+ * configured key: users' model keys, and their ChatGPT plans' sign-ins.
+ */
+export type SealedCredentialStore = Pick<
+  ModelCredentialStore,
+  "countByKeyFingerprint" | "sealAgainUnderCurrentKey"
+>;
+
+/** Several stores checked and resealed as one, their counts added up. */
+export function combineSealedStores(
+  stores: readonly SealedCredentialStore[],
+): SealedCredentialStore {
+  return {
+    async countByKeyFingerprint() {
+      const counts = new Map<string, number>();
+      for (const store of stores) {
+        for (const [fingerprint, count] of await store.countByKeyFingerprint()) {
+          counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + count);
+        }
+      }
+      return counts;
+    },
+    async sealAgainUnderCurrentKey() {
+      const total: ResealingOutcome = { resealedCount: 0, unreadableCount: 0 };
+      for (const store of stores) {
+        const outcome = await store.sealAgainUnderCurrentKey();
+        total.resealedCount += outcome.resealedCount;
+        total.unreadableCount += outcome.unreadableCount;
+      }
+      return total;
+    },
+  };
+}
 
 /**
  * Run at startup, before the control plane listens: every stored credential
@@ -11,7 +46,7 @@ import type { ModelCredentialStore } from "./model-credential-store.js";
  * credential a previous key sealed is sealed again under the current one.
  */
 export async function checkCredentialKeys(
-  store: ModelCredentialStore,
+  store: SealedCredentialStore,
   keyring: CredentialKeyring,
   logger: Logger,
 ): Promise<void> {
@@ -34,7 +69,7 @@ export async function checkCredentialKeys(
  * is under the current one, after the old instance has gone.
  */
 export async function sealStoredCredentialsAgain(
-  store: ModelCredentialStore,
+  store: SealedCredentialStore,
   keyring: CredentialKeyring,
   logger: Logger,
 ): Promise<void> {
@@ -61,12 +96,12 @@ export const resealingIntervalInMilliseconds = 5 * 60_000;
 
 /** Seals stored credentials again every few minutes; see `sealStoredCredentialsAgain`. */
 export class CredentialResealing {
-  readonly #store: ModelCredentialStore;
+  readonly #store: SealedCredentialStore;
   readonly #keyring: CredentialKeyring;
   readonly #logger: Logger;
   #timer: NodeJS.Timeout | undefined;
 
-  constructor(store: ModelCredentialStore, keyring: CredentialKeyring, logger: Logger) {
+  constructor(store: SealedCredentialStore, keyring: CredentialKeyring, logger: Logger) {
     this.#store = store;
     this.#keyring = keyring;
     this.#logger = logger;

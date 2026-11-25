@@ -440,7 +440,7 @@ export class ModelProxy {
   ): Promise<RelayedRequestBody | undefined> {
     const { request, response, route, target, logger } = exchange;
     const { limits } = this.#options;
-    const shape = this.#findAgentRequestShape(exchange);
+    const shape = this.#findAgentRequestShape(exchange, owner);
     if (shape === undefined) {
       return undefined;
     }
@@ -505,12 +505,16 @@ export class ModelProxy {
 
   /**
    * What the pinned agent's requests to this provider in this format may
-   * hold, if its headers are ones the agent sends; otherwise the request is
-   * refused, and undefined returned.
+   * hold when the owner's access spent is what it is (on a ChatGPT plan,
+   * less than on an API key), if its headers are ones the agent sends;
+   * otherwise the request is refused, and undefined returned.
    */
-  #findAgentRequestShape(exchange: ProxyExchange): AgentRequestShape | undefined {
+  #findAgentRequestShape(
+    exchange: ProxyExchange,
+    owner: OwnerAuthorization,
+  ): AgentRequestShape | undefined {
     const { request, response, route, target, logger } = exchange;
-    const shape = findAgentRequestShape(target.providerId, route.format, "api_key");
+    const shape = findAgentRequestShape(target.providerId, route.format, owner.access);
     const unrelayed =
       shape === undefined
         ? "this provider's requests in this format"
@@ -573,10 +577,13 @@ export class ModelProxy {
       response,
       route,
       body: body.bytes,
-      ownerKey: owner.ownerKey,
+      ownerCredential: owner.ownerCredential,
       limits: this.#options.limits,
       cancellation: exchange.signal,
     });
+    if (outcome.upstreamStatus === 401) {
+      await this.#noteCredentialRefused(exchange, owner);
+    }
     const answerUsage = describeAnswerUsage(outcome, requested);
     if (answerUsage !== undefined) {
       await this.#options.usage.record({
@@ -589,6 +596,7 @@ export class ModelProxy {
     logger.info(
       {
         ownerUserId: owner.ownerUserId,
+        access: owner.access,
         upstreamStatus: outcome.upstreamStatus ?? null,
         interruption: outcome.interruption ?? null,
         requestBytes: body.bytes.length,
@@ -597,6 +605,15 @@ export class ModelProxy {
       },
       "Relayed a model request",
     );
+  }
+
+  /** A failure here leaves the agent's next request to find the sign-in as it is. */
+  async #noteCredentialRefused(exchange: ProxyExchange, owner: OwnerAuthorization): Promise<void> {
+    try {
+      await this.#options.authorization.noteCredentialRefused(owner);
+    } catch (error) {
+      exchange.logger.warn({ err: error }, "Could not renew a ChatGPT plan its provider refused");
+    }
   }
 
   /**

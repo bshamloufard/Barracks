@@ -179,6 +179,12 @@ export const threadListResponseSchema = z.strictObject({
  *   the message says why.
  * - `model_credential_missing` (409): the user has no key for the model's
  *   provider; the message says which key to add, and where.
+ * - `chatgpt_plan_unavailable` (409): this installation does not offer
+ *   ChatGPT plans (see `chatgpt-plan.ts`).
+ * - `chatgpt_plan_not_connected` (409): what was asked needs the user's
+ *   ChatGPT plan, which is not connected.
+ * - `chatgpt_sign_in_failed` (400): a ChatGPT sign-in could not be
+ *   finished; the message says why, and what to do.
  */
 export const apiErrorResponseSchema = z.strictObject({
   error: z.strictObject({
@@ -197,6 +203,9 @@ export const apiErrorResponseSchema = z.strictObject({
       "publication_failed",
       "model_credential_missing",
       "unavailable",
+      "chatgpt_plan_unavailable",
+      "chatgpt_plan_not_connected",
+      "chatgpt_sign_in_failed",
     ]),
     message: z.string().min(1),
   }),

@@ -6,7 +6,8 @@ import { bearerTokenFrom } from "../bearer-token.js";
  * Which headers cross the proxy. Requests are rebuilt from an allow-list:
  * what the provider needs to read the body and choose API features, and
  * the identifiers some providers route prompt caching by; never the
- * sandbox's own credential, which is replaced by the owner's key. Answers
+ * sandbox's own credential, which is replaced by the owner's key (or their
+ * ChatGPT plan's access token, sent the same way). Answers
  * keep only what the agent's client reads: the body's type, and what it
  * says about retrying and rate limits. Any value holding the key is
  * dropped, whatever its name. Of the request headers only `anthropic-beta`
@@ -74,7 +75,7 @@ export function findUnrelayedHeaderValue(
 export function buildUpstreamHeaders(
   format: ProviderApiFormat,
   incoming: IncomingHttpHeaders,
-  ownerKey: string,
+  ownerCredential: string,
 ): OutgoingHttpHeaders {
   const headers: OutgoingHttpHeaders = {};
   for (const [name, value] of Object.entries(incoming)) {
@@ -94,16 +95,16 @@ export function buildUpstreamHeaders(
   // one compressed all the same is decompressed (see `model-proxy.ts`).
   headers["accept-encoding"] = "identity";
   if (format === "anthropic_messages") {
-    headers["x-api-key"] = ownerKey;
+    headers["x-api-key"] = ownerCredential;
   } else {
-    headers.authorization = `Bearer ${ownerKey}`;
+    headers.authorization = `Bearer ${ownerCredential}`;
   }
   return headers;
 }
 
 export function buildDownstreamHeaders(
   upstream: IncomingHttpHeaders,
-  ownerKey: string,
+  ownerCredential: string,
 ): OutgoingHttpHeaders {
   const headers: OutgoingHttpHeaders = { "cache-control": "no-store" };
   for (const [name, value] of Object.entries(upstream)) {
@@ -114,7 +115,7 @@ export function buildDownstreamHeaders(
       isForwarded &&
       typeof value === "string" &&
       value.length <= maximumForwardedValueLength &&
-      !value.includes(ownerKey)
+      !value.includes(ownerCredential)
     ) {
       headers[name] = value;
     }

@@ -486,7 +486,7 @@ describe("a request whose response Node never closes", () => {
       ...incoming,
       route: { format: "anthropic_messages", upstreamUrl: new URL(`${origin}/v1/messages`) },
       body: Buffer.from(bodyAsking(text)),
-      ownerKey: ownersKey,
+      ownerCredential: ownersKey,
       limits,
       cancellation,
     });

@@ -8,7 +8,9 @@ import type { ProviderApiFormat } from "@barrack/model-catalogue";
  * harness classifies them like any provider error. The wording is chosen
  * for that: a cap reached says "model usage cap" (the harness's
  * `usage_cap_reached`), a missing key "no API key found" (its
- * `credential_missing`), and a refused token avoids the words that would
+ * `credential_missing`), a ChatGPT plan no longer connected "ChatGPT plan
+ * is not connected to Barrack" (its `plan_sign_in_expired`), and a refused
+ * token avoids the words that would
  * tell the user to replace their key. What is worth retrying (too many
  * requests at once, the proxy busy or briefly unable to decide, the
  * provider unreachable) has a status the agent retries; nothing else does,
@@ -99,6 +101,19 @@ export const proxyRefusals = {
     status: 504,
     errorType: "api_error",
     message: "The provider did not answer Barrack's model proxy in time: timed out.",
+  },
+  chatGptPlanNotConnected: {
+    status: 403,
+    errorType: "permission_error",
+    message:
+      "Your ChatGPT plan is not connected to Barrack: its sign-in expired or was revoked, or it was disconnected. Connect your ChatGPT plan again in Settings, or switch OpenAI back to your API key there, then send your message again.",
+  },
+  chatGptPlanRenewalUnavailable: {
+    status: 503,
+    errorType: "api_error",
+    message:
+      "OpenAI could not renew the ChatGPT plan's sign-in just now: the service is temporarily unavailable.",
+    retryAfterSeconds: 5,
   },
 } as const satisfies Record<string, ProxyRefusal>;
 

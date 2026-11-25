@@ -1,10 +1,18 @@
-import { relayedProviders } from "@barrack/model-catalogue";
+import { findRelayedProvider, relayedProviders } from "@barrack/model-catalogue";
 import { createSandboxProvider } from "@barrack/sandbox-providers";
 import { createConfiguredAuthentication } from "./authentication/create-authenticator.js";
+import { ChatGptPlanAccess, chatGptPlanProviderId } from "./chatgpt-plan/chatgpt-plan-access.js";
+import { ChatGptPlanModels } from "./chatgpt-plan/chatgpt-plan-models.js";
+import { ChatGptSignIn } from "./chatgpt-plan/chatgpt-sign-in.js";
+import { ChatGptSignInClient } from "./chatgpt-plan/chatgpt-sign-in-client.js";
 import { type ControlPlaneConfiguration, readConfiguration } from "./configuration.js";
 import { type RunningControlPlaneServer, startControlPlaneServer } from "./control-plane-server.js";
 import { createLogger, type Logger } from "./logger.js";
-import { CredentialResealing, checkCredentialKeys } from "./model-access/credential-key-check.js";
+import {
+  CredentialResealing,
+  checkCredentialKeys,
+  combineSealedStores,
+} from "./model-access/credential-key-check.js";
 import { CredentialKeyring } from "./model-access/credential-keyring.js";
 import { ModelAccessChanges } from "./model-access/model-access-changes.js";
 import { ModelCredentials } from "./model-access/model-credentials.js";
@@ -51,8 +59,25 @@ async function main(): Promise<void> {
     configuration.modelCredentialKeys.previous,
   );
   const storage = await openStorage(configuration.database, keyring, logger);
-  await checkCredentialKeys(storage.modelCredentialStore, keyring, logger);
-  const credentials = new ModelCredentials({ store: storage.modelCredentialStore, logger });
+  const sealedStores = combineSealedStores([
+    storage.modelCredentialStore,
+    storage.chatGptPlanStore,
+  ]);
+  await checkCredentialKeys(sealedStores, keyring, logger);
+  const signInClient = configuration.chatGptPlan.isOffered
+    ? new ChatGptSignInClient(configuration.chatGptPlan.issuer)
+    : undefined;
+  const chatGptPlan = new ChatGptPlanAccess({
+    settings: configuration.chatGptPlan,
+    store: storage.chatGptPlanStore,
+    client: signInClient,
+    logger,
+  });
+  const credentials = new ModelCredentials({
+    store: storage.modelCredentialStore,
+    chatGptPlan,
+    logger,
+  });
   const isModelRequired = configuration.supervisorEnvironment.agent.harness === "pi";
   const authentication = await createConfiguredAuthentication(
     configuration.authentication,
@@ -88,6 +113,7 @@ async function main(): Promise<void> {
     modelAccess: new OwnerModelAccess({
       threadStore: storage.threadStore,
       credentials,
+      chatGptPlan,
       isModelRequired,
       proxyTokens,
       usage: modelUsage,
@@ -103,6 +129,7 @@ async function main(): Promise<void> {
     userStore: storage.userStore,
     admission: authentication.admission,
     credentials,
+    chatGptPlan,
     tokens: proxyTokens,
     usage: modelUsage,
     endings: threadServices.relays,
@@ -129,6 +156,17 @@ async function main(): Promise<void> {
     },
     modelProxy,
     modelUsage,
+    chatGptPlan: {
+      access: chatGptPlan,
+      signIn:
+        signInClient === undefined
+          ? undefined
+          : new ChatGptSignIn({ store: storage.chatGptPlanStore, client: signInClient, logger }),
+      models:
+        signInClient === undefined
+          ? undefined
+          : new ChatGptPlanModels(chatGptPlan, openAiApiBaseUrl(configuration)),
+    },
     publisher: repositoryServices.createPublisher(threadServices.relays),
     authenticator: authentication.authenticator,
     clientAuthentication: authentication.clientAuthentication,
@@ -137,7 +175,7 @@ async function main(): Promise<void> {
   // The first sweep reconciles every sandbox with the provider, and takes
   // over operations a control plane that has gone left under way.
   threadServices.sweeps.start();
-  const resealing = new CredentialResealing(storage.modelCredentialStore, keyring, logger);
+  const resealing = new CredentialResealing(sealedStores, keyring, logger);
   resealing.start();
   shutDownOnSignal({
     server,
@@ -196,6 +234,22 @@ function describeSandboxes(configuration: ControlPlaneConfiguration, logger: Log
     describePublicationLimits(logger);
   }
   describeModelAccess(configuration, logger);
+  describeChatGptPlans(configuration, logger);
+}
+
+/** Says whether users may run threads on their ChatGPT plan, and where it signs them in. */
+function describeChatGptPlans(configuration: ControlPlaneConfiguration, logger: Logger): void {
+  const { chatGptPlan } = configuration;
+  if (!chatGptPlan.isOffered) {
+    logger.info(
+      "ChatGPT plans are not offered (BARRACK_CHATGPT_PLAN_SIGN_IN is off): OpenAI models run on users' API keys",
+    );
+    return;
+  }
+  logger.info(
+    { signInIssuer: chatGptPlan.issuer },
+    "The installation's one user may run threads on their ChatGPT plan; its sign-in is sealed and kept here, as OpenAI's terms allow only for an installation the account holder runs for themselves",
+  );
 }
 
 /** Says which providers' keys stay here, the cap on usage and the proxy's memory bounds; never a key. */
@@ -218,6 +272,25 @@ function describeModelAccess(configuration: ControlPlaneConfiguration, logger: L
       "The model proxy sends every provider's requests to this origin instead of the provider's, for tests and local development only; never set BARRACK_MODEL_PROXY_UPSTREAM_ORIGIN in a deployment.",
     );
   }
+}
+
+/**
+ * Where a ChatGPT plan's models are listed: OpenAI's API, the address the
+ * model proxy relays OpenAI's requests to, with the same development-only
+ * replacement of its origin.
+ */
+function openAiApiBaseUrl(configuration: ControlPlaneConfiguration): string {
+  const api = findRelayedProvider(chatGptPlanProviderId)?.apis[0];
+  if (api === undefined) {
+    throw new Error("OpenAI is not among the relayed providers.");
+  }
+  const url = new URL(api.upstreamBaseUrl);
+  if (configuration.modelProxyUpstreamOrigin !== undefined) {
+    const replacement = new URL(configuration.modelProxyUpstreamOrigin);
+    url.protocol = replacement.protocol;
+    url.host = replacement.host;
+  }
+  return url.href.replace(/\/$/, "");
 }
 
 /** Sandboxes reach the control plane's WebSockets at this URL, and its HTTP at the same place. */
