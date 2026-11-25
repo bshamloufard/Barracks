@@ -1,4 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  findPlanRefusal,
+  type PlanTokenCheck,
+  type PlanTokenChecker,
+  planLimitRefusal,
+  writePlanModels,
+  writePlanRefusal,
+} from "./chatgpt-plan.js";
 import { planDesktopReply, type ScriptedReply } from "./desktop-scripts.js";
 import {
   type ChatMessage,
@@ -14,6 +22,7 @@ import {
   writeFailure,
 } from "./wire-formats.js";
 
+export { type PlanTokenCheck, type PlanTokenChecker, planModels } from "./chatgpt-plan.js";
 export { desktopTestPageColours, desktopTriggers } from "./desktop-scripts.js";
 export type { ChatMessage, MockUsage, WireFormat } from "./wire-formats.js";
 
@@ -53,6 +62,14 @@ export type { ChatMessage, MockUsage, WireFormat } from "./wire-formats.js";
  * `Authorization: Bearer`), model, headers, and the usage its answer
  * reported. A test can declare a credential's quota exhausted, so that
  * every request presenting it fails as `EXHAUST_QUOTA` does.
+ *
+ * Given a way to recognise a ChatGPT plan's access tokens (`checkPlanToken`,
+ * from the stand-in for OpenAI's sign-in), it answers requests presenting
+ * one as OpenAI's "Sign in with ChatGPT" programme does (`chatgpt-plan.ts`):
+ * refusing what the programme refuses, with its codes; refusing as the
+ * plan's usage limit a message containing `EXHAUST_PLAN`, or every request
+ * of an account a test declared spent; and listing the plan's models at
+ * `GET /v1/models`.
  */
 export const mockModelTriggers = {
   toolExecution: "RUN_TOOL",
@@ -65,6 +82,7 @@ export const mockModelTriggers = {
   rateLimit: "RATE_LIMIT",
   contextOverflow: "OVERFLOW_ONCE",
   slowReply: "REPLY_SLOWLY",
+  exhaustedPlan: "EXHAUST_PLAN",
 } as const;
 
 const slowReplyWordCount = 50;
@@ -86,6 +104,8 @@ export type ReceivedModelRequest = {
   usage: MockUsage | undefined;
   /** Whether the client hung up before the answer ended. */
   wasAbandoned: boolean;
+  /** The ChatGPT account whose plan's token it presented, if it presented one. */
+  planAccount: string | undefined;
 };
 
 export type MockModelServer = {
@@ -104,20 +124,37 @@ export type MockModelServer = {
   receivedModels: string[];
   /** Makes every later request presenting `credential` fail as out of quota. */
   exhaustQuotaOf(credential: string): void;
+  /** Makes every later plan request of the ChatGPT account fail at its usage limit, or no longer. */
+  setPlanSpent(subject: string, isSpent: boolean): void;
   close(): Promise<void>;
+};
+
+export type MockModelServerOptions = {
+  /** Recognises a ChatGPT plan's access tokens; without it, every credential is an API key. */
+  checkPlanToken?: PlanTokenChecker;
 };
 
 type ReceivedState = {
   requests: ReceivedModelRequest[];
   exhaustedCredentials: Set<string>;
+  spentPlans: Set<string>;
+  checkPlanToken: PlanTokenChecker;
 };
 
 /**
  * Listens on loopback unless given another local address, such as the one
  * Docker containers reach the host on.
  */
-export async function startMockModelServer(host = "127.0.0.1"): Promise<MockModelServer> {
-  const state: ReceivedState = { requests: [], exhaustedCredentials: new Set() };
+export async function startMockModelServer(
+  host = "127.0.0.1",
+  options: MockModelServerOptions = {},
+): Promise<MockModelServer> {
+  const state: ReceivedState = {
+    requests: [],
+    exhaustedCredentials: new Set(),
+    spentPlans: new Set(),
+    checkPlanToken: options.checkPlanToken ?? (() => ({ kind: "unknown" })),
+  };
   const server = createServer((request, response) => {
     void answerRequest(request, response, state);
   });
@@ -142,6 +179,13 @@ export async function startMockModelServer(host = "127.0.0.1"): Promise<MockMode
       return state.requests.map((request) => request.model);
     },
     exhaustQuotaOf: (credential) => state.exhaustedCredentials.add(credential),
+    setPlanSpent: (subject, isSpent) => {
+      if (isSpent) {
+        state.spentPlans.add(subject);
+      } else {
+        state.spentPlans.delete(subject);
+      }
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -155,6 +199,13 @@ async function answerRequest(
   response: ServerResponse,
   state: ReceivedState,
 ): Promise<void> {
+  const credential = readCredential(request);
+  const planCheck = credential === undefined ? undefined : state.checkPlanToken(credential);
+  const isOnPlan = planCheck !== undefined && planCheck.kind !== "unknown";
+  if (isOnPlan && request.method === "GET" && request.url?.split("?", 1)[0] === "/v1/models") {
+    answerPlanModels(planCheck, response);
+    return;
+  }
   const format = wireFormatOf(request.url);
   if (format === undefined || request.method !== "POST") {
     response.writeHead(404).end();
@@ -165,15 +216,23 @@ async function answerRequest(
   const received: ReceivedModelRequest = {
     format,
     target: request.url ?? "",
-    credential: readCredential(request),
+    credential,
     model: body.model,
     memberNames: Object.keys(body),
     headers: { ...request.headers },
     conversation,
     usage: undefined,
     wasAbandoned: false,
+    planAccount: planCheck?.kind === "valid" ? planCheck.account.subject : undefined,
   };
   state.requests.push(received);
+  if (isOnPlan) {
+    const refusal = choosePlanRefusal(planCheck, body, received, state);
+    if (refusal !== undefined) {
+      writePlanRefusal(response, refusal);
+      return;
+    }
+  }
   const failure = chooseFailure(received, state);
   if (failure !== undefined) {
     writeFailure(response, format, failure);
@@ -193,6 +252,34 @@ async function answerRequest(
   }
   writer.finish(endReason);
   received.usage = describeUsage(format, conversation, writer.outputPieces);
+}
+
+function answerPlanModels(check: PlanTokenCheck, response: ServerResponse): void {
+  if (check.kind === "valid") {
+    writePlanModels(response);
+    return;
+  }
+  writePlanRefusal(response, {
+    status: 401,
+    code: "subscription_sharing_invalid_user",
+    message: "The ChatGPT sign-in is not valid.",
+  });
+}
+
+function choosePlanRefusal(
+  check: PlanTokenCheck,
+  body: Record<string, unknown>,
+  received: ReceivedModelRequest,
+  state: ReceivedState,
+): ReturnType<typeof findPlanRefusal> {
+  const refusal = findPlanRefusal(check, body);
+  if (refusal !== undefined) {
+    return refusal;
+  }
+  const isSpent =
+    (received.planAccount !== undefined && state.spentPlans.has(received.planAccount)) ||
+    describeUserMessage(received.conversation.at(-1)).includes(mockModelTriggers.exhaustedPlan);
+  return isSpent ? planLimitRefusal : undefined;
 }
 
 /** `state.requests` includes this request. */

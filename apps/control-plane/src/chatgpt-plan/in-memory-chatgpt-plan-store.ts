@@ -96,10 +96,10 @@ export class InMemoryChatGptPlanStore implements ChatGptPlanStore {
     }
   }
 
-  async connect(ownerUserId: string, clientId: string, signIn: PlanSignIn): Promise<void> {
+  async connect(ownerUserId: string, signIn: PlanSignIn): Promise<void> {
     await this.#inTurn(ownerUserId, async () => {
       const plan = this.#requirePlan(ownerUserId);
-      this.#plans.set(ownerUserId, { ...plan, clientId, loss: undefined });
+      this.#plans.set(ownerUserId, { ...plan, clientId: signIn.clientId, loss: undefined });
       this.#signIns.set(ownerUserId, this.#seal(ownerUserId, signIn));
     });
   }

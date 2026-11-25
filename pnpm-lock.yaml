@@ -60,6 +60,9 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
+      '@barrack/fake-chatgpt-sign-in':
+        specifier: workspace:*
+        version: link:../../tests/fake-chatgpt-sign-in
       '@barrack/fake-github':
         specifier: workspace:*
         version: link:../../tests/fake-github
@@ -184,6 +187,9 @@ importers:
 
   tests/end-to-end:
     devDependencies:
+      '@barrack/fake-chatgpt-sign-in':
+        specifier: workspace:*
+        version: link:../fake-chatgpt-sign-in
       '@barrack/fake-github':
         specifier: workspace:*
         version: link:../fake-github

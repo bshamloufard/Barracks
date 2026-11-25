@@ -203,6 +203,9 @@ describeWithTestDatabase("the control plane's migrations", () => {
     const policies = await pool.query("select 1 from pg_policies where schemaname = $1", [schema]);
 
     expect(tables.rows).toEqual([
+      { name: "chatgpt_plan_sign_ins", has_row_security: true },
+      { name: "chatgpt_plans", has_row_security: true },
+      { name: "chatgpt_sign_in_attempts", has_row_security: true },
       { name: "github_connection_attempts", has_row_security: true },
       { name: "github_connections", has_row_security: true },
       { name: "model_credentials", has_row_security: true },

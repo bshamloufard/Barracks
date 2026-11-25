@@ -175,7 +175,8 @@ export class ChatGptSignIn {
       throw error;
     }
     const now = this.#clock();
-    await this.#store.connect(ownerUserId, clientId, {
+    await this.#store.connect(ownerUserId, {
+      clientId,
       tokens: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken },
       accessExpiresAt: new Date(now.getTime() + tokens.expiresInSeconds * 1000),
       earliestRenewalAt: tokens.earliestRenewalAt,

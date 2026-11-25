@@ -72,6 +72,8 @@ export class ChatGptPlanAccess {
   readonly #clock: () => Date;
   readonly #logger: Logger;
   readonly #sleep: (milliseconds: number) => Promise<void>;
+  /** Each user's renewal under way in this process, which the others wait for rather than queue at the store. */
+  readonly #renewalsUnderWay = new Map<string, Promise<PlanSignIn | undefined>>();
 
   constructor(options: ChatGptPlanAccessOptions) {
     this.#settings = options.settings;
@@ -159,11 +161,7 @@ export class ChatGptPlanAccess {
     if (!this.#isRenewalDue(current)) {
       return { kind: "token", accessToken: current.tokens.accessToken };
     }
-    const renewed = await this.#store.renew(ownerUserId, (locked) =>
-      locked === undefined || !this.#isRenewalDue(locked)
-        ? Promise.resolve({ kind: "keep" })
-        : this.#renew(ownerUserId, locked),
-    );
+    const renewed = await this.#renewOncePerProcess(ownerUserId);
     return renewed === undefined
       ? { kind: "not_connected" }
       : { kind: "token", accessToken: renewed.tokens.accessToken };
@@ -193,10 +191,31 @@ export class ChatGptPlanAccess {
     if (removed === undefined) {
       return undefined;
     }
-    const clientId = (await this.#store.findPlan(ownerUserId))?.clientId;
-    const isRevoked = clientId !== undefined && (await this.#revoke(clientId, removed));
+    const isRevoked = await this.#revoke(removed);
     this.#logger.info({ ownerUserId, isRevoked }, "Disconnected a user's ChatGPT plan");
     return { revocation: isRevoked ? "revoked" : "not_confirmed" };
+  }
+
+  /**
+   * Renews the owner's sign-in if it is still due once held alone. Requests
+   * on this control plane that find it due meanwhile share the one renewal,
+   * so each holds no database connection of its own while it waits; the
+   * store's lock is what keeps two control planes from renewing at once.
+   */
+  #renewOncePerProcess(ownerUserId: string): Promise<PlanSignIn | undefined> {
+    const underWay = this.#renewalsUnderWay.get(ownerUserId);
+    if (underWay !== undefined) {
+      return underWay;
+    }
+    const renewal = this.#store
+      .renew(ownerUserId, (locked) =>
+        locked === undefined || !this.#isRenewalDue(locked)
+          ? Promise.resolve({ kind: "keep" })
+          : this.#renew(ownerUserId, locked),
+      )
+      .finally(() => this.#renewalsUnderWay.delete(ownerUserId));
+    this.#renewalsUnderWay.set(ownerUserId, renewal);
+    return renewal;
   }
 
   #isRenewalDue(signIn: PlanSignIn): boolean {
@@ -209,14 +228,16 @@ export class ChatGptPlanAccess {
     return earliest === undefined || now >= earliest || now >= expiresAt - lastMomentInMilliseconds;
   }
 
-  /** Spends the refresh token for a new one; only ever called holding the sign-in alone. */
+  /**
+   * Spends the refresh token for a new one; only ever called holding the
+   * sign-in alone, and asking the store for nothing more meanwhile, since
+   * every other renewal waiting may be holding a connection of its own.
+   */
   async #renew(ownerUserId: string, signIn: PlanSignIn): Promise<Renewal> {
-    const client = this.#requireClient();
-    const clientId = (await this.#store.findPlan(ownerUserId))?.clientId;
-    if (clientId === undefined) {
-      return this.#forget(ownerUserId, "the issued client is gone", false);
-    }
-    const outcome = await client.renew({ clientId, refreshToken: signIn.tokens.refreshToken });
+    const outcome = await this.#requireClient().renew({
+      clientId: signIn.clientId,
+      refreshToken: signIn.tokens.refreshToken,
+    });
     if (outcome.kind === "issued") {
       const now = this.#clock();
       this.#logger.info({ ownerUserId }, "Renewed a user's ChatGPT plan sign-in");
@@ -256,9 +277,9 @@ export class ChatGptPlanAccess {
     };
   }
 
-  async #revoke(clientId: string, signIn: PlanSignIn): Promise<boolean> {
+  async #revoke(signIn: PlanSignIn): Promise<boolean> {
     const client = this.#requireClient();
-    const request = { clientId, refreshToken: signIn.tokens.refreshToken };
+    const request = { clientId: signIn.clientId, refreshToken: signIn.tokens.refreshToken };
     for (const delay of [0, ...revocationRetryDelaysInMilliseconds]) {
       await this.#sleep(delay);
       if (await client.revoke(request)) {

@@ -29,6 +29,7 @@ type PlanRow = {
 };
 
 type SignInRow = {
+  client_id: string;
   key_fingerprint: string;
   nonce: Buffer;
   ciphertext: Buffer;
@@ -54,7 +55,7 @@ type AttemptRow = {
 
 const planColumns = "host_id, client_id, openai_access, loss_reason, lost_at";
 const signInColumns =
-  "key_fingerprint, nonce, ciphertext, access_expires_at, earliest_renewal_at, account_subject, account_email, connected_at, renewed_at";
+  "client_id, key_fingerprint, nonce, ciphertext, access_expires_at, earliest_renewal_at, account_subject, account_email, connected_at, renewed_at";
 
 /**
  * Keeps ChatGPT plans in Postgres, in the tables of
@@ -151,12 +152,12 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
     await this.#pool.query(`delete from ${this.#attempts} where expires_at < $1`, [before]);
   }
 
-  async connect(ownerUserId: string, clientId: string, signIn: PlanSignIn): Promise<void> {
+  async connect(ownerUserId: string, signIn: PlanSignIn): Promise<void> {
     await this.#inTransaction(async (client) => {
       await client.query(
         `update ${this.#plans} set client_id = $2, loss_reason = null, lost_at = null
           where user_id = $1`,
-        [ownerUserId, clientId],
+        [ownerUserId, signIn.clientId],
       );
       await this.#writeSignIn(client, ownerUserId, signIn);
     });
@@ -272,8 +273,9 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
     const sealed = sealPlanTokens(this.#keyring, ownerUserId, signIn.tokens);
     await client.query(
       `insert into ${this.#signIns} (user_id, ${signInColumns})
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         on conflict (user_id) do update set
+          client_id = excluded.client_id,
           key_fingerprint = excluded.key_fingerprint,
           nonce = excluded.nonce,
           ciphertext = excluded.ciphertext,
@@ -285,6 +287,7 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
           renewed_at = excluded.renewed_at`,
       [
         ownerUserId,
+        signIn.clientId,
         sealed.keyFingerprint,
         sealed.nonce,
         sealed.ciphertext,
@@ -315,6 +318,7 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
 
   #toSignIn(ownerUserId: string, row: SignInRow): PlanSignIn {
     return {
+      clientId: row.client_id,
       tokens: openPlanTokens(this.#keyring, ownerUserId, sealedOf(row)),
       accessExpiresAt: row.access_expires_at,
       earliestRenewalAt: row.earliest_renewal_at ?? undefined,

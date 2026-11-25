@@ -35,9 +35,10 @@ export interface ChatGptPlanStore {
 
   /**
    * Keeps the user's newly connected sign-in in place of any before it,
-   * remembers the client OpenAI issued, and clears any loss.
+   * remembers its client for the user's later sign-ins, and clears any
+   * loss.
    */
-  connect(ownerUserId: string, clientId: string, signIn: PlanSignIn): Promise<void>;
+  connect(ownerUserId: string, signIn: PlanSignIn): Promise<void>;
 
   /** The user's connected sign-in, opened, or undefined. */
   readSignIn(ownerUserId: string): Promise<PlanSignIn | undefined>;
@@ -91,6 +92,8 @@ export type PlanLoss = { reason: ChatGptPlanLossReason; at: Date };
 export type PlanTokens = { accessToken: string; refreshToken: string };
 
 export type PlanSignIn = {
+  /** The client OpenAI issued the tokens to, which renews and revokes them. */
+  clientId: string;
   tokens: PlanTokens;
   accessExpiresAt: Date;
   /** OpenAI's `earliest_refresh_at`, if it gave one. */

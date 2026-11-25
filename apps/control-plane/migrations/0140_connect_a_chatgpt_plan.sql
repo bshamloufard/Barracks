@@ -26,8 +26,8 @@ create table chatgpt_plans (
 
 alter table chatgpt_plans enable row level security;
 
--- The connected sign-in: its access and refresh tokens, never stored
--- readable. They are sealed together with AES-256-GCM under the same
+-- The connected sign-in: the client it was issued to, which renews and
+-- revokes it, and its access and refresh tokens, never stored readable. They are sealed together with AES-256-GCM under the same
 -- configured key as users' model keys (see 0080_model_access.sql), bound to
 -- their owner, so the database alone yields nothing. The refresh token
 -- rotates: renewing it locks this row, and the replacement is written in
@@ -35,6 +35,7 @@ alter table chatgpt_plans enable row level security;
 -- time per sign-in whichever control plane makes it.
 create table chatgpt_plan_sign_ins (
   user_id text primary key references chatgpt_plans (user_id) on delete cascade,
+  client_id text not null check (char_length(client_id) between 1 and 256),
   key_fingerprint text not null check (key_fingerprint ~ '^[0-9a-f]{16}$'),
   nonce bytea not null check (octet_length(nonce) = 12),
   -- The sealed tokens, then GCM's 16-byte authentication tag.

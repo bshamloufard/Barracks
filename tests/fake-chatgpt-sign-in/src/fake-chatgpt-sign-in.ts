@@ -106,6 +106,10 @@ export class FakeChatGptSignIn {
   refreshDelayInMilliseconds = 0;
   /** Answers every token request with this status while set, as an outage would. */
   failTokenRequestsWithStatus: number | undefined;
+  /** Claims the next ID token carries in place of the right ones, to test their checks. */
+  nextIdTokenClaims: Record<string, unknown> | undefined;
+  /** The scopes the next token answer grants in place of the plan's, as a user declining plan usage. */
+  nextGrantedScope: string | undefined;
   #now: () => number = Date.now;
 
   private constructor(
@@ -387,26 +391,32 @@ export class FakeChatGptSignIn {
     grant.accessTokens.set(accessToken, now + this.#accessTokenLifetimeInSeconds * 1000);
     grant.refreshTokens.push(refreshToken);
     const account = this.#accounts.get(grant.subject);
-    const idToken = await new SignJWT({
+    const issuedAt = Math.floor(now / 1000);
+    const claims = {
+      iss: this.issuer,
+      sub: grant.subject,
+      aud: [grant.clientId],
+      iat: issuedAt,
+      exp: issuedAt + 3600,
       email: account?.email ?? "",
       email_verified: true,
       ...(nonce === undefined ? {} : { nonce }),
-    })
+      ...this.nextIdTokenClaims,
+    };
+    this.nextIdTokenClaims = undefined;
+    const idToken = await new SignJWT(claims)
       .setProtectedHeader({ alg: "RS256", kid: this.#signingKey.keyId })
-      .setIssuer(this.issuer)
-      .setSubject(grant.subject)
-      .setAudience([grant.clientId])
-      .setIssuedAt(Math.floor(now / 1000))
-      .setExpirationTime(Math.floor(now / 1000) + 3600)
       .sign(this.#signingKey.privateKey);
+    const scope = this.nextGrantedScope ?? planScopes;
+    this.nextGrantedScope = undefined;
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
       id_token: idToken,
       token_type: "Bearer",
       expires_in: this.#accessTokenLifetimeInSeconds,
-      scope: planScopes,
-      earliest_refresh_at: Math.floor(now / 1000),
+      scope,
+      earliest_refresh_at: issuedAt,
     };
   }
 
