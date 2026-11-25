@@ -682,3 +682,37 @@ code {
 .desktop-screen-controlled {
   border-color: var(--accent);
 }
+
+/* The ChatGPT plan in Settings: the steps said before signing in, the consent, the pasted address and the choice of access. */
+.sign-in-steps {
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.paste-address-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.access-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.access-choice legend {
+  font-weight: 600;
+}

@@ -86,7 +86,7 @@ export function ThreadModelPanel({
         >
           <ModelPicker
             catalogue={view.catalogue}
-            choices={listProviderChoices(view.catalogue, view.credentials)}
+            choices={listProviderChoices(view.catalogue, view.credentials, view.plan)}
             model={chosenModel}
             onChange={setChosenModel}
           />

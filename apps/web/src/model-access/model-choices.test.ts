@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   describeModel,
   describeWhyModelCannotRun,
+  listChoosableModels,
   listProviderChoices,
   suggestModel,
 } from "./model-choices";
@@ -71,5 +72,23 @@ describe("choosing a model", () => {
   it("names a listed model, and shows an unlisted one as it was entered", () => {
     expect(describeModel("anthropic/model-a", catalogue)).toBe("Model A (anthropic/model-a)");
     expect(describeModel("anthropic/newer-model", catalogue)).toBe("anthropic/newer-model");
+  });
+
+  it("offers OpenAI's plan models while the user's OpenAI models run on their connected plan", () => {
+    const plan = { isConnected: true, models: [{ modelId: "gpt-6.1-sol", name: "GPT-6.1 Sol" }] };
+    const choices = listProviderChoices(catalogue, [], plan);
+    const openAi = choices.find((choice) => choice.providerId === "openai");
+
+    expect(openAi).toMatchObject({ hasKey: true, name: "OpenAI (your ChatGPT plan)" });
+    expect(listChoosableModels(openAi)).toEqual([{ modelId: "gpt-6.1-sol", name: "GPT-6.1 Sol" }]);
+    expect(suggestModel(choices)).toBe("openai/gpt-6.1-sol");
+  });
+
+  it("says to connect the plan again, not to add a key, once the plan in use is lost", () => {
+    const choices = listProviderChoices(catalogue, [], { isConnected: false, models: [] });
+
+    expect(describeWhyModelCannotRun("openai/gpt-6.1-sol", choices)).toContain(
+      "your ChatGPT plan, which is not connected",
+    );
   });
 });

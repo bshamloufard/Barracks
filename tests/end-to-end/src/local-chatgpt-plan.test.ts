@@ -21,6 +21,8 @@ import {
   createThread,
   deleteThread,
   saveModelCredential,
+  stopThread,
+  waitUntilSandboxIs,
   waitUntilThreadIsGone,
 } from "./support/threads-api.js";
 
@@ -195,6 +197,24 @@ describe("a ChatGPT plan with the real Pi", () => {
     client.sendUserMessage("Carry on");
     await client.waitUntilRunsHaveSettled(2);
     expect(assistantMessages(client).at(-1)).toMatchObject({ endReason: "completed" });
+  });
+
+  it("runs a thread on the plan again after its sandbox stops and starts, with no step inside it", {
+    timeout: 90_000,
+  }, async () => {
+    const client = await startThread();
+    client.sendUserMessage("Say hello");
+    await client.waitUntilRunsHaveSettled(1);
+    const threadId = threadIds.at(-1) ?? "";
+    await stopThread(controlPlane, threadId);
+    await waitUntilSandboxIs(controlPlane, threadId, "stopped");
+
+    client.sendUserMessage("Wake up");
+    await waitUntilSandboxIs(controlPlane, threadId, "running");
+    await client.waitUntilRunsHaveSettled(2);
+
+    expect(assistantMessages(client).at(-1)).toMatchObject({ endReason: "completed" });
+    expect(modelServer.receivedRequests.at(-1)?.planAccount).toBe("chatgpt-owner");
   });
 
   it("moves a thread from the plan to the user's API key and back, between runs", {

@@ -1,5 +1,4 @@
 import {
-  apiErrorResponseSchema,
   buildModelCredentialApiPath,
   buildThreadModelUsageApiPath,
   type ModelCatalogue,
@@ -17,6 +16,7 @@ import {
   userModelUsageResponseSchema,
 } from "@barrack/protocol";
 import type { AuthorizedFetch } from "./authorized-fetch";
+import { readApiAnswer } from "./read-api-answer";
 
 /**
  * The control plane's model access API: the catalogue of what the agent
@@ -43,7 +43,7 @@ export class ModelAccessApi {
 
   async listCredentials(): Promise<ModelCredentialSummary[]> {
     const response = await this.#request(modelCredentialsApiPath);
-    return (await readAnswer(response, modelCredentialListResponseSchema, "read your keys"))
+    return (await readApiAnswer(response, modelCredentialListResponseSchema, "read your keys"))
       .credentials;
   }
 
@@ -57,20 +57,21 @@ export class ModelAccessApi {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ secret, settings }),
     });
-    return (await readAnswer(response, modelCredentialResponseSchema, "save your key")).credential;
+    return (await readApiAnswer(response, modelCredentialResponseSchema, "save your key"))
+      .credential;
   }
 
   async removeCredential(providerId: string): Promise<ModelCredentialSummary[]> {
     const response = await this.#request(buildModelCredentialApiPath(providerId), {
       method: "DELETE",
     });
-    return (await readAnswer(response, modelCredentialListResponseSchema, "remove your key"))
+    return (await readApiAnswer(response, modelCredentialListResponseSchema, "remove your key"))
       .credentials;
   }
 
   async readUsage(): Promise<UserModelUsageResponse> {
     const response = await this.#request(modelUsageApiPath);
-    return readAnswer(response, userModelUsageResponseSchema, "read your usage");
+    return readApiAnswer(response, userModelUsageResponseSchema, "read your usage");
   }
 
   /** Sets the user's own cap, or removes it with null; answers with their usage as it now stands. */
@@ -80,40 +81,16 @@ export class ModelAccessApi {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tokens }),
     });
-    return readAnswer(response, userModelUsageResponseSchema, "change your cap");
+    return readApiAnswer(response, userModelUsageResponseSchema, "change your cap");
   }
 
   async readThreadUsage(threadId: string): Promise<ThreadModelUsageResponse> {
     const response = await this.#request(buildThreadModelUsageApiPath(threadId));
-    return readAnswer(response, threadModelUsageResponseSchema, "read this thread's usage");
+    return readApiAnswer(response, threadModelUsageResponseSchema, "read this thread's usage");
   }
 
   async #fetchCatalogue(): Promise<ModelCatalogue> {
     const response = await this.#request(modelCatalogueApiPath);
-    return readAnswer(response, modelCatalogueSchema, "read which models can be used");
+    return readApiAnswer(response, modelCatalogueSchema, "read which models can be used");
   }
-}
-
-type AnswerSchema<Answer> = {
-  safeParse(value: unknown): { success: true; data: Answer } | { success: false };
-};
-
-async function readAnswer<Answer>(
-  response: Response,
-  schema: AnswerSchema<Answer>,
-  attempt: string,
-): Promise<Answer> {
-  const body: unknown = await response.json().catch(() => undefined);
-  if (!response.ok) {
-    const apiError = apiErrorResponseSchema.safeParse(body);
-    const explanation = apiError.success ? apiError.data.error.message : `HTTP ${response.status}`;
-    throw new Error(`Could not ${attempt}: ${explanation}`);
-  }
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) {
-    throw new Error(
-      `Could not ${attempt}: the control plane answered in a way this page does not understand. Reload the page.`,
-    );
-  }
-  return parsed.data;
 }

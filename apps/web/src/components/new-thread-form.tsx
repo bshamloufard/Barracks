@@ -29,7 +29,7 @@ export function NewThreadForm({ isCreating, onCreate, onCancel }: NewThreadFormP
   const [model, setModel] = useState<string | undefined>(undefined);
   const choices =
     modelAccess.name === "loaded"
-      ? listProviderChoices(modelAccess.catalogue, modelAccess.credentials)
+      ? listProviderChoices(modelAccess.catalogue, modelAccess.credentials, modelAccess.plan)
       : [];
   const chosenModel = model ?? suggestModel(choices) ?? `${choices[0]?.providerId ?? ""}/`;
 

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../authentication/session-context";
 import { threadListAddress } from "../page-address";
 import { AccountBar } from "./account-bar";
+import { ChatGptPlanSettings } from "./chatgpt-plan-settings";
 import { ModelAccessSettings } from "./model-access-settings";
 import { ModelUsageSettings } from "./model-usage-settings";
 
@@ -13,8 +14,10 @@ type ConnectionView =
 
 /**
  * The user's settings: their own model keys, on which their threads run,
- * what those threads have used and the cap on it, and their link to GitHub, through which their threads can work on their
- * private repositories and publish their work.
+ * their ChatGPT plan, on which their OpenAI models may run instead, what
+ * those threads have used and the cap on it, and their link to GitHub,
+ * through which their threads can work on their private repositories and
+ * publish their work.
  */
 export function SettingsPage() {
   const { repositoriesApi } = useSession();
@@ -73,6 +76,10 @@ export function SettingsPage() {
         <section className="settings-section" aria-labelledby="model-access-heading">
           <h2 id="model-access-heading">Model access</h2>
           <ModelAccessSettings />
+        </section>
+        <section className="settings-section" aria-labelledby="chatgpt-plan-heading">
+          <h2 id="chatgpt-plan-heading">ChatGPT plan</h2>
+          <ChatGptPlanSettings />
         </section>
         <section className="settings-section" aria-labelledby="model-usage-heading">
           <h2 id="model-usage-heading">Model usage</h2>

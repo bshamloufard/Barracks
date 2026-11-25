@@ -1,4 +1,5 @@
 import { createAuthorizedFetch } from "../api/authorized-fetch";
+import { ChatGptPlanApi } from "../api/chatgpt-plan-api";
 import { ModelAccessApi } from "../api/model-access-api";
 import { RepositoriesApi } from "../api/repositories-api";
 import { ThreadsApi } from "../api/threads-api";
@@ -29,6 +30,7 @@ export class SessionController {
   readonly threadsApi: ThreadsApi;
   readonly repositoriesApi: RepositoriesApi;
   readonly modelAccessApi: ModelAccessApi;
+  readonly chatGptPlanApi: ChatGptPlanApi;
   readonly #service: SignInService;
   readonly #stateListeners = new Set<() => void>();
   readonly #tokenListeners = new Set<(accessToken: string) => void>();
@@ -47,6 +49,7 @@ export class SessionController {
     this.threadsApi = new ThreadsApi(authorizedFetch);
     this.repositoriesApi = new RepositoriesApi(authorizedFetch);
     this.modelAccessApi = new ModelAccessApi(authorizedFetch);
+    this.chatGptPlanApi = new ChatGptPlanApi(authorizedFetch);
   }
 
   readonly getState = (): SignInState => this.#state;
