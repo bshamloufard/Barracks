@@ -129,7 +129,7 @@ export class UnreadableCredentialsError extends Error {
       `Stored model credentials were sealed under keys this control plane was not given: ${described}. ` +
         `BARRACK_MODEL_CREDENTIAL_KEY has fingerprint ${currentFingerprint}. ` +
         "Set the key they were sealed under, as BARRACK_MODEL_CREDENTIAL_KEY or among BARRACK_MODEL_CREDENTIAL_PREVIOUS_KEYS. " +
-        "If that key is lost, so are those credentials: delete their rows from barrack.model_credentials, and their owners add their keys again (see docs/deployment.md).",
+        "If that key is lost, so are those credentials: delete their rows from barrack.model_credentials and barrack.chatgpt_plan_sign_ins, and their owners add their keys, or connect their ChatGPT plans, again (see docs/deployment.md).",
     );
     this.name = "UnreadableCredentialsError";
   }
