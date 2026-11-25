@@ -5,6 +5,7 @@ import { findAgentRequestShape, type ProviderApiFormat } from "@barrack/model-ca
 import { describe, expect, it } from "vitest";
 import { inspectWholeBody } from "../test-support/request-bodies.js";
 import { findUnrelayedHeaderValue } from "./proxy-headers.js";
+import { findRelayedRoute } from "./relayed-routes.js";
 
 /**
  * The model proxy relays only requests shaped like the pinned agent's, so
@@ -13,7 +14,9 @@ import { findUnrelayedHeaderValue } from "./proxy-headers.js";
  * model Pi lists for a relayed provider, at every thinking level and cache
  * retention, for conversations shaped like the coding agent's), which only
  * that package installs; here each is checked as the proxy checks a
- * request, its headers and its body as it would arrive.
+ * request: its method, path and query, its headers and its body as it would
+ * arrive. So a later Pi that sends to another path, or adds a query, fails
+ * here rather than in a sandbox.
  */
 
 const catalogueDirectory = fileURLToPath(
@@ -25,6 +28,9 @@ type AgentRequest = {
   format: ProviderApiFormat;
   modelId: string;
   variant: string;
+  method: string;
+  path: string;
+  query: string;
   headers: Record<string, string>;
   body: string;
 };
@@ -52,13 +58,29 @@ describe("the requests the pinned agent sends", () => {
     for await (const request of readAgentRequests()) {
       count += 1;
       formatsSeen.add(`${request.providerId} ${request.format}`);
+      const route = findRelayedRoute(
+        {
+          providerId: request.providerId,
+          method: request.method,
+          apiPath: request.path,
+          query: request.query,
+        },
+        undefined,
+      );
+      const isRouted = route.kind === "found" && route.route.format === request.format;
       const shape = findAgentRequestShape(request.providerId, request.format);
       const header = shape && findUnrelayedHeaderValue(request.headers, shape);
       const inspection = inspectWholeBody(request.format, request.body, request.providerId);
-      if (shape === undefined || header !== undefined || inspection.kind !== "relayable") {
-        refused.push(
-          `${request.providerId}/${request.modelId} (${request.variant}): ${header ?? JSON.stringify(inspection)}`,
-        );
+      if (
+        !isRouted ||
+        shape === undefined ||
+        header !== undefined ||
+        inspection.kind !== "relayable"
+      ) {
+        const why = isRouted
+          ? (header ?? JSON.stringify(inspection))
+          : `${request.method} ${request.path}?${request.query}: ${route.kind}`;
+        refused.push(`${request.providerId}/${request.modelId} (${request.variant}): ${why}`);
       }
     }
 

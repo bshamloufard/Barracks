@@ -22,8 +22,9 @@ import {
  * calls answered, the tools changing mid-conversation, and an earlier
  * answer from another model after a switch; and the requests it makes
  * besides a turn (a compaction's summary, a cache refresh). Each request is
- * caught at the HTTP client, headers and bytes as they would be sent, and
- * answered with an error, so nothing leaves the process.
+ * caught at the HTTP client, its method, path below the provider's address,
+ * query, headers and bytes as they would be sent, and answered with an
+ * error, so nothing leaves the process.
  */
 
 export type AgentRequest = {
@@ -32,6 +33,11 @@ export type AgentRequest = {
   modelId: string;
   /** What varied, for a reader of a failure. */
   variant: string;
+  method: string;
+  /** Below the provider's address, which here is the model proxy's (`/v1/messages`, say). */
+  path: string;
+  /** The query string, without its `?`. */
+  query: string;
   headers: Record<string, string>;
   body: string;
 };
@@ -85,13 +91,12 @@ export async function buildAgentRequests(
 /** What the sandbox supervisor writes into Pi's `models.json`: the proxy's address for each relayed provider. */
 function proxiedProviders(): Record<string, { baseUrl: string }> {
   return Object.fromEntries(
-    relayedProviders.map(({ providerId }) => [
-      providerId,
-      {
-        baseUrl: `http://control-plane.invalid/threads/00000000-0000-4000-8000-000000000000/model-proxy/${providerId}`,
-      },
-    ]),
+    relayedProviders.map(({ providerId }) => [providerId, { baseUrl: proxyAddress(providerId) }]),
   );
+}
+
+function proxyAddress(providerId: string): string {
+  return `http://control-plane.invalid/threads/00000000-0000-4000-8000-000000000000/model-proxy/${providerId}`;
 }
 
 async function buildModelRequests(
@@ -109,7 +114,7 @@ async function buildModelRequests(
     for (const cacheRetention of cacheRetentions) {
       for (const [name, context] of Object.entries(conversations)) {
         const variant = `${name}, thinking ${reasoning ?? "off"}, cache ${cacheRetention}`;
-        await send(runtime, model, context, { reasoning, cacheRetention }, (caught) =>
+        await send(runtime, provider, model, context, { reasoning, cacheRetention }, (caught) =>
           onRequest({
             providerId: provider.providerId,
             format,
@@ -122,6 +127,7 @@ async function buildModelRequests(
       // A refresh of the prompt cache: the same request, with a one-token output (`cache-warmer.js`).
       await send(
         runtime,
+        provider,
         model,
         conversations.longConversation,
         { reasoning, cacheRetention, maxTokens: 1, disableContinuation: true },
@@ -141,6 +147,7 @@ async function buildModelRequests(
 /** Sends one request through Pi, catching it at the HTTP client. */
 async function send(
   runtime: ModelRuntime,
+  provider: RelayedProvider,
   model: RuntimeModel,
   context: StreamContext,
   options: {
@@ -149,10 +156,20 @@ async function send(
     maxTokens?: number;
     disableContinuation?: boolean;
   },
-  onCaught: (caught: { headers: Record<string, string>; body: string }) => void,
+  onCaught: (caught: Omit<AgentRequest, "providerId" | "format" | "modelId" | "variant">) => void,
 ): Promise<void> {
-  const capture: typeof fetch = async (_url, init) => {
-    onCaught({ headers: readHeaders(init?.headers), body: String(init?.body ?? "") });
+  const capture: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const proxy = new URL(proxyAddress(provider.providerId));
+    const isToProxy = url.origin === proxy.origin && url.pathname.startsWith(`${proxy.pathname}/`);
+    onCaught({
+      method: init?.method ?? (input instanceof Request ? input.method : "GET"),
+      // A request sent anywhere else keeps its whole address, which no route matches.
+      path: isToProxy ? url.pathname.slice(proxy.pathname.length) : url.href,
+      query: url.search.slice(1),
+      headers: readHeaders(init?.headers),
+      body: String(init?.body ?? ""),
+    });
     return new Response(
       JSON.stringify({
         type: "error",
