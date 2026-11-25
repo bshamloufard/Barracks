@@ -30,11 +30,15 @@ export class DevelopmentSignInService implements SignInService {
     return this.currentAccessToken();
   }
 
-  async requestCode(): Promise<void> {
+  async sendSignInEmail(): Promise<void> {
     throw new Error("Development mode has no sign-in.");
   }
 
   async verifyCode(): Promise<void> {
+    throw new Error("Development mode has no sign-in.");
+  }
+
+  async finishSignInWithLink(): Promise<void> {
     throw new Error("Development mode has no sign-in.");
   }
 

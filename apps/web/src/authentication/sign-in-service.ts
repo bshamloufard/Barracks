@@ -46,10 +46,19 @@ export interface SignInService extends AccessTokenSource {
   readonly hasSignIn: boolean;
   /** The session kept from an earlier visit, if there is one. */
   restoreSession(): Promise<SessionLookup>;
-  /** Emails a six-digit code to the address. */
-  requestCode(emailAddress: string): Promise<void>;
+  /**
+   * Emails the address a sign-in link back to this installation, which
+   * works only in this browser, and a code too if the project's email
+   * template carries one.
+   */
+  sendSignInEmail(emailAddress: string): Promise<void>;
   /** Signs in with the code; rejects with a message for the user if it is wrong or stale. */
   verifyCode(emailAddress: string, code: string): Promise<void>;
+  /**
+   * Signs in with the auth code a sign-in link brought back; rejects with a
+   * message for the user, saying what to do, if it cannot.
+   */
+  finishSignInWithLink(authCode: string): Promise<void>;
   /** Deletes this browser's session, refresh token included. */
   signOut(): Promise<void>;
   /**

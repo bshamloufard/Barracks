@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionController } from "./session-controller";
+import { describeSignInLinkFailure } from "./sign-in-link";
 import {
   accessTokenOf,
   type SessionLookup,
@@ -10,7 +11,10 @@ import {
 /** A sign-in service whose session the test changes, as supabase-js would on sign-in and refresh. */
 class FakeSignInService implements SignInService {
   readonly hasSignIn = true;
-  readonly sentCodes: string[] = [];
+  readonly sentEmails: string[] = [];
+  readonly verifiedCodes: string[] = [];
+  /** The auth code the one email this browser asked for would bring back. */
+  linkAuthCode = "auth-code-1";
   signOutCount = 0;
   /** While set, every lookup answers this, as supabase-js does when a refresh cannot reach Supabase. */
   unreachableReason: string | undefined;
@@ -45,15 +49,24 @@ class FakeSignInService implements SignInService {
     return this.currentAccessToken();
   }
 
-  async requestCode(emailAddress: string) {
-    this.sentCodes.push(emailAddress);
+  async sendSignInEmail(emailAddress: string) {
+    this.sentEmails.push(emailAddress);
   }
 
   async verifyCode(emailAddress: string, code: string) {
-    if (code !== "123456") {
+    this.verifiedCodes.push(code);
+    if (!["123456", "12345678", "1234567890"].includes(code)) {
       throw new Error("That code did not work");
     }
     this.changeSession({ emailAddress, accessToken: "token-1" });
+  }
+
+  /** As supabase-js does, it fails when this browser holds no verifier for the code. */
+  async finishSignInWithLink(authCode: string) {
+    if (authCode !== this.linkAuthCode) {
+      throw new Error(describeSignInLinkFailure({ kind: "not_this_browser" }));
+    }
+    this.changeSession({ emailAddress: "ada@example.com", accessToken: "token-1" });
   }
 
   async signOut() {
@@ -78,7 +91,7 @@ describe("the page's session", () => {
     session.start();
     await settle();
 
-    session.requestCode("ada@example.com");
+    session.requestSignInEmail("ada@example.com");
     await settle();
     session.submitCode("000000");
     await settle();
@@ -86,9 +99,119 @@ describe("the page's session", () => {
     session.submitCode("123456");
     await settle();
 
-    expect(service.sentCodes).toEqual(["ada@example.com"]);
-    expect(afterWrongCode).toMatchObject({ step: "code", errorMessage: "That code did not work" });
+    expect(service.sentEmails).toEqual(["ada@example.com"]);
+    expect(afterWrongCode).toMatchObject({
+      step: "check_email",
+      errorMessage: "That code did not work",
+    });
     expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
+  });
+
+  it.each(["123456", "12345678", "1234567890"])(
+    "accepts a code of %s, as long as Supabase may send",
+    async (code) => {
+      const service = new FakeSignInService(undefined);
+      const session = new SessionController(service);
+      session.start();
+      await settle();
+
+      session.requestSignInEmail("ada@example.com");
+      await settle();
+      session.submitCode(code);
+      await settle();
+
+      expect(service.verifiedCodes).toEqual([code]);
+      expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
+    },
+  );
+
+  it.each(["12345", "12345678901", "12 34 56", "abcdef", ""])(
+    "refuses %j without asking Supabase, since no code Supabase sends looks like it",
+    async (code) => {
+      const service = new FakeSignInService(undefined);
+      const session = new SessionController(service);
+      session.start();
+      await settle();
+
+      session.requestSignInEmail("ada@example.com");
+      await settle();
+      session.submitCode(code);
+      await settle();
+
+      expect(service.verifiedCodes).toEqual([]);
+      expect(session.getState()).toMatchObject({
+        step: "check_email",
+        isBusy: false,
+        errorMessage: "A code is 6 to 10 digits. Check it against the email.",
+      });
+    },
+  );
+
+  it("signs in when the page opens from the link this browser asked for", async () => {
+    const service = new FakeSignInService(undefined);
+    const session = new SessionController(service);
+
+    session.start({ kind: "link", authCode: "auth-code-1" });
+    await settle();
+
+    expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
+  });
+
+  it("explains a link opened in a browser that did not ask for it, and lets the user ask here", async () => {
+    const service = new FakeSignInService(undefined);
+    const session = new SessionController(service);
+
+    session.start({ kind: "link", authCode: "a-code-another-browser-asked-for" });
+    await settle();
+    const afterLink = session.getState();
+    session.requestSignInEmail("ada@example.com");
+    await settle();
+
+    expect(afterLink).toMatchObject({
+      name: "signed_out",
+      step: "email",
+      errorMessage: expect.stringContaining("works only in the browser that asked for it"),
+    });
+    expect(service.sentEmails).toEqual(["ada@example.com"]);
+    expect(session.getState()).toMatchObject({ step: "check_email", errorMessage: undefined });
+  });
+
+  it.each([
+    ["expired or reused", "otp_expired", "has expired or has been used already"],
+    ["unknown", "something_new", "Supabase did not accept that sign-in link."],
+  ])(
+    "shows why Supabase refused a %s link, and lets the user ask again",
+    async (_case, errorCode, reason) => {
+      const service = new FakeSignInService(undefined);
+      const session = new SessionController(service);
+
+      session.start({ kind: "refused", errorCode });
+      await settle();
+      const afterLink = session.getState();
+      session.requestSignInEmail("ada@example.com");
+      await settle();
+
+      expect(afterLink).toMatchObject({
+        name: "signed_out",
+        step: "email",
+        isBusy: false,
+        errorMessage: expect.stringContaining(reason),
+      });
+      expect(afterLink).toMatchObject({
+        errorMessage: expect.stringContaining("Ask for a new one here."),
+      });
+      expect(session.getState()).toMatchObject({ step: "check_email" });
+    },
+  );
+
+  it("says nothing of a stale link when this browser is signed in already", async () => {
+    const service = new FakeSignInService({ emailAddress: "grace@example.com", accessToken: "t" });
+    const session = new SessionController(service);
+
+    session.start({ kind: "refused", errorCode: "otp_expired" });
+    await settle();
+
+    expect(session.getState()).toEqual({ name: "signed_in", emailAddress: "grace@example.com" });
   });
 
   it("passes every refreshed token to open connections, and not the first one", async () => {

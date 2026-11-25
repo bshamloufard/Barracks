@@ -1,3 +1,4 @@
+import type { SignInReturn } from "../authentication/sign-in-link";
 import { type PageAddress, parsePageLocation } from "../page-address";
 import { GithubCallbackPage } from "./github-callback-page";
 import { SessionGate } from "./session-gate";
@@ -5,7 +6,7 @@ import { SettingsPage } from "./settings-page";
 import { ThreadListPage } from "./thread-list-page";
 import { ThreadView } from "./thread-view";
 
-export function App() {
+export function App({ signInReturn }: { signInReturn: SignInReturn }) {
   const address = parsePageLocation(window.location.pathname, window.location.search);
   if (!address.ok) {
     return (
@@ -15,7 +16,7 @@ export function App() {
     );
   }
   return (
-    <SessionGate>
+    <SessionGate signInReturn={signInReturn}>
       <Page address={address.value} />
     </SessionGate>
   );

@@ -32,13 +32,13 @@ describe("signing in", () => {
     });
   });
 
-  it("goes from the email address, to the code sent to it, to signed in", () => {
+  it("goes from the email address, to the email being on its way, to signed in", () => {
     const askingForEmail = apply([signedOut]);
     const sendingCode = reduceSignInState(askingForEmail, {
-      type: "code_requested",
+      type: "email_requested",
       emailAddress: "ada@example.com",
     });
-    const askingForCode = reduceSignInState(sendingCode, { type: "code_sent" });
+    const askingForCode = reduceSignInState(sendingCode, { type: "email_sent" });
     const checkingCode = reduceSignInState(askingForCode, { type: "code_submitted" });
     const signedIn = reduceSignInState(checkingCode, signedInAsAda);
 
@@ -48,37 +48,53 @@ describe("signing in", () => {
       isBusy: true,
     });
     expect(askingForCode).toMatchObject({
-      step: "code",
+      step: "check_email",
       emailAddress: "ada@example.com",
       isBusy: false,
     });
-    expect(checkingCode).toMatchObject({ step: "code", isBusy: true });
+    expect(checkingCode).toMatchObject({ step: "check_email", isBusy: true });
     expect(signedIn).toEqual({ name: "signed_in", emailAddress: "ada@example.com" });
   });
 
   it("stays on the step that failed, saying why, and clears the message on the next attempt", () => {
     const failed = apply([
       signedOut,
-      { type: "code_requested", emailAddress: "ada@example.com" },
-      { type: "code_sent" },
+      { type: "email_requested", emailAddress: "ada@example.com" },
+      { type: "email_sent" },
       { type: "code_submitted" },
       { type: "attempt_failed", errorMessage: "That code did not work" },
     ]);
     const retried = reduceSignInState(failed, { type: "code_submitted" });
 
     expect(failed).toMatchObject({
-      step: "code",
+      step: "check_email",
       isBusy: false,
       errorMessage: "That code did not work",
     });
-    expect(retried).toMatchObject({ step: "code", isBusy: true, errorMessage: undefined });
+    expect(retried).toMatchObject({ step: "check_email", isBusy: true, errorMessage: undefined });
+  });
+
+  it("asks for the email address again, saying why, when a sign-in link failed", () => {
+    const state = apply([
+      signedOut,
+      { type: "link_failed", errorMessage: "That sign-in link has expired" },
+      signedOut,
+    ]);
+
+    expect(state).toEqual({
+      name: "signed_out",
+      step: "email",
+      emailAddress: "",
+      isBusy: false,
+      errorMessage: "That sign-in link has expired",
+    });
   });
 
   it("starts again from the email address when the user chooses a different one", () => {
     const state = apply([
       signedOut,
-      { type: "code_requested", emailAddress: "ada@example.com" },
-      { type: "code_sent" },
+      { type: "email_requested", emailAddress: "ada@example.com" },
+      { type: "email_sent" },
       { type: "different_email_chosen" },
     ]);
 

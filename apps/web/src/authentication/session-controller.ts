@@ -4,6 +4,12 @@ import { ModelAccessApi } from "../api/model-access-api";
 import { RepositoriesApi } from "../api/repositories-api";
 import { ThreadsApi } from "../api/threads-api";
 import { reconnectDelayInMilliseconds } from "../connection/reconnect-delay";
+import { isOneTimeCode, longestOneTimeCode, shortestOneTimeCode } from "./one-time-code";
+import {
+  describeSignInLinkFailure,
+  linkFailureOfErrorCode,
+  type SignInReturn,
+} from "./sign-in-link";
 import type {
   AccessTokenSource,
   SessionLookup,
@@ -37,6 +43,8 @@ export class SessionController {
   #state: SignInState = initialSignInState;
   #lastAccessToken: string | undefined;
   #restoreRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Why the sign-in link the page opened from failed, until the page can say so. */
+  #linkFailure: string | undefined;
 
   constructor(service: SignInService) {
     this.#service = service;
@@ -59,10 +67,17 @@ export class SessionController {
     return () => this.#stateListeners.delete(listener);
   };
 
-  /** Restores any earlier session and follows changes to it until the returned function is called. */
-  start(): () => void {
+  /**
+   * Restores any earlier session and follows changes to it until the
+   * returned function is called. When the page opened from a sign-in link,
+   * it first finishes signing in with it, so the session restored is the
+   * one the link gave; a link that failed is explained once the page is
+   * known to be signed out, on the form that asks for a new one. Already
+   * signed in, a stale link is of no matter and nothing is said.
+   */
+  start(signInReturn: SignInReturn = { kind: "none" }): () => void {
     const stopFollowing = this.#service.onSessionChanged((session) => this.#applySession(session));
-    this.#restoreSession(0);
+    this.#finishSignInWithLink(signInReturn).then(() => this.#restoreSession(0));
     return () => {
       stopFollowing();
       clearTimeout(this.#restoreRetryTimer);
@@ -75,10 +90,11 @@ export class SessionController {
     return () => this.#tokenListeners.delete(listener);
   }
 
-  requestCode(emailAddress: string): void {
-    this.#dispatch({ type: "code_requested", emailAddress });
-    this.#service.requestCode(emailAddress).then(
-      () => this.#dispatch({ type: "code_sent" }),
+  /** Asks for the sign-in email, the first time or again. */
+  requestSignInEmail(emailAddress: string): void {
+    this.#dispatch({ type: "email_requested", emailAddress });
+    this.#service.sendSignInEmail(emailAddress).then(
+      () => this.#dispatch({ type: "email_sent" }),
       (error: unknown) =>
         this.#dispatch({ type: "attempt_failed", errorMessage: describeError(error) }),
     );
@@ -88,6 +104,13 @@ export class SessionController {
   submitCode(code: string): void {
     const state = this.#state;
     if (state.name !== "signed_out") {
+      return;
+    }
+    if (!isOneTimeCode(code)) {
+      this.#dispatch({
+        type: "attempt_failed",
+        errorMessage: `A code is ${shortestOneTimeCode} to ${longestOneTimeCode} digits. Check it against the email.`,
+      });
       return;
     }
     this.#dispatch({ type: "code_submitted" });
@@ -118,6 +141,29 @@ export class SessionController {
     this.#applySession(undefined);
   }
 
+  /** Never rejects: a failure is kept for `#applyRestoredSession` to show. */
+  async #finishSignInWithLink(signInReturn: SignInReturn): Promise<void> {
+    if (!this.hasSignIn) {
+      return;
+    }
+    switch (signInReturn.kind) {
+      case "none":
+        return;
+      case "refused":
+        this.#linkFailure = describeSignInLinkFailure(
+          linkFailureOfErrorCode(signInReturn.errorCode, undefined),
+        );
+        return;
+      case "link":
+        try {
+          await this.#service.finishSignInWithLink(signInReturn.authCode);
+        } catch (error) {
+          this.#linkFailure = describeError(error);
+        }
+        return;
+    }
+  }
+
   /**
    * A stored session whose token cannot be refreshed yet (the page opened
    * offline, say) is neither signed in nor out: the page says so and asks
@@ -138,6 +184,10 @@ export class SessionController {
         return;
       case "signed_out":
         this.#applySession(undefined);
+        if (this.#linkFailure !== undefined) {
+          this.#dispatch({ type: "link_failed", errorMessage: this.#linkFailure });
+          this.#linkFailure = undefined;
+        }
         return;
       case "unavailable":
         this.#dispatch({ type: "session_restore_failed", reason: lookup.reason });

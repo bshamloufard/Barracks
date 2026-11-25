@@ -4,6 +4,7 @@ import { fetchClientConfiguration } from "../api/client-configuration";
 import { DevelopmentSignInService } from "../authentication/development-sign-in-service";
 import { SessionContext } from "../authentication/session-context";
 import { SessionController } from "../authentication/session-controller";
+import type { SignInReturn } from "../authentication/sign-in-link";
 import type { SignInService } from "../authentication/sign-in-service";
 import { NotAllowedPage } from "./not-allowed-page";
 import { SignInPage } from "./sign-in-page";
@@ -17,9 +18,17 @@ type SessionSetup =
  * Asks the control plane how users sign in here, then shows the sign-in
  * page until someone is, the refusal page if this installation does not
  * admit them, and otherwise the page asked for, with the session provided.
+ * `signInReturn` is what the address held when the page opened, if it
+ * opened from a sign-in link.
  */
-export function SessionGate({ children }: { children: ReactNode }) {
-  const setup = useSessionSetup();
+export function SessionGate({
+  signInReturn,
+  children,
+}: {
+  signInReturn: SignInReturn;
+  children: ReactNode;
+}) {
+  const setup = useSessionSetup(signInReturn);
   if (setup.name === "loading") {
     return <Notice text="Loading…" />;
   }
@@ -45,7 +54,7 @@ function SignedInOnly({ session, children }: { session: SessionController; child
   }
 }
 
-function useSessionSetup(): SessionSetup {
+function useSessionSetup(signInReturn: SignInReturn): SessionSetup {
   const [setup, setSetup] = useState<SessionSetup>({ name: "loading" });
   useEffect(() => {
     let stopSession: (() => void) | undefined;
@@ -58,7 +67,7 @@ function useSessionSetup(): SessionSetup {
             return;
           }
           const session = new SessionController(service);
-          stopSession = session.start();
+          stopSession = session.start(signInReturn);
           setSetup({ name: "ready", session });
         },
         (error: unknown) =>
@@ -71,7 +80,7 @@ function useSessionSetup(): SessionSetup {
       isCancelled = true;
       stopSession?.();
     };
-  }, []);
+  }, [signInReturn]);
   return setup;
 }
 
@@ -89,6 +98,7 @@ async function createSignInService(
   return new SupabaseSignInService(
     authentication.supabaseUrl,
     authentication.supabasePublishableKey,
+    window.location.href,
   );
 }
 
