@@ -54,11 +54,16 @@ function ModelAccessErrorNote({
   errorKind: ModelAccessErrorKind;
   errorMessage: string | undefined;
 }) {
-  const { what, nextStep, isFixedInSettings } = describeModelAccessError(errorKind);
+  const { what, nextStep, isFixedInSettings, manageUsageUrl } = describeModelAccessError(errorKind);
   return (
     <div className="error-notice model-access-error" role="alert">
       <p>
         <strong>{what}</strong> {nextStep}{" "}
+        {manageUsageUrl !== undefined && (
+          <a href={manageUsageUrl} target="_blank" rel="noreferrer">
+            Manage usage
+          </a>
+        )}{" "}
         {isFixedInSettings && <a href={settingsAddress}>Open Settings</a>}
       </p>
       {errorMessage !== undefined && (

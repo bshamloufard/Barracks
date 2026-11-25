@@ -5,7 +5,7 @@ import { isPiOutOfStep, type PiRunningOn, planPiCredentials } from "./pi-credent
 
 const key = (secret: string): ModelCredential => ({ kind: "api_key", secret, settings: {} });
 const token = (secret: string, baseUrl = "http://control-plane/threads/t/model-proxy/anthropic") =>
-  ({ kind: "proxy_token", secret, baseUrl }) satisfies ModelCredential;
+  ({ kind: "proxy_token", secret, baseUrl, access: "api_key" }) satisfies ModelCredential;
 
 const access = (model: string, credential: ModelCredential | null): ModelAccess => ({
   model,

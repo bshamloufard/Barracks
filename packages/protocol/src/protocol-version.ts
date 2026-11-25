@@ -37,5 +37,11 @@
  *   may carry a `proxy_token` credential with the base URL of the control
  *   plane's model proxy instead of the key; assistant messages may carry
  *   the agent's `usage`; and `usage_cap_reached` joins the error kinds.
+ * - 7: a ChatGPT plan: a `proxy_token` credential says what the proxy
+ *   spends (`access`, the owner's API key or their ChatGPT plan), which
+ *   changes how the agent must shape its requests; and the plan's
+ *   refusals join the error kinds (`plan_limit_reached`,
+ *   `plan_not_eligible`, `plan_sign_in_expired`,
+ *   `plan_capability_unsupported`).
  */
-export const protocolVersion = 6;
+export const protocolVersion = 7;

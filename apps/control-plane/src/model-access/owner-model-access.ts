@@ -169,6 +169,7 @@ export class OwnerModelAccess implements ThreadModelAccess {
       kind: "proxy_token",
       secret: token,
       baseUrl: `${this.#options.controlPlaneUrlForSandboxes}${buildModelProxyBasePath(threadId, providerId)}`,
+      access: "api_key",
     };
   }
 }

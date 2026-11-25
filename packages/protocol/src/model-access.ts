@@ -64,6 +64,19 @@ export function parseModelReference(reference: ModelReference): ParsedModelRefer
  *   thread's owner has used as many tokens as their usage cap allows within
  *   its window (see `model-usage.ts`). Wait for older usage to leave the
  *   window, or raise your own cap in Settings.
+ *
+ * And for a thread whose OpenAI requests run on its owner's ChatGPT plan
+ * (see `chatgpt-plan.ts`), the programme's own refusals:
+ * - `plan_limit_reached`: the plan's usage limit, or the limit the user set
+ *   for this app in ChatGPT, is reached. OpenAI gives no reset time. Wait,
+ *   or switch the thread to another model or to an API key.
+ * - `plan_not_eligible`: the account, its plan or its workspace's policy
+ *   does not allow this use. A workspace's administrator may have to allow
+ *   the app.
+ * - `plan_sign_in_expired`: the sign-in expired or was revoked, so the
+ *   control plane no longer holds it. Connect the plan again in Settings.
+ * - `plan_capability_unsupported`: the request used something the
+ *   programme does not support (a model, say). Choose another model.
  */
 export const modelAccessErrorKindSchema = z.enum([
   "credential_missing",
@@ -71,6 +84,10 @@ export const modelAccessErrorKindSchema = z.enum([
   "quota_exhausted",
   "rate_limited",
   "usage_cap_reached",
+  "plan_limit_reached",
+  "plan_not_eligible",
+  "plan_sign_in_expired",
+  "plan_capability_unsupported",
 ]);
 
 export type ModelAccessErrorKind = z.infer<typeof modelAccessErrorKindSchema>;
@@ -121,10 +138,24 @@ export const apiKeyCredentialSchema = z.strictObject({
 });
 
 /**
+ * What the model proxy spends on its owner's behalf for a relayed
+ * provider's requests:
+ * - `api_key`: the owner's API key for the provider.
+ * - `chatgpt_plan`: the owner's ChatGPT plan, through OpenAI's "Sign in with
+ *   ChatGPT" programme (OpenAI only). The programme accepts only some of
+ *   what an API key does, so the agent must shape its requests as the
+ *   programme takes them.
+ */
+export const providerAccessSchema = z.enum(["api_key", "chatgpt_plan"]);
+
+export type ProviderAccess = z.infer<typeof providerAccessSchema>;
+
+/**
  * Where the agent sends the provider's requests instead of the provider
- * (the control plane's model proxy, for this thread and provider), and the
- * token that proves them to be this thread's. The user's key never leaves
- * the control plane: the proxy attaches it to each request it forwards. The
+ * (the control plane's model proxy, for this thread and provider), the
+ * token that proves them to be this thread's, and what the proxy spends on
+ * them (`access`). The user's key, or their plan's tokens, never leave the
+ * control plane: the proxy attaches them to each request it forwards. The
  * token is worth nothing anywhere else, works only while the thread may
  * run, and is revoked when its sandbox stops (see the control plane's
  * `model-proxy/`).
@@ -133,6 +164,7 @@ export const proxyTokenCredentialSchema = z.strictObject({
   kind: z.literal("proxy_token"),
   secret: credentialSecretSchema,
   baseUrl: z.url({ protocol: /^https?$/ }).max(2048),
+  access: providerAccessSchema,
 });
 
 export const modelCredentialSchema = z.discriminatedUnion("kind", [
@@ -157,9 +189,9 @@ export const modelCredentialSchema = z.discriminatedUnion("kind", [
  * takes effect for the agent's next run, the run in progress carrying on
  * with what it had; a replaced or removed credential, at once.
  *
- * A credential that expires and is refreshed by the control plane (a
- * subscription's access token) would be another `kind`, sent again before
- * each expiry in the same way.
+ * A ChatGPT plan's tokens, which expire and are refreshed, never reach
+ * the sandbox: the proxy holds them, and the sandbox gets a `proxy_token`
+ * whose `access` says the plan is spent.
  */
 export const configureModelAccessSchema = z.strictObject({
   type: z.literal("configure_model_access"),

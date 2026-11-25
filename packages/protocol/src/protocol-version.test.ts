@@ -7,7 +7,7 @@ describe("protocolVersion", () => {
     expect(protocolVersion).toBeGreaterThan(0);
   });
 
-  it("is 6, the first version with the model proxy and usage", () => {
-    expect(protocolVersion).toBe(6);
+  it("is 7, the first version with ChatGPT plan access", () => {
+    expect(protocolVersion).toBe(7);
   });
 });

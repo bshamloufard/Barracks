@@ -506,6 +506,7 @@ describe("PiAgentHarness with the real Pi", () => {
         kind: "proxy_token",
         secret: "proxy-token-for-the-thread",
         baseUrl: proxyBaseUrl,
+        access: "api_key",
       },
     });
     harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
