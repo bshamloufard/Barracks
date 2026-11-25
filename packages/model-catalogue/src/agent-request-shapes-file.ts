@@ -6,7 +6,7 @@ import type { ProviderApiFormat } from "./relayed-providers.js";
  * the one list the control plane's model proxy relays against, so that it
  * relays only requests shaped like the agent's own.
  *
- * Per wire format, the `type` an object may have at each place where the
+ * Per wire format (and, for OpenAI on a ChatGPT plan, apart), the `type` an object may have at each place where the
  * format puts its conversation's items, their parts and the tools (`null`
  * where the agent sends such an object without a `type`), Anthropic's
  * `anthropic-beta` header values, and the members of the conversation
@@ -16,6 +16,12 @@ import type { ProviderApiFormat } from "./relayed-providers.js";
 export type AgentRequestShapes = {
   agent: { name: string; version: string };
   formats: Record<ProviderApiFormat, FormatRequestShapes>;
+  /**
+   * What the agent's requests to OpenAI hold when they run on a ChatGPT
+   * plan, in the Responses API: what it sends OpenAI's "Sign in with
+   * ChatGPT" programme, which takes less than an API key does.
+   */
+  chatgptPlan: FormatRequestShapes;
 };
 
 /** The `type` of an object at a place the format gives a meaning to; `null` for none. */

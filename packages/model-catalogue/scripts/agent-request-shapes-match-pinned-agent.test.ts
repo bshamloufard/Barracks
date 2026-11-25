@@ -3,8 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { agentRequestShapesFileUrl } from "../src/agent-request-shapes-file.js";
-import { findAgentRequestShape, isAllowedValue } from "../src/index.js";
+import { type AgentRequestShape, findAgentRequestShape, isAllowedValue } from "../src/index.js";
 import { relayedProviders } from "../src/relayed-providers.js";
+import { chatGptPlanProviderId } from "./agent-requests.js";
 import { readAgentRequestShapes } from "./read-agent-request-shapes.js";
 
 /**
@@ -57,26 +58,26 @@ describe("the shapes of the agent's requests the proxy relays", () => {
   it("name only members, types and beta values that Pi's request builders write", async () => {
     const source = await readPiRequestBuilders();
     const named = new Set<string>();
-    for (const provider of relayedProviders) {
-      for (const { format } of provider.apis) {
-        const shape = findAgentRequestShape(provider.providerId, format);
-        for (const name of [
-          ...Object.keys(shape?.members ?? {}),
-          ...(shape?.itemTypes ?? []),
-          ...(shape?.partTypes ?? []),
-          ...(shape?.imageSourceTypes ?? []),
-          ...(shape?.toolTypes ?? []),
-          ...(shape?.toolChangeTypes ?? []),
-          ...(shape?.cacheControlTypes ?? []),
-          ...(shape?.betaHeaderValues ?? []),
-          ...(shape?.settingItems ?? []).flatMap((item) => [
-            item.kind,
-            ...Object.keys(item.members),
-          ]),
-        ]) {
-          if (name !== null && !replayedFromProviderAnswers.has(name)) {
-            named.add(name);
-          }
+    const shapes = relayedProviders.flatMap((provider) =>
+      provider.apis.map(({ format }) =>
+        findAgentRequestShape(provider.providerId, format, "api_key"),
+      ),
+    );
+    shapes.push(findAgentRequestShape(chatGptPlanProviderId, "openai_responses", "chatgpt_plan"));
+    for (const shape of shapes) {
+      for (const name of [
+        ...Object.keys(shape?.members ?? {}),
+        ...(shape?.itemTypes ?? []),
+        ...(shape?.partTypes ?? []),
+        ...(shape?.imageSourceTypes ?? []),
+        ...(shape?.toolTypes ?? []),
+        ...(shape?.toolChangeTypes ?? []),
+        ...(shape?.cacheControlTypes ?? []),
+        ...(shape?.betaHeaderValues ?? []),
+        ...(shape?.settingItems ?? []).flatMap((item) => [item.kind, ...Object.keys(item.members)]),
+      ]) {
+        if (name !== null && !replayedFromProviderAnswers.has(name)) {
+          named.add(name);
         }
       }
     }
@@ -93,16 +94,35 @@ describe("the shapes of the agent's requests the proxy relays", () => {
   it("are found for each relayed provider in each format it is relayed in", () => {
     for (const provider of relayedProviders) {
       for (const { format } of provider.apis) {
-        expect(findAgentRequestShape(provider.providerId, format)?.members["model"]).toEqual([
-          "<text>",
-        ]);
+        expect(
+          findAgentRequestShape(provider.providerId, format, "api_key")?.members["model"],
+        ).toEqual(["<text>"]);
       }
     }
-    expect(findAgentRequestShape("google", "openai_chat_completions")).toBeUndefined();
+    expect(findAgentRequestShape("google", "openai_chat_completions", "api_key")).toBeUndefined();
+  });
+
+  it("are found on a ChatGPT plan for OpenAI's Responses API alone, without what the programme refuses", () => {
+    const onPlan = findAgentRequestShape("openai", "openai_responses", "chatgpt_plan");
+    const onKey = findAgentRequestShape("openai", "openai_responses", "api_key");
+
+    expect(onPlan?.members["store"]).toEqual([false]);
+    expect(onPlan?.members["stream"]).toEqual([true]);
+    expect(
+      ["max_output_tokens", "prompt_cache_retention"].filter((name) => describeRule(onPlan, name)),
+    ).toEqual([]);
+    expect(describeRule(onKey, "max_output_tokens")).toBe(true);
+    expect(onPlan?.itemTypes).not.toContain("configuration_update");
+    expect(findAgentRequestShape("xai", "openai_responses", "chatgpt_plan")).toBeUndefined();
+    expect(
+      findAgentRequestShape("openai", "openai_chat_completions", "chatgpt_plan"),
+    ).toBeUndefined();
   });
 
   it("match a value only as listed, `<count>` and `<text>` standing for any count and any text", () => {
-    const thinking = findAgentRequestShape("anthropic", "anthropic_messages")?.members["thinking"];
+    const thinking = findAgentRequestShape("anthropic", "anthropic_messages", "api_key")?.members[
+      "thinking"
+    ];
     const allowed = Array.isArray(thinking) ? thinking : [];
 
     expect(
@@ -117,3 +137,7 @@ describe("the shapes of the agent's requests the proxy relays", () => {
     expect(isAllowedValue([[{ model: "a" }]], [{ model: "a" }, { model: "b" }])).toBe(false);
   });
 });
+
+function describeRule(shape: AgentRequestShape | undefined, member: string): boolean {
+  return shape !== undefined && Object.hasOwn(shape.members, member);
+}

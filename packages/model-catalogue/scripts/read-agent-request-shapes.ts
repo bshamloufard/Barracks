@@ -13,7 +13,8 @@ import { readPinnedAgentVersion } from "./read-agent-catalogue.js";
 
 /**
  * Reads what the pinned Pi's requests hold (`agent-requests.ts`) into the
- * allow-list the model proxy relays against (`agent-request-shapes.json`):
+ * allow-list the model proxy relays against (`agent-request-shapes.json`),
+ * with what it sends OpenAI on a ChatGPT plan kept apart:
  * every top-level member and each value it took, the `type` of every object
  * at each place the format gives a meaning to, every `anthropic-beta`
  * value, and every member of the conversation items that carry settings
@@ -33,9 +34,14 @@ export async function readAgentRequestShapes(): Promise<{
   requestCount: number;
 }> {
   const collected = new Map<ProviderApiFormat, CollectedFormat>();
+  const collectedOnPlan = emptyCollection();
   let requestCount = 0;
   await buildAgentRequests((request) => {
     requestCount += 1;
+    if (request.access === "chatgpt_plan") {
+      collectRequest(collectedOnPlan, request);
+      return;
+    }
     const format = collected.get(request.format) ?? emptyCollection();
     collected.set(request.format, format);
     collectRequest(format, request);
@@ -49,7 +55,11 @@ export async function readAgentRequestShapes(): Promise<{
     formats[format] = finishCollection(format, collected.get(format) ?? emptyCollection());
   }
   return {
-    shapes: { agent: { name: "Pi", version: await readPinnedAgentVersion() }, formats },
+    shapes: {
+      agent: { name: "Pi", version: await readPinnedAgentVersion() },
+      formats,
+      chatgptPlan: finishCollection("openai_responses", collectedOnPlan),
+    },
     requestCount,
   };
 }

@@ -1,10 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ProviderAccess } from "@barrack/protocol";
 import { createCodingTools, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
+  findRelayedProvider,
   type ProviderApiFormat,
-  type RelayedProvider,
   relayedProviders,
 } from "../src/relayed-providers.js";
 
@@ -25,16 +26,24 @@ import {
  * caught at the HTTP client, its method, path below the provider's address,
  * query, headers and bytes as they would be sent, and answered with an
  * error, so nothing leaves the process.
+ *
+ * Then the same for OpenAI on a ChatGPT plan, as Pi sends them to OpenAI's
+ * "Sign in with ChatGPT" programme itself: at OpenAI's own address with a
+ * credential that is not an API key, which is what makes Pi shape them as
+ * the programme takes them (see the sandbox supervisor's
+ * `chatgpt-plan-compat.ts`, which makes Pi send the same to the proxy).
  */
 
 export type AgentRequest = {
   providerId: string;
   format: ProviderApiFormat;
+  /** What the proxy spends on it: the owner's API key, or their ChatGPT plan. */
+  access: ProviderAccess;
   modelId: string;
   /** What varied, for a reader of a failure. */
   variant: string;
   method: string;
-  /** Below the provider's address, which here is the model proxy's (`/v1/messages`, say). */
+  /** Below the provider's address (`/v1/messages`, say). */
   path: string;
   /** The query string, without its `?`. */
   query: string;
@@ -56,6 +65,12 @@ const cacheRetentions = ["short", "long", "none"] as const;
 /** A token as the proxy mints them: 43 characters of base64url, none of a real key's prefixes. */
 const proxyToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+/** Stands for a plan's access token: anything that does not start `sk-`, as an API key does. */
+const planAccessToken = "chatgpt-plan-access-token-of-the-owner";
+
+/** The one provider whose requests may run on a ChatGPT plan. */
+export const chatGptPlanProviderId = "openai";
+
 /** A one-pixel PNG: the shape of a screenshot is what matters here, not its size. */
 const imageData =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -64,32 +79,103 @@ type RuntimeModel = ReturnType<ModelRuntime["getModels"]>[number];
 type StreamOptions = NonNullable<Parameters<ModelRuntime["streamSimple"]>[2]>;
 type StreamContext = Parameters<ModelRuntime["streamSimple"]>[1];
 
+/** Pi's `models.json` entries for some providers. */
+type ProviderSettings = Record<string, { baseUrl: string; compat?: object }>;
+
+/** Where requests are sent and with what, as Pi is set up to send them. */
+type Destination = {
+  providerId: string;
+  access: ProviderAccess;
+  /** The address Pi sends to; paths are recorded below it. */
+  address: string;
+  credential: string;
+};
+
 /** Builds every request; `onRequest` receives each as it is caught. */
 export async function buildAgentRequests(
   onRequest: (request: AgentRequest) => void,
 ): Promise<void> {
+  await withRuntime(proxiedProviders(), async (runtime) => {
+    for (const { providerId } of relayedProviders) {
+      const destination = {
+        providerId,
+        access: "api_key",
+        address: proxyAddress(providerId),
+        credential: proxyToken,
+      } as const;
+      await buildDestinationRequests(runtime, destination, onRequest);
+    }
+  });
+  await buildChatGptPlanRequestsToOpenAi(onRequest);
+}
+
+/**
+ * The requests Pi sends to OpenAI through the model proxy, its `models.json`
+ * giving OpenAI the proxy's address and `compat`, as the sandbox supervisor
+ * writes it for a thread on a ChatGPT plan.
+ */
+export async function buildChatGptPlanRequestsThroughProxy(
+  compat: object,
+  onRequest: (request: AgentRequest) => void,
+): Promise<void> {
+  const providerId = chatGptPlanProviderId;
+  const settings = { [providerId]: { baseUrl: proxyAddress(providerId), compat } };
+  const destination = {
+    providerId,
+    access: "chatgpt_plan",
+    address: proxyAddress(providerId),
+    credential: proxyToken,
+  } as const;
+  await withRuntime(settings, (runtime) =>
+    buildDestinationRequests(runtime, destination, onRequest),
+  );
+}
+
+/** The requests Pi sends OpenAI's "Sign in with ChatGPT" programme itself. */
+export async function buildChatGptPlanRequestsToOpenAi(
+  onRequest: (request: AgentRequest) => void,
+): Promise<void> {
+  await withRuntime({}, (runtime) =>
+    buildDestinationRequests(runtime, chatGptPlanAtOpenAi(), onRequest),
+  );
+}
+
+function chatGptPlanAtOpenAi(): Destination {
+  const api = findRelayedProvider(chatGptPlanProviderId)?.apis[0];
+  if (api === undefined) {
+    throw new Error(`${chatGptPlanProviderId} is not a relayed provider`);
+  }
+  return {
+    providerId: chatGptPlanProviderId,
+    access: "chatgpt_plan",
+    address: api.upstreamBaseUrl,
+    credential: planAccessToken,
+  };
+}
+
+/** A Pi model runtime with `providers` as its `models.json`, for the length of `use`. */
+async function withRuntime(
+  providers: ProviderSettings,
+  use: (runtime: ModelRuntime) => Promise<void>,
+): Promise<void> {
   const scratchDirectory = await mkdtemp(path.join(tmpdir(), "barrack-agent-requests-"));
   try {
     const modelsPath = path.join(scratchDirectory, "models.json");
-    await writeFile(modelsPath, JSON.stringify({ providers: proxiedProviders() }));
+    await writeFile(modelsPath, JSON.stringify({ providers }));
     const runtime = await ModelRuntime.create({
       authPath: path.join(scratchDirectory, "auth.json"),
       modelsPath,
       modelsStorePath: path.join(scratchDirectory, "models-store.json"),
       refreshOnCreate: false,
     });
-    for (const provider of relayedProviders) {
-      for (const model of runtime.getModels(provider.providerId)) {
-        await buildModelRequests(runtime, provider, model, onRequest);
-      }
-    }
+    await use(runtime);
   } finally {
     await rm(scratchDirectory, { recursive: true, force: true });
   }
 }
 
 /** What the sandbox supervisor writes into Pi's `models.json`: the proxy's address for each relayed provider. */
-function proxiedProviders(): Record<string, { baseUrl: string }> {
+function proxiedProviders(): ProviderSettings {
   return Object.fromEntries(
     relayedProviders.map(({ providerId }) => [providerId, { baseUrl: proxyAddress(providerId) }]),
   );
@@ -99,55 +185,62 @@ function proxyAddress(providerId: string): string {
   return `http://control-plane.invalid/threads/00000000-0000-4000-8000-000000000000/model-proxy/${providerId}`;
 }
 
+async function buildDestinationRequests(
+  runtime: ModelRuntime,
+  destination: Destination,
+  onRequest: (request: AgentRequest) => void,
+): Promise<void> {
+  for (const model of runtime.getModels(destination.providerId)) {
+    await buildModelRequests(runtime, destination, model, onRequest);
+  }
+}
+
 async function buildModelRequests(
   runtime: ModelRuntime,
-  provider: RelayedProvider,
+  destination: Destination,
   model: RuntimeModel,
   onRequest: (request: AgentRequest) => void,
 ): Promise<void> {
+  const { providerId, access } = destination;
   const format = formatOfPiApi[model.api];
   if (format === undefined) {
-    throw new Error(`${provider.providerId}/${model.id} speaks ${model.api}, which is not relayed`);
+    throw new Error(`${providerId}/${model.id} speaks ${model.api}, which is not relayed`);
   }
   const conversations = buildConversations(model);
+  const describe = (variant: string) => (caught: CaughtRequest) =>
+    onRequest({ providerId, format, access, modelId: model.id, variant, ...caught });
   for (const reasoning of thinkingLevels) {
     for (const cacheRetention of cacheRetentions) {
       for (const [name, context] of Object.entries(conversations)) {
         const variant = `${name}, thinking ${reasoning ?? "off"}, cache ${cacheRetention}`;
-        await send(runtime, provider, model, context, { reasoning, cacheRetention }, (caught) =>
-          onRequest({
-            providerId: provider.providerId,
-            format,
-            modelId: model.id,
-            variant,
-            ...caught,
-          }),
+        await send(
+          runtime,
+          destination,
+          model,
+          context,
+          { reasoning, cacheRetention },
+          describe(variant),
         );
       }
       // A refresh of the prompt cache: the same request, with a one-token output (`cache-warmer.js`).
       await send(
         runtime,
-        provider,
+        destination,
         model,
         conversations.longConversation,
         { reasoning, cacheRetention, maxTokens: 1, disableContinuation: true },
-        (caught) =>
-          onRequest({
-            providerId: provider.providerId,
-            format,
-            modelId: model.id,
-            variant: `cache refresh, thinking ${reasoning ?? "off"}, cache ${cacheRetention}`,
-            ...caught,
-          }),
+        describe(`cache refresh, thinking ${reasoning ?? "off"}, cache ${cacheRetention}`),
       );
     }
   }
 }
 
+type CaughtRequest = Omit<AgentRequest, "providerId" | "format" | "access" | "modelId" | "variant">;
+
 /** Sends one request through Pi, catching it at the HTTP client. */
 async function send(
   runtime: ModelRuntime,
-  provider: RelayedProvider,
+  destination: Destination,
   model: RuntimeModel,
   context: StreamContext,
   options: {
@@ -156,16 +249,17 @@ async function send(
     maxTokens?: number;
     disableContinuation?: boolean;
   },
-  onCaught: (caught: Omit<AgentRequest, "providerId" | "format" | "modelId" | "variant">) => void,
+  onCaught: (caught: CaughtRequest) => void,
 ): Promise<void> {
   const capture: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    const proxy = new URL(proxyAddress(provider.providerId));
-    const isToProxy = url.origin === proxy.origin && url.pathname.startsWith(`${proxy.pathname}/`);
+    const address = new URL(destination.address);
+    const isToAddress =
+      url.origin === address.origin && url.pathname.startsWith(`${address.pathname}/`);
     onCaught({
       method: init?.method ?? (input instanceof Request ? input.method : "GET"),
       // A request sent anywhere else keeps its whole address, which no route matches.
-      path: isToProxy ? url.pathname.slice(proxy.pathname.length) : url.href,
+      path: isToAddress ? url.pathname.slice(address.pathname.length) : url.href,
       query: url.search.slice(1),
       headers: readHeaders(init?.headers),
       body: String(init?.body ?? ""),
@@ -180,7 +274,7 @@ async function send(
   };
   const events = runtime.streamSimple(model, context, {
     ...options,
-    apiKey: proxyToken,
+    apiKey: destination.credential,
     sessionId: "019a0000-0000-7000-8000-000000000000",
     maxRetries: 0,
     fetch: capture,

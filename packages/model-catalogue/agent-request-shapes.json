@@ -255,5 +255,51 @@
       },
       "settingItems": []
     }
+  },
+  "chatgptPlan": {
+    "itemTypes": [
+      null,
+      "additional_tools",
+      "custom_tool_call",
+      "custom_tool_call_output",
+      "function_call",
+      "function_call_output",
+      "message",
+      "reasoning"
+    ],
+    "partTypes": ["input_image", "input_text", "output_text", "reasoning_text"],
+    "imageSourceTypes": [],
+    "toolTypes": ["custom", "function"],
+    "toolChangeTypes": [],
+    "cacheControlTypes": [],
+    "betaHeaderValues": [],
+    "membersByProvider": {
+      "openai": {
+        "include": [["reasoning.encrypted_content"]],
+        "input": "scanned",
+        "model": ["<text>"],
+        "prompt_cache_key": ["<text>"],
+        "reasoning": [
+          { "effort": "high", "summary": "auto" },
+          { "effort": "low", "summary": "auto" },
+          { "effort": "max", "summary": "auto" },
+          { "effort": "medium", "summary": "auto" },
+          { "effort": "minimal", "summary": "auto" },
+          { "effort": "none" },
+          { "effort": "xhigh", "summary": "auto" }
+        ],
+        "store": [false],
+        "stream": [true],
+        "tools": "scanned"
+      }
+    },
+    "settingItems": [
+      { "kindMember": "type", "kind": "configuration_update", "members": {} },
+      {
+        "kindMember": "type",
+        "kind": "additional_tools",
+        "members": { "role": ["developer"], "tools": "scanned", "type": "scanned" }
+      }
+    ]
   }
 }

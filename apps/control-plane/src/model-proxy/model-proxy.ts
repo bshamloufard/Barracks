@@ -510,7 +510,7 @@ export class ModelProxy {
    */
   #findAgentRequestShape(exchange: ProxyExchange): AgentRequestShape | undefined {
     const { request, response, route, target, logger } = exchange;
-    const shape = findAgentRequestShape(target.providerId, route.format);
+    const shape = findAgentRequestShape(target.providerId, route.format, "api_key");
     const unrelayed =
       shape === undefined
         ? "this provider's requests in this format"

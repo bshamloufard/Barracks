@@ -180,7 +180,9 @@ describe("settings the agent never writes so", () => {
   it("parses at most 16 KiB of any body, whatever it holds, so checking one costs next to nothing", () => {
     const parsedAtMost = relayedProviders.flatMap(({ providerId, apis }) =>
       apis.map(({ format }) => {
-        const members = Object.values(findAgentRequestShape(providerId, format)?.members ?? {});
+        const members = Object.values(
+          findAgentRequestShape(providerId, format, "api_key")?.members ?? {},
+        );
         const topLevel = members.filter((rule) => rule !== "scanned").length;
         // And the settings given in conversation items, each different one once.
         return (

@@ -15,7 +15,8 @@ function scan(
   providerId?: string,
 ): JsonScanOutcome {
   const bytes = typeof text === "string" ? Buffer.from(text) : text;
-  const shape = providerId === undefined ? undefined : findAgentRequestShape(providerId, format);
+  const shape =
+    providerId === undefined ? undefined : findAgentRequestShape(providerId, format, "api_key");
   const scanner = new JsonBodyScanner(requestBodyShapeLimits, format, shape);
   for (let start = 0; start < bytes.length; start += chunkSize) {
     scanner.write(bytes.subarray(start, start + chunkSize));

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { findAgentRequestShape, type ProviderApiFormat } from "@barrack/model-catalogue";
+import type { ProviderAccess } from "@barrack/protocol";
 import { describe, expect, it } from "vitest";
 import { inspectWholeBody } from "../test-support/request-bodies.js";
 import { findUnrelayedHeaderValue } from "./proxy-headers.js";
@@ -15,8 +16,10 @@ import { findRelayedRoute } from "./relayed-routes.js";
  * retention, for conversations shaped like the coding agent's), which only
  * that package installs; here each is checked as the proxy checks a
  * request: its method, path and query, its headers and its body as it would
- * arrive. So a later Pi that sends to another path, or adds a query, fails
- * here rather than in a sandbox.
+ * arrive, against what the proxy allows when it spends what the request
+ * was built for: the owner's API key, or, for OpenAI, their ChatGPT plan.
+ * So a later Pi that sends to another path, or adds a query, fails here
+ * rather than in a sandbox.
  */
 
 const catalogueDirectory = fileURLToPath(
@@ -26,6 +29,7 @@ const catalogueDirectory = fileURLToPath(
 type AgentRequest = {
   providerId: string;
   format: ProviderApiFormat;
+  access: ProviderAccess;
   modelId: string;
   variant: string;
   method: string;
@@ -57,7 +61,7 @@ describe("the requests the pinned agent sends", () => {
 
     for await (const request of readAgentRequests()) {
       count += 1;
-      formatsSeen.add(`${request.providerId} ${request.format}`);
+      formatsSeen.add(`${request.providerId} ${request.format} ${request.access}`);
       const route = findRelayedRoute(
         {
           providerId: request.providerId,
@@ -68,9 +72,14 @@ describe("the requests the pinned agent sends", () => {
         undefined,
       );
       const isRouted = route.kind === "found" && route.route.format === request.format;
-      const shape = findAgentRequestShape(request.providerId, request.format);
+      const shape = findAgentRequestShape(request.providerId, request.format, request.access);
       const header = shape && findUnrelayedHeaderValue(request.headers, shape);
-      const inspection = inspectWholeBody(request.format, request.body, request.providerId);
+      const inspection = inspectWholeBody(
+        request.format,
+        request.body,
+        request.providerId,
+        request.access,
+      );
       if (
         !isRouted ||
         shape === undefined ||
@@ -80,12 +89,15 @@ describe("the requests the pinned agent sends", () => {
         const why = isRouted
           ? (header ?? JSON.stringify(inspection))
           : `${request.method} ${request.path}?${request.query}: ${route.kind}`;
-        refused.push(`${request.providerId}/${request.modelId} (${request.variant}): ${why}`);
+        refused.push(
+          `${request.providerId}/${request.modelId} on its ${request.access} (${request.variant}): ${why}`,
+        );
       }
     }
 
     expect(refused.slice(0, 5)).toEqual([]);
     expect(count).toBeGreaterThan(50_000);
-    expect(formatsSeen.size).toBe(9);
+    // Nine for the providers' API keys, and OpenAI's Responses API on a ChatGPT plan.
+    expect(formatsSeen.size).toBe(10);
   });
 });

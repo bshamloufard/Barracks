@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type { ProviderAccess } from "@barrack/protocol";
 import {
   type AgentRequestShapes,
   agentRequestShapesFileUrl,
@@ -17,19 +18,35 @@ export type AgentRequestShape = Omit<FormatRequestShapes, "membersByProvider"> &
 };
 
 /**
- * What the pinned agent's requests to `providerId` in `format` may hold,
- * or undefined if it sends that provider no request in that format. Read
- * and checked once, when first imported.
+ * What the pinned agent's requests to `providerId` in `format` may hold
+ * when the proxy spends `access` on them, or undefined if it sends that
+ * provider no such request. On a ChatGPT plan that is only OpenAI, in the
+ * Responses API. Read and checked once, when first imported.
  */
 export function findAgentRequestShape(
   providerId: string,
   format: ProviderApiFormat,
+  access: ProviderAccess,
 ): AgentRequestShape | undefined {
-  const { membersByProvider, ...types } = shapes.formats[format];
+  const formatShapes = findFormatShapes(format, access);
+  if (formatShapes === undefined) {
+    return undefined;
+  }
+  const { membersByProvider, ...types } = formatShapes;
   const members = Object.hasOwn(membersByProvider, providerId)
     ? membersByProvider[providerId]
     : undefined;
   return members === undefined ? undefined : { ...types, members };
+}
+
+function findFormatShapes(
+  format: ProviderApiFormat,
+  access: ProviderAccess,
+): FormatRequestShapes | undefined {
+  if (access === "api_key") {
+    return shapes.formats[format];
+  }
+  return format === "openai_responses" ? shapes.chatgptPlan : undefined;
 }
 
 /** Whether `value` is one the rule lists, `<count>` standing for any whole number from zero up and `<text>` for any text. */
@@ -73,26 +90,31 @@ function matchesShape(shape: unknown, value: unknown): boolean {
 }
 
 function parseAgentRequestShapes(file: unknown): AgentRequestShapes {
-  const formats = (file as Partial<AgentRequestShapes> | null)?.formats;
+  const read = file as Partial<AgentRequestShapes> | null;
+  const formats = read?.formats as Record<string, Partial<FormatRequestShapes>> | undefined;
   for (const format of ["anthropic_messages", "openai_responses", "openai_chat_completions"]) {
-    const shape = (formats as Record<string, Partial<FormatRequestShapes>> | undefined)?.[format];
-    const lists = [
-      shape?.itemTypes,
-      shape?.partTypes,
-      shape?.imageSourceTypes,
-      shape?.toolTypes,
-      shape?.toolChangeTypes,
-      shape?.cacheControlTypes,
-      shape?.betaHeaderValues,
-    ];
-    if (
-      !lists.every(Array.isArray) ||
-      !Array.isArray(shape?.settingItems) ||
-      typeof shape?.membersByProvider !== "object" ||
-      shape.membersByProvider === null
-    ) {
-      throw new Error(`agent-request-shapes.json is not as generated, at ${format}`);
-    }
+    checkFormatShapes(formats?.[format], format);
   }
+  checkFormatShapes(read?.chatgptPlan, "chatgptPlan");
   return file as AgentRequestShapes;
+}
+
+function checkFormatShapes(shape: Partial<FormatRequestShapes> | undefined, place: string): void {
+  const lists = [
+    shape?.itemTypes,
+    shape?.partTypes,
+    shape?.imageSourceTypes,
+    shape?.toolTypes,
+    shape?.toolChangeTypes,
+    shape?.cacheControlTypes,
+    shape?.betaHeaderValues,
+  ];
+  if (
+    !lists.every(Array.isArray) ||
+    !Array.isArray(shape?.settingItems) ||
+    typeof shape?.membersByProvider !== "object" ||
+    shape.membersByProvider === null
+  ) {
+    throw new Error(`agent-request-shapes.json is not as generated, at ${place}`);
+  }
 }
