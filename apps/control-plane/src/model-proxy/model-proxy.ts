@@ -401,7 +401,9 @@ export class ModelProxy {
       return false;
     }
     exchange.hold(admission.release);
-    if (Number(request.headers["content-length"] ?? 0) > this.#options.limits.maximumRequestBytes) {
+    const { maximumRequestBytes, maximumRequestBytesHeldInTotal } = this.#options.limits;
+    const largest = Math.min(maximumRequestBytes, maximumRequestBytesHeldInTotal);
+    if (Number(request.headers["content-length"] ?? 0) > largest) {
       sendRefusal(response, route.format, proxyRefusals.requestTooLarge);
       return false;
     }

@@ -92,19 +92,20 @@ type Sending = { status: Promise<number> };
 /**
  * Sends a body of `totalBytes` with Node's own client: its first
  * `sentBytes` at once and, if `trickle` is set, one more byte every
- * `trickle` milliseconds, as an agent holding its share would.
+ * `trickle` milliseconds, as an agent holding its share would; in chunks
+ * of no stated length if `withoutLength` is set.
  */
 function send(
   access: ProxyAccess,
   body: Buffer,
-  options: { sentBytes?: number; trickleEveryMilliseconds?: number } = {},
+  options: { sentBytes?: number; trickleEveryMilliseconds?: number; withoutLength?: boolean } = {},
 ): Sending {
   const url = new URL(`${requireControlPlane().httpBaseUrl}${access.basePath}/v1/messages`);
   const request = httpRequest(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "content-length": String(body.length),
+      ...(options.withoutLength ? {} : { "content-length": String(body.length) }),
       "x-api-key": access.token,
       "anthropic-version": "2023-06-01",
     },
@@ -198,6 +199,20 @@ describe("the bytes of request bodies one thread or owner may hold", () => {
     expect(requireControlPlane().modelProxy.activity.requestBodyBytesHeld).toBeLessThanOrEqual(
       heldBefore + 128,
     );
+  });
+
+  it("refuses for good, not as busy, a body larger than the instance could ever hold", async () => {
+    await start({ maximumRequestBytes: 2 * mebibyte, maximumRequestBytesHeldInTotal: mebibyte });
+    const { access } = await startThread(ada);
+    const body = paddedBody(mebibyte + 1024);
+
+    expect(await send(access, body).status).toBe(413);
+    // Without its length stated, it is refused once it has grown past the bound.
+    expect(await send(access, body, { withoutLength: true }).status).toBe(413);
+    expect(await send(access, paddedBody(1024)).status).toBe(200);
+    await expect
+      .poll(() => requireControlPlane().modelProxy.activity)
+      .toEqual(idleModelProxyActivity);
   });
 
   it("refuses a body that takes longer than its deadline, and gives back what it held", async () => {

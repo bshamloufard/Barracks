@@ -18,8 +18,12 @@ export type HeldBytes = {
   release(): void;
 };
 
-/** Why bytes were not taken: the instance's bound, or the thread's or owner's share. */
-type ShareRefusal = "instance_busy" | "share_used";
+/**
+ * Why bytes were not taken: the instance's bound, or the thread's or
+ * owner's share, is held by others now (worth retrying); or the request
+ * alone is more than it could ever hold (`too_large`, which is not).
+ */
+type ShareRefusal = "instance_busy" | "share_used" | "too_large";
 
 export type BodyReading =
   | { kind: "read"; bytes: Buffer; scanned: ScannedJsonBody; held: HeldBytes }
@@ -176,6 +180,9 @@ export class RequestBodyBudget {
       adjust(this.#heldByOwner, ownerUserId, bytes);
     };
     const take = (bytes: number): ShareRefusal | undefined => {
+      if (taken + bytes > Math.min(this.#limit, threadShare, ownerShare)) {
+        return "too_large";
+      }
       if (this.#held + bytes > this.#limit) {
         return "instance_busy";
       }

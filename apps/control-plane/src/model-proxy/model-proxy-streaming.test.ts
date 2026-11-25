@@ -189,7 +189,7 @@ describe("the model proxy as a streaming path", () => {
     expect(upstreamRequests).toBe(0);
   });
 
-  it("refuses as busy a body that would take the instance past the request bytes it holds at once", async () => {
+  it("refuses for good a body larger than the request bytes the instance holds at once", async () => {
     const upstreamOrigin = await startUpstream((_request, response) => response.end());
     const access = await startThreadRelayingTo(upstreamOrigin, {
       maximumRequestBytesHeldInTotal: 1_000,
@@ -202,8 +202,9 @@ describe("the model proxy as a streaming path", () => {
       "x".repeat(2_000),
     );
 
-    expect(response.status).toBe(503);
-    expect(response.headers.get("retry-after")).toBe("5");
+    // Waiting would never make room for it, so the agent is not told to retry.
+    expect(response.status).toBe(413);
+    expect(response.headers.get("retry-after")).toBeNull();
   });
 
   it("counts a request the agent abandons before the provider answers, at the most output it allowed", async () => {
