@@ -38,7 +38,7 @@
 | `BARRACK_DOCKER_SERVICE_PORTS`         | docker        | Comma-separated ports `getServiceAddress` may hand out (default none)                                          |
 | `BARRACK_DOCKER_EXECUTABLE`            | docker        | The docker command (default `docker`)                                                                          |
 | `BARRACK_DOCKER_NETWORK`               | docker        | The Docker network sandboxes join (default: Docker's default bridge); see [compose.yaml](../../compose.yaml)   |
-| `DAYTONA_API_KEY`                      | daytona       | Daytona API key; never logged                                                                                  |
+| `DAYTONA_API_KEY`                      | daytona       | Daytona API key, with exactly `write:sandboxes` and `delete:sandboxes`; never logged                           |
 | `BARRACK_DAYTONA_SNAPSHOT`             | daytona       | The snapshot registered from the sandbox image                                                                 |
 | `DAYTONA_TARGET`                       | daytona       | Region; the organisation's default when unset                                                                  |
 | `BARRACK_DAYTONA_AUTO_ARCHIVE_MINUTES` | daytona       | Minutes after a stop before Daytona archives the sandbox (default 60)                                          |
