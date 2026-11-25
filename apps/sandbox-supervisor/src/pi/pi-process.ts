@@ -68,6 +68,9 @@ export function buildPiArguments(settings: PiLaunchSettings): string[] {
     ...settings.extensionPaths.flatMap((extensionPath) => ["--extension", extensionPath]),
     // Trust the repository's own Pi configuration. Untrusted settings would
     // otherwise be skipped silently in RPC mode; the sandbox is the boundary.
+    // A repository's own extensions can then rewrite Pi's requests (Pi's
+    // provider hooks); for a provider the control plane relays, its model
+    // proxy refuses any request not shaped like the pinned Pi's own.
     "--approve",
   ];
 }

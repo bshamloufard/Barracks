@@ -31,8 +31,11 @@
  * spelt without an escape and in ASCII, and must not be a name it reads in
  * other letter cases (`Type`, `CONTENT`), which some decoders match
  * regardless of case; a `type` is compared as written, so one spelt with an
- * escape is one the agent never sends. Everywhere else (a tool's schema, a
- * tool call's arguments, the text of a message) nothing is policed.
+ * escape is one the agent never sends. Of those objects only the `type` is
+ * checked, not their other members (an image part's file or address, a
+ * tool's options), but for the items that carry settings, below. Everywhere
+ * else (a tool's schema, a tool call's arguments, the text of a message, a
+ * `content` that is not a list) nothing is policed.
  *
  * A conversation item of a kind that carries settings (`settingItems` of
  * the shape: Anthropic's system message, the Responses API's

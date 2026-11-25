@@ -9,7 +9,10 @@ import { bearerTokenFrom } from "../bearer-token.js";
  * sandbox's own credential, which is replaced by the owner's key. Answers
  * keep only what the agent's client reads: the body's type, and what it
  * says about retrying and rate limits. Any value holding the key is
- * dropped, whatever its name.
+ * dropped, whatever its name. Of the request headers only `anthropic-beta`
+ * is checked against the agent's values (`findUnrelayedHeaderValue`); the
+ * others, `anthropic-version` among them, are forwarded as sent, at most
+ * `maximumForwardedValueLength` long.
  */
 
 const forwardedRequestHeaders = new Set([
