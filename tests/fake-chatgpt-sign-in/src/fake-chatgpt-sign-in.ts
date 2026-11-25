@@ -119,6 +119,10 @@ export class FakeChatGptSignIn {
    * down might.
    */
   nextTokenAnswerChanges: Record<string, unknown> | undefined;
+  /** The next token request is refused with this status and OAuth error code, as for a client OpenAI no longer accepts. */
+  nextTokenRefusal: { status: number; error: string } | undefined;
+  /** Whether the ID tokens' signing keys fail to load, as when they cannot be fetched. */
+  isKeySetUnavailable = false;
   #now: () => number = Date.now;
 
   private constructor(
@@ -289,6 +293,10 @@ export class FakeChatGptSignIn {
       return;
     }
     if (request.method === "GET" && url.pathname === jwksPath) {
+      if (this.isKeySetUnavailable) {
+        writeJson(response, 503, { error: "temporarily_unavailable" });
+        return;
+      }
       writeJson(response, 200, { keys: [this.#signingKey.publicJwk] });
       return;
     }
@@ -320,6 +328,12 @@ export class FakeChatGptSignIn {
   async #answerToken(form: URLSearchParams, response: ServerResponse): Promise<void> {
     if (this.failTokenRequestsWithStatus !== undefined) {
       writeJson(response, this.failTokenRequestsWithStatus, { error: "server_error" });
+      return;
+    }
+    const refusal = this.nextTokenRefusal;
+    if (refusal !== undefined) {
+      this.nextTokenRefusal = undefined;
+      writeJson(response, refusal.status, { error: refusal.error });
       return;
     }
     switch (form.get("grant_type")) {

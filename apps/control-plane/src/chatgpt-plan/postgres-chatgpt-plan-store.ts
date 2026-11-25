@@ -156,14 +156,16 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
     await this.#pool.query(`delete from ${this.#attempts} where expires_at < $1`, [before]);
   }
 
-  async connect(ownerUserId: string, signIn: PlanSignIn): Promise<void> {
-    await this.#inTransaction(async (client) => {
+  connect(ownerUserId: string, signIn: PlanSignIn): Promise<PlanSignIn | undefined> {
+    return this.#inTransaction(async (client) => {
+      const replaced = await this.#takeSignIn(client, ownerUserId);
       await client.query(
         `update ${this.#plans} set client_id = $2, loss_reason = null, lost_at = null
           where user_id = $1`,
         [ownerUserId, signIn.clientId],
       );
       await this.#writeSignIn(client, ownerUserId, signIn);
+      return replaced;
     });
   }
 
@@ -221,13 +223,47 @@ export class PostgresChatGptPlanStore implements ChatGptPlanStore {
     });
   }
 
-  async forgetClient(ownerUserId: string): Promise<void> {
-    await this.#inTransaction(async (client) => {
-      await client.query(`delete from ${this.#signIns} where user_id = $1`, [ownerUserId]);
-      await client.query(`update ${this.#plans} set client_id = null where user_id = $1`, [
-        ownerUserId,
-      ]);
+  forgetClient(ownerUserId: string, loss: PlanLoss): Promise<PlanSignIn | undefined> {
+    return this.#inTransaction(async (client) => {
+      const removed = await client.query<SignInRow>(
+        `delete from ${this.#signIns} where user_id = $1 returning ${signInColumns}`,
+        [ownerUserId],
+      );
+      const row = removed.rows[0];
+      await client.query(
+        `update ${this.#plans} set client_id = null,
+            loss_reason = case when $2::boolean then $3 else loss_reason end,
+            lost_at = case when $2::boolean then $4::timestamptz else lost_at end
+          where user_id = $1`,
+        [ownerUserId, row !== undefined, loss.reason, loss.at],
+      );
+      return row === undefined ? undefined : this.#openIfReadable(ownerUserId, row);
     });
+  }
+
+  /** The user's sign-in, held until the transaction ends, opened if it can be. */
+  async #takeSignIn(client: PoolClient, ownerUserId: string): Promise<PlanSignIn | undefined> {
+    const locked = await client.query<SignInRow>(
+      `select ${signInColumns} from ${this.#signIns} where user_id = $1 for update`,
+      [ownerUserId],
+    );
+    const row = locked.rows[0];
+    return row === undefined ? undefined : this.#openIfReadable(ownerUserId, row);
+  }
+
+  /**
+   * A sign-in sealed under a key this instance does not hold cannot be
+   * revoked from here; the one replacing or forgetting it goes ahead.
+   */
+  #openIfReadable(ownerUserId: string, row: SignInRow): PlanSignIn | undefined {
+    try {
+      return this.#toSignIn(ownerUserId, row);
+    } catch (error) {
+      if (error instanceof UnreadableCredentialError) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   async setOpenAiAccess(ownerUserId: string, access: ProviderAccess): Promise<void> {

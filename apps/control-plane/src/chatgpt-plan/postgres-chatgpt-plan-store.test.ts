@@ -73,6 +73,35 @@ describeWithTestDatabase("the Postgres ChatGPT plan store", () => {
     expect((await store.readSignIn(ada))?.tokens.refreshToken).toBe("refresh-token-of-ada-0001");
   });
 
+  it("answers the sign-in a new connection replaces, for revoking", async () => {
+    const { store } = await createStore();
+    const first = signInFor("access-token-of-ada-0003", "refresh-token-of-ada-0003");
+    await store.connect(ada, first);
+
+    const replaced = await store.connect(
+      ada,
+      signInFor("access-token-of-ada-0004", "refresh-token-of-ada-0004"),
+    );
+
+    expect(replaced).toEqual(first);
+    expect((await store.readSignIn(ada))?.tokens.refreshToken).toBe("refresh-token-of-ada-0004");
+  });
+
+  it("forgets a rejected client's sign-in, noting the loss, and answers it for revoking", async () => {
+    const { store } = await createStore();
+    const kept = signInFor("access-token-of-ada-0005", "refresh-token-of-ada-0005");
+    await store.connect(ada, kept);
+    const loss = { reason: "sign_in_expired" as const, at: new Date("2026-11-25T11:00:00.000Z") };
+
+    const forgotten = await store.forgetClient(ada, loss);
+    const again = await store.forgetClient(grace, loss);
+
+    expect(forgotten).toEqual(kept);
+    expect(again).toBeUndefined();
+    expect(await store.findPlan(ada)).toMatchObject({ clientId: undefined, loss });
+    expect((await store.findPlan(grace))?.loss).toBeUndefined();
+  });
+
   it("does not open one user's sealed tokens moved to another user's row", async () => {
     const { store, schema } = await createStore();
     await store.connect(ada, signInFor("access-token-of-ada-0002", "refresh-token-of-ada-0002"));

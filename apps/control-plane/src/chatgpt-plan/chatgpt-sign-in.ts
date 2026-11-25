@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ChatGptPlanSignInStart } from "@barrack/protocol";
 import type { Logger } from "../logger.js";
-import type { ChatGptPlanStore, SignInAttempt } from "./chatgpt-plan-store.js";
+import type { ChatGptPlanStore, PlanSignIn, SignInAttempt } from "./chatgpt-plan-store.js";
 import {
   type ChatGptSignInClient,
   dynamicRegistrationClientId,
@@ -162,11 +162,14 @@ export class ChatGptSignIn {
     attempt: SignInAttempt,
     tokens: IssuedTokens,
   ): Promise<SignInFinish> {
+    // Tokens OpenAI issued but that are not kept are revoked, so none is left live there.
+    const issued = { clientId, refreshToken: tokens.refreshToken };
     if (!tokens.scopes?.includes(planUsageScope)) {
-      await this.#client.revoke({ clientId, refreshToken: tokens.refreshToken });
+      await this.#revoke(ownerUserId, issued);
       return this.#fail(ownerUserId, "plan_usage_not_granted", planUsageNotGrantedMessage);
     }
     if (tokens.idToken === undefined) {
+      await this.#revoke(ownerUserId, issued);
       return this.#fail(ownerUserId, "id_token_missing", unverifiableMessage);
     }
     let account: Awaited<ReturnType<ChatGptSignInClient["verifyIdToken"]>>;
@@ -176,13 +179,14 @@ export class ChatGptSignIn {
         nonce: attempt.secrets.nonce,
       });
     } catch (error) {
+      await this.#revoke(ownerUserId, issued);
       if (error instanceof IdTokenRejectedError) {
         return this.#fail(ownerUserId, error.check, unverifiableMessage);
       }
       throw error;
     }
     const now = this.#clock();
-    await this.#store.connect(ownerUserId, {
+    const replaced = await this.#store.connect(ownerUserId, {
       clientId,
       tokens: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken },
       accessExpiresAt: new Date(now.getTime() + tokens.expiresInSeconds * 1000),
@@ -195,18 +199,46 @@ export class ChatGptSignIn {
     // Connecting a plan is asking to use it; Settings says so, and switches back.
     await this.#store.setOpenAiAccess(ownerUserId, "chatgpt_plan");
     this.#logger.info({ ownerUserId }, "Connected a user's ChatGPT plan");
+    if (replaced !== undefined) {
+      await this.#revoke(ownerUserId, replaced);
+    }
     return { kind: "connected" };
   }
 
+  /**
+   * A client OpenAI no longer accepts takes the sign-in made with it: that
+   * is forgotten, the user told why as for any lost sign-in, and revoked
+   * if OpenAI will still take it.
+   */
   async #failExchange(ownerUserId: string, failure: TokenFailure): Promise<SignInFinish> {
     if (failure.reason === "client_rejected") {
-      await this.#store.forgetClient(ownerUserId);
+      const forgotten = await this.#store.forgetClient(ownerUserId, {
+        reason: "sign_in_expired",
+        at: this.#clock(),
+      });
+      if (forgotten !== undefined) {
+        await this.#revoke(ownerUserId, forgotten);
+      }
     }
     return this.#fail(
       ownerUserId,
       failure.code ?? failure.reason,
       describeExchangeFailure(failure),
     );
+  }
+
+  /** Once, without waiting for retries: the user is waiting for the page, and a failure is logged. */
+  async #revoke(
+    ownerUserId: string,
+    signIn: { clientId: string; refreshToken: string } | PlanSignIn,
+  ): Promise<void> {
+    const request =
+      "tokens" in signIn
+        ? { clientId: signIn.clientId, refreshToken: signIn.tokens.refreshToken }
+        : signIn;
+    if (!(await this.#client.revoke(request))) {
+      this.#logger.warn({ ownerUserId }, "OpenAI did not confirm revoking a ChatGPT sign-in");
+    }
   }
 
   #fail(ownerUserId: string, why: string, message: string): SignInFinish {

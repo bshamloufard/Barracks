@@ -36,9 +36,10 @@ export interface ChatGptPlanStore {
   /**
    * Keeps the user's newly connected sign-in in place of any before it,
    * remembers its client for the user's later sign-ins, and clears any
-   * loss.
+   * loss. Answers the sign-in it replaced, for revoking at OpenAI, if there
+   * was one that can still be opened.
    */
-  connect(ownerUserId: string, signIn: PlanSignIn): Promise<void>;
+  connect(ownerUserId: string, signIn: PlanSignIn): Promise<PlanSignIn | undefined>;
 
   /** The user's connected sign-in, opened, or undefined. */
   readSignIn(ownerUserId: string): Promise<PlanSignIn | undefined>;
@@ -61,8 +62,13 @@ export interface ChatGptPlanStore {
    */
   disconnect(ownerUserId: string): Promise<PlanSignIn | undefined>;
 
-  /** Forgets the issued client, which OpenAI no longer accepts, and the sign-in made with it. */
-  forgetClient(ownerUserId: string): Promise<void>;
+  /**
+   * Forgets the issued client, which OpenAI no longer accepts, and the
+   * sign-in made with it, noting `loss` if there was one, so the user is
+   * told why. Answers that sign-in, for revoking at OpenAI, if it can still
+   * be opened.
+   */
+  forgetClient(ownerUserId: string, loss: PlanLoss): Promise<PlanSignIn | undefined>;
 
   /** Records what the user's threads spend on OpenAI models. */
   setOpenAiAccess(ownerUserId: string, access: ProviderAccess): Promise<void>;

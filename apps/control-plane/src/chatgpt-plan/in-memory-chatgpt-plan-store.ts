@@ -11,6 +11,7 @@ import type {
   AttemptTaking,
   ChatGptPlanRecord,
   ChatGptPlanStore,
+  PlanLoss,
   PlanSignIn,
   Renewal,
   SignInAttempt,
@@ -100,11 +101,13 @@ export class InMemoryChatGptPlanStore implements ChatGptPlanStore {
     }
   }
 
-  async connect(ownerUserId: string, signIn: PlanSignIn): Promise<void> {
-    await this.#inTurn(ownerUserId, async () => {
+  connect(ownerUserId: string, signIn: PlanSignIn): Promise<PlanSignIn | undefined> {
+    return this.#inTurn(ownerUserId, async () => {
+      const replaced = this.#open(ownerUserId);
       const plan = this.#requirePlan(ownerUserId);
       this.#plans.set(ownerUserId, { ...plan, clientId: signIn.clientId, loss: undefined });
       this.#signIns.set(ownerUserId, this.#seal(ownerUserId, signIn));
+      return replaced;
     });
   }
 
@@ -143,13 +146,19 @@ export class InMemoryChatGptPlanStore implements ChatGptPlanStore {
     });
   }
 
-  async forgetClient(ownerUserId: string): Promise<void> {
-    await this.#inTurn(ownerUserId, async () => {
-      this.#signIns.delete(ownerUserId);
+  forgetClient(ownerUserId: string, loss: PlanLoss): Promise<PlanSignIn | undefined> {
+    return this.#inTurn(ownerUserId, async () => {
+      const forgotten = this.#open(ownerUserId);
+      const wasConnected = this.#signIns.delete(ownerUserId);
       const plan = this.#plans.get(ownerUserId);
       if (plan !== undefined) {
-        this.#plans.set(ownerUserId, { ...plan, clientId: undefined });
+        this.#plans.set(ownerUserId, {
+          ...plan,
+          clientId: undefined,
+          loss: wasConnected ? loss : plan.loss,
+        });
       }
+      return forgotten;
     });
   }
 

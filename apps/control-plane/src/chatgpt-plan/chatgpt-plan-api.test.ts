@@ -235,6 +235,53 @@ describe("a pasted address that cannot finish a sign-in", () => {
     expect(signInServer.isSignInRevoked("chatgpt-ada")).toBe(true);
   });
 
+  it("revokes the tokens OpenAI issued when its answer has no ID token to check", async () => {
+    signInServer.nextTokenAnswerChanges = { id_token: undefined };
+    const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
+
+    const response = await finishSignIn(adaToken, finalAddress);
+
+    expect(response.status).toBe(400);
+    expect(signInServer.isSignInRevoked("chatgpt-ada")).toBe(true);
+  });
+
+  it("revokes the tokens OpenAI issued when its ID token's keys cannot be fetched", async () => {
+    signInServer.isKeySetUnavailable = true;
+    const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
+
+    const response = await finishSignIn(adaToken, finalAddress);
+
+    expect(response.ok).toBe(false);
+    expect(signInServer.isSignInRevoked("chatgpt-ada")).toBe(true);
+    expect((await readStatus(adaToken)).connection).toBeNull();
+  });
+
+  it("revokes the sign-in it replaces when the user connects again", async () => {
+    await connect(adaToken, "chatgpt-ada");
+    const first = await store.readSignIn(ada.userId);
+
+    await connect(adaToken, "chatgpt-ada");
+
+    const second = await store.readSignIn(ada.userId);
+    expect(signInServer.revocations).toEqual([first?.tokens.refreshToken]);
+    expect(signInServer.checkAccessToken(second?.tokens.accessToken ?? "").kind).toBe("valid");
+  });
+
+  it("forgets and revokes the sign-in made with a client OpenAI no longer accepts, saying why", async () => {
+    await connect(adaToken, "chatgpt-ada");
+    const kept = await store.readSignIn(ada.userId);
+    const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
+    signInServer.nextTokenRefusal = { status: 401, error: "invalid_client" };
+
+    const response = await finishSignIn(adaToken, finalAddress);
+
+    expect(response.status).toBe(400);
+    const status = await readStatus(adaToken);
+    expect(status.connection).toBeNull();
+    expect(status.loss?.reason).toBe("sign_in_expired");
+    expect(signInServer.revocations).toEqual([kept?.tokens.refreshToken]);
+  });
+
   it("connects a plan whose token answer leaves the scopes out, granted as asked", async () => {
     signInServer.nextTokenAnswerChanges = { scope: undefined };
     const finalAddress = signInServer.approve(await beginSignIn(adaToken), "chatgpt-ada");
