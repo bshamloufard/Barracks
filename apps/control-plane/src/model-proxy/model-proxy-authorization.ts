@@ -74,7 +74,8 @@ export type ProxyAuthorization = OwnerAuthorization | ProxyRefused;
  * access token for their ChatGPT plan; and the owner's usage cap not
  * reached (plan usage counts towards it like any other). Last, once
  * the body is read (`checkRequestedModels`), the model it names the
- * thread's own or that one before a switch.
+ * thread's own or that one before a switch. A request in flight is
+ * checked again (`recheck`) without reading its credential again.
  *
  * The owner and the key or plan come from the thread named in the request
  * path, which is the thread the token was minted for, so a token can only
@@ -124,41 +125,61 @@ export class ModelProxyAuthorization {
    * database is unreachable, say), which is not a refusal.
    */
   async authorizeOwner(request: ProxyAuthorizationRequest): Promise<ProxyAuthorization> {
-    const { threadId, providerId } = request;
-    const thread = await this.#options.threadStore.find(threadId);
-    const ownerUserId = thread?.ownerUserId;
-    if (thread === undefined || ownerUserId === undefined) {
-      return refused(proxyRefusals.tokenRefused, "the thread is gone");
+    const owner = await this.#checkThreadAndOwner(request);
+    if (owner.kind === "refused") {
+      return owner;
     }
-    if (thread.sandbox.state !== "running") {
-      return refused(proxyRefusals.tokenRefused, `its sandbox is ${thread.sandbox.state}`);
-    }
-    const providerRefused = await this.#checkProviderInUse(request, thread.model);
-    if (providerRefused !== undefined) {
-      return providerRefused;
-    }
-    if (!(await this.#options.ownerAdmission.isStillAdmitted(ownerUserId))) {
-      return refused(proxyRefusals.ownerNotAdmitted, "the owner is not admitted");
-    }
-    const access = await this.#options.chatGptPlan.findAccess(ownerUserId, providerId);
+    const { ownerUserId, threadModel } = owner;
+    const access = await this.#options.chatGptPlan.findAccess(ownerUserId, request.providerId);
     const credential =
       access === "chatgpt_plan"
         ? await this.#readPlanToken(ownerUserId)
-        : await this.#readOwnerKey(ownerUserId, providerId);
+        : await this.#readOwnerKey(ownerUserId, request.providerId);
     if (credential.kind === "refused") {
       return credential;
     }
-    const cap = await this.#options.usage.checkCap(ownerUserId);
-    if (cap.isReached) {
-      return refused(usageCapRefusal(describeReachedCap(cap)), "the owner's usage cap is reached");
+    const capRefused = await this.#checkCap(ownerUserId);
+    if (capRefused !== undefined) {
+      return capRefused;
     }
     return {
       kind: "allowed",
       ownerUserId,
       access,
       ownerCredential: credential.secret,
-      threadModel: thread.model,
+      threadModel,
     };
+  }
+
+  /**
+   * Whether a request in flight, relayed as `relayed` allowed, may carry
+   * on: everything `authorizeOwner` and `checkRequestedModels` decide,
+   * except that the credential is not read again, only whether the owner
+   * still holds the kind it was relayed with. The provider already holds
+   * the secret it was sent, so a plan whose renewal is merely due, or that
+   * OpenAI cannot renew just now, is no reason to cut its answer short;
+   * a plan disconnected or a key removed is. Renewing is left to the next
+   * request, so a long answer never renews the plan on its own. Throws
+   * when it cannot decide.
+   */
+  async recheck(
+    request: ProxyAuthorizationRequest,
+    relayed: OwnerAuthorization,
+    requested: RequestedModels | undefined,
+  ): Promise<ProxyRefused | undefined> {
+    const owner = await this.#checkThreadAndOwner(request);
+    if (owner.kind === "refused") {
+      return owner;
+    }
+    const credentialRefused = await this.#checkCredentialStillHeld(request, relayed);
+    if (credentialRefused !== undefined) {
+      return credentialRefused;
+    }
+    const capRefused = await this.#checkCap(owner.ownerUserId);
+    if (capRefused !== undefined || requested === undefined) {
+      return capRefused;
+    }
+    return this.checkRequestedModels(request, owner.threadModel, requested);
   }
 
   /**
@@ -205,16 +226,55 @@ export class ModelProxyAuthorization {
     return undefined;
   }
 
-  /** Both of the above, for a request in flight checked again. */
-  async decide(
+  /**
+   * The thread's sandbox recorded running, the request's provider in use
+   * by it, and its owner still admitted.
+   */
+  async #checkThreadAndOwner(
     request: ProxyAuthorizationRequest,
-    requested: RequestedModels | undefined,
-  ): Promise<ProxyAuthorization> {
-    const owner = await this.authorizeOwner(request);
-    if (owner.kind === "refused" || requested === undefined) {
-      return owner;
+  ): Promise<
+    { kind: "owner"; ownerUserId: string; threadModel: string | undefined } | ProxyRefused
+  > {
+    const thread = await this.#options.threadStore.find(request.threadId);
+    const ownerUserId = thread?.ownerUserId;
+    if (thread === undefined || ownerUserId === undefined) {
+      return refused(proxyRefusals.tokenRefused, "the thread is gone");
     }
-    return (await this.checkRequestedModels(request, owner.threadModel, requested)) ?? owner;
+    if (thread.sandbox.state !== "running") {
+      return refused(proxyRefusals.tokenRefused, `its sandbox is ${thread.sandbox.state}`);
+    }
+    const providerRefused = await this.#checkProviderInUse(request, thread.model);
+    if (providerRefused !== undefined) {
+      return providerRefused;
+    }
+    if (!(await this.#options.ownerAdmission.isStillAdmitted(ownerUserId))) {
+      return refused(proxyRefusals.ownerNotAdmitted, "the owner is not admitted");
+    }
+    return { kind: "owner", ownerUserId, threadModel: thread.model };
+  }
+
+  async #checkCredentialStillHeld(
+    request: ProxyAuthorizationRequest,
+    relayed: OwnerAuthorization,
+  ): Promise<ProxyRefused | undefined> {
+    if (relayed.access === "chatgpt_plan") {
+      return (await this.#options.chatGptPlan.isConnected(relayed.ownerUserId))
+        ? undefined
+        : refused(
+            proxyRefusals.chatGptPlanNotConnected,
+            "the owner's ChatGPT plan is not connected",
+          );
+    }
+    return (await this.#options.credentials.has(relayed.ownerUserId, request.providerId))
+      ? undefined
+      : refused(credentialMissingRefusal(request.providerId), "the owner has no key for it");
+  }
+
+  async #checkCap(ownerUserId: string): Promise<ProxyRefused | undefined> {
+    const cap = await this.#options.usage.checkCap(ownerUserId);
+    return cap.isReached
+      ? refused(usageCapRefusal(describeReachedCap(cap)), "the owner's usage cap is reached")
+      : undefined;
   }
 
   /**

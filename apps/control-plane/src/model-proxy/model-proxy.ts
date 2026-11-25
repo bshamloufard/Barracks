@@ -275,7 +275,7 @@ export class ModelProxy {
     if (owner === undefined || this.#refuseIfEnded(exchange)) {
       return;
     }
-    const recheck = this.#keepAuthorized(exchange, presentedToken);
+    const recheck = this.#keepAuthorized(exchange, presentedToken, owner);
     const body = await this.#readAndInspectBody(exchange, owner);
     if (body === undefined) {
       return;
@@ -620,7 +620,8 @@ export class ModelProxy {
    * Checks a request in flight against the records again every
    * `reauthorizationIntervalInMilliseconds`, ending it once its token is
    * revoked, its thread no longer runs, its owner is no longer admitted,
-   * their key is gone, their cap is reached, or (once its body is read)
+   * their key or plan is gone (a plan merely due for renewal is not gone;
+   * see `ModelProxyAuthorization.recheck`), their cap is reached, or (once its body is read)
    * the models it names are no longer allowed. A stop handled by this
    * instance ends the thread's requests at once (`cancelThread`); this is
    * what ends them when the other instance handled it, during a redeploy's
@@ -628,7 +629,11 @@ export class ModelProxy {
    * database that cannot be asked is no reason to cut an answer short. The
    * checks stop when the exchange closes.
    */
-  #keepAuthorized(exchange: ProxyExchange, presentedToken: string): Recheck {
+  #keepAuthorized(
+    exchange: ProxyExchange,
+    presentedToken: string,
+    owner: OwnerAuthorization,
+  ): Recheck {
     const recheck: Recheck = { requested: undefined };
     let isChecking = false;
     const check = () => {
@@ -636,7 +641,7 @@ export class ModelProxy {
         return;
       }
       isChecking = true;
-      this.#isStillAuthorized(exchange, presentedToken, recheck.requested)
+      this.#isStillAuthorized(exchange, presentedToken, owner, recheck.requested)
         .then(
           (isAuthorized) => {
             if (!isAuthorized) {
@@ -665,6 +670,7 @@ export class ModelProxy {
   async #isStillAuthorized(
     exchange: ProxyExchange,
     presentedToken: string,
+    owner: OwnerAuthorization,
     requested: RequestedModels | undefined,
   ): Promise<boolean> {
     const { authorization } = this.#options;
@@ -673,9 +679,9 @@ export class ModelProxy {
       logger.warn("Ended a model request in flight: its token was revoked");
       return false;
     }
-    const decision = await authorization.decide(target, requested);
-    if (decision.kind === "refused") {
-      logger.warn({ reason: decision.reason }, "Ended a model request in flight");
+    const refusal = await authorization.recheck(target, owner, requested);
+    if (refusal !== undefined) {
+      logger.warn({ reason: refusal.reason }, "Ended a model request in flight");
       return false;
     }
     return true;

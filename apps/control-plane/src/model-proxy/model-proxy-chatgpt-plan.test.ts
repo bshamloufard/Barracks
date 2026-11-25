@@ -1,8 +1,13 @@
 import { FakeChatGptSignIn } from "@barrack/fake-chatgpt-sign-in";
-import { type MockModelServer, startMockModelServer } from "@barrack/mock-model-server";
+import {
+  type MockModelServer,
+  mockModelTriggers,
+  startMockModelServer,
+} from "@barrack/mock-model-server";
 import {
   buildThreadModelUsageApiPath,
   type ConfigureModelAccess,
+  chatGptPlanApiPath,
   chatGptPlanSignInApiPath,
   chatGptPlanSignInCompletionApiPath,
   chatGptPlanSignInStartSchema,
@@ -224,5 +229,77 @@ describe("the model proxy on a ChatGPT plan", () => {
 
     expect(response.status).toBe(429);
     expect(await response.text()).toContain("subscription_sharing_usage_limit_exceeded");
+  });
+});
+
+/** The mock's slow reply takes five seconds. */
+const slowReplyTimeoutInMilliseconds = 15_000;
+
+describe("a request in flight on a ChatGPT plan, checked again", () => {
+  /** Access tokens that last a minute are always within the renewal margin. */
+  async function startWithTokensAlwaysDueForRenewal(): Promise<ProxyAccess> {
+    await controlPlane.close();
+    await signInServer.close();
+    signInServer = await FakeChatGptSignIn.start({ accessTokenLifetimeInSeconds: 60 });
+    signInServer.addAccount({
+      subject: "chatgpt-ada",
+      email: "ada@chatgpt.example",
+      isEligible: true,
+    });
+    controlPlane = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer: identityIssuer },
+      chatGptPlan: { signInIssuer: signInServer.issuer },
+      modelProxyUpstreamOrigin: modelServer.origin,
+      modelProxyLimits: { reauthorizationIntervalInMilliseconds: 100 },
+    });
+    await connectAdasPlan();
+    return (await startThread(adaToken)).access;
+  }
+
+  it(
+    "carries on when its plan is due for renewal and OpenAI cannot renew it just now",
+    async () => {
+      const access = await startWithTokensAlwaysDueForRenewal();
+      const inFlight = await callOnPlan(
+        access,
+        planShapedBody(`Please ${mockModelTriggers.slowReply}`),
+      );
+      expect(inFlight.status).toBe(200);
+
+      signInServer.failTokenRequestsWithStatus = 503;
+
+      expect(await inFlight.text()).toContain("word49");
+    },
+    slowReplyTimeoutInMilliseconds,
+  );
+
+  it(
+    "does not renew the plan while it waits for the answer",
+    async () => {
+      const access = await startWithTokensAlwaysDueForRenewal();
+      const inFlight = await callOnPlan(
+        access,
+        planShapedBody(`Please ${mockModelTriggers.slowReply}`),
+      );
+      const renewalsBefore = signInServer.refreshAttempts.length;
+
+      await inFlight.text();
+
+      expect(signInServer.refreshAttempts.length).toBe(renewalsBefore);
+    },
+    slowReplyTimeoutInMilliseconds,
+  );
+
+  it("is ended soon after the plan is disconnected", async () => {
+    const access = await startWithTokensAlwaysDueForRenewal();
+    const inFlight = await callOnPlan(
+      access,
+      planShapedBody(`Please ${mockModelTriggers.slowReply}`),
+    );
+    expect(inFlight.status).toBe(200);
+
+    await controlPlane.sendJson("DELETE", chatGptPlanApiPath, {}, adaToken);
+
+    await expect(inFlight.text()).rejects.toThrow();
   });
 });
