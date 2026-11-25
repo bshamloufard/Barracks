@@ -41,8 +41,8 @@ export type SandboxChoice =
 /**
  * What every sandbox's supervisor runs: the scripted fake agent, or the real
  * Pi, on each thread's own model, which must be one the sandbox's Pi is
- * configured to reach (such as the mock model). Pi is kept offline
- * (`PI_OFFLINE`), since a test has no business reaching the internet.
+ * configured to reach (such as the mock model). The supervisor runs Pi
+ * offline whatever it is told, so a test's Pi never reaches the internet.
  */
 export type AgentChoice = { harness: "fake" } | { harness: "pi" };
 
@@ -210,7 +210,7 @@ function agentVariables(agent: AgentChoice): NodeJS.ProcessEnv {
   if (agent.harness === "fake") {
     return { BARRACK_AGENT_HARNESS: "fake" };
   }
-  return { BARRACK_AGENT_HARNESS: "pi", PI_OFFLINE: "1" };
+  return { BARRACK_AGENT_HARNESS: "pi" };
 }
 
 type SandboxSetUp = {

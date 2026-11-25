@@ -14,7 +14,7 @@ const tsxLoaderUrl = import.meta.resolve("tsx");
 
 /**
  * The control plane gets the developer's whole environment, so that
- * settings such as `BARRACK_DATABASE_URL` or `PI_OFFLINE` reach it. Model
+ * settings such as `BARRACK_DATABASE_URL` or `PI_CACHE_RETENTION` reach it. Model
  * provider keys in it are no use: each user adds their own in Settings, and
  * the supervisor passes none from its environment on to Pi.
  */

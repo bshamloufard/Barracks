@@ -101,7 +101,7 @@ async function startHarness(access: ModelAccess = mockAccess): Promise<PiAgentHa
     threadId: "integration-thread",
     workspaceDirectory: path.join(temporaryDirectory, "workspace"),
     stateDirectory: path.join(temporaryDirectory, "state"),
-    sourceEnvironment: { PATH, HOME: temporaryDirectory, PI_OFFLINE: "1" },
+    sourceEnvironment: { PATH, HOME: temporaryDirectory },
     agentProcessLauncher: new SameUserAgentLauncher(),
     logger: createSilentLogger(),
     mintIdentifier: () => `minted-${++identifierCount}`,

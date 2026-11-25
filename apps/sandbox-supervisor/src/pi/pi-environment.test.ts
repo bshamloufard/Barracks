@@ -9,7 +9,7 @@ describe("buildPiEnvironment", () => {
     BARRACK_SUPERVISOR_TOKEN: "control-plane-token",
     AWS_SECRET_ACCESS_KEY: "cloud-secret",
     GITHUB_TOKEN: "repository-token",
-    PI_OFFLINE: "1",
+    PI_CACHE_RETENTION: "long",
   };
 
   it("passes basic variables and Pi's own settings, and no model provider key", () => {
@@ -18,11 +18,20 @@ describe("buildPiEnvironment", () => {
     expect(environment).toEqual({
       PATH: "/usr/bin",
       HOME: "/home/agent",
-      PI_OFFLINE: "1",
+      PI_CACHE_RETENTION: "long",
       PI_CODING_AGENT_DIR: "/state/pi/agent",
       PI_SKIP_VERSION_CHECK: "1",
       PI_TELEMETRY: "0",
+      PI_OFFLINE: "1",
     });
+  });
+
+  it("runs Pi offline whatever the source says, so it never fetches another model catalogue", () => {
+    for (const offline of [undefined, "0", "false", ""]) {
+      expect(
+        buildPiEnvironment({ ...sourceEnvironment, PI_OFFLINE: offline }, "/state/pi/agent"),
+      ).toMatchObject({ PI_OFFLINE: "1" });
+    }
   });
 
   it("never passes the supervisor's control plane token", () => {

@@ -41,7 +41,7 @@ const basicVariableNames = [
   "NODE_EXTRA_CA_CERTS",
 ];
 
-/** Pi's own settings, such as `PI_OFFLINE`. */
+/** Pi's own settings, such as `PI_CACHE_RETENTION`. */
 const piSettingPrefix = "PI_";
 
 export function buildPiEnvironment(
@@ -64,6 +64,16 @@ export function buildPiEnvironment(
     // No update checks or install telemetry from inside a sandbox.
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
+    // Always offline, whatever the operator's environment says: online, Pi
+    // in RPC mode fetches a newer model catalogue from pi.dev in the
+    // background and keeps it (`models-store.json`, which the supervisor
+    // removes before each start, `stored-model-catalogue.ts`). The catalogue
+    // decides what Pi puts in a request, and the model proxy relays only
+    // requests shaped like the pinned Pi's with its built-in catalogue, so a
+    // change on pi.dev would have the proxy refuse the agent's own requests.
+    // Offline also skips installing a repository's Pi packages from npm or
+    // Git and downloading ripgrep and fd, which nothing here relies on.
+    PI_OFFLINE: "1",
   };
 }
 

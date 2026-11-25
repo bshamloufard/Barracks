@@ -8,13 +8,12 @@
  * Only these are forwarded, not every `PI_` variable: a developer who runs
  * the control plane from inside a Pi session has that session's variables
  * set, which mean nothing in a sandbox. The rest that matter there the
- * supervisor sets itself (no version checks, no telemetry, the agent's own
- * directory).
+ * supervisor sets itself (offline always, no version checks, no telemetry,
+ * the agent's own directory); `PI_OFFLINE` is not a setting any more, since
+ * the model proxy relays only requests shaped like those of the pinned Pi
+ * with its built-in model catalogue.
  */
 export const forwardedPiSettingNames = [
-  // No automatic network activity, such as model catalogue refreshes, for
-  // sandboxes without general internet access.
-  "PI_OFFLINE",
   // `long` asks for extended prompt caching where the provider supports it.
   "PI_CACHE_RETENTION",
 ];

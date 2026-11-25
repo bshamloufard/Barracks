@@ -24,6 +24,7 @@ import { type PiExit, PiProcess } from "./pi-process.js";
 import { type PiEvent, type PiExtensionUiRequest, parsePiState } from "./pi-records.js";
 import { PiOutputEndedError } from "./pi-rpc-client.js";
 import type { PiStopTiming } from "./pi-stop-timing.js";
+import { removeStoredModelCatalogue } from "./stored-model-catalogue.js";
 
 export type RestartablePiProcessSettings = {
   threadId: string;
@@ -173,6 +174,7 @@ export class RestartablePiProcess {
     const settings = this.#settings;
     await preparePiDirectories(settings.stateDirectory);
     const { agentDirectory, sessionDirectory } = getPiDirectories(settings.stateDirectory);
+    await removeStoredModelCatalogue(settings.agentProcessLauncher, agentDirectory);
     // Pi creates the session file with the first message, so a Pi that
     // exited before any message has no file to reopen yet.
     const sessionFileToResume =

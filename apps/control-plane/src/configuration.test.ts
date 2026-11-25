@@ -261,12 +261,13 @@ describe("the control plane configuration", () => {
   it("forwards only the allowlisted Pi settings to sandboxes", () => {
     const result = readConfiguration({
       ...minimalEnvironment,
+      PI_CACHE_RETENTION: "long",
       PI_OFFLINE: "1",
       PI_SESSION_ID: "the-developer's-own-pi-session",
     });
 
     expect(result.ok && result.configuration.supervisorEnvironment.piSettings).toEqual({
-      PI_OFFLINE: "1",
+      PI_CACHE_RETENTION: "long",
     });
   });
 

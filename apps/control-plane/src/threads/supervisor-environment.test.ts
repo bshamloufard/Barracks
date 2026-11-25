@@ -6,6 +6,7 @@ const developerEnvironment = {
   ANTHROPIC_API_KEY: "developer-key",
   AWS_SECRET_ACCESS_KEY: "cloud-credentials",
   DATABASE_URL: "postgres://user:password@db/barrack",
+  PI_CACHE_RETENTION: "long",
   PI_OFFLINE: "1",
   PI_SESSION_FILE: "/home/developer/.pi/agent/sessions/one.jsonl",
 };
@@ -23,7 +24,7 @@ describe("a new sandbox's supervisor environment", () => {
     );
 
     expect(supervisorEnvironment).toEqual({
-      PI_OFFLINE: "1",
+      PI_CACHE_RETENTION: "long",
       BARRACK_CONTROL_PLANE_URL: "wss://barrack.example",
       BARRACK_THREAD_ID: "thread-1",
       BARRACK_AGENT_HARNESS: "pi",
@@ -42,7 +43,7 @@ describe("a new sandbox's supervisor environment", () => {
       "token-1",
     );
 
-    expect(environment).not.toHaveProperty("PI_OFFLINE");
+    expect(environment).not.toHaveProperty("PI_CACHE_RETENTION");
     expect(environment).toMatchObject({ BARRACK_AGENT_HARNESS: "fake" });
   });
 });
