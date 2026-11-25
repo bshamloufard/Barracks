@@ -15,7 +15,9 @@ import { addModelUsageRoutes, type ModelUsageRoutesDependencies } from "./model-
 import { addPublicationRoutes, type PublicationRoutesDependencies } from "./publication-routes.js";
 import { refuseDisallowedOrigins, refuseHostsOtherThanLoopback } from "./request-guards.js";
 import { requireSignedInUser, type SignedInEnvironment } from "./require-signed-in-user.js";
+import { sendContentSecurityPolicy, sendSecurityHeaders } from "./security-headers.js";
 import { addThreadsRoutes, type ThreadsRoutesDependencies } from "./threads-routes.js";
+import { describeWebClientContentSecurityPolicy } from "./web-client-content-security-policy.js";
 
 export type HttpAppOptions = {
   authenticator: Authenticator;
@@ -49,14 +51,16 @@ export const publicApiPaths: ReadonlySet<string> = new Set([clientConfigurationP
  * model proxy's traffic, which streams in both directions and is handed to
  * the proxy before this app (see `route-http-request.ts`).
  *
- * The order matters: the loopback check, when on, comes before every route,
- * the web client's files included; the origin check and the authentication
+ * The order matters: the security headers come first, so every answer
+ * carries them, refusals included; the loopback check, when on, comes
+ * before every route, the web client's files included; the origin check and the authentication
  * middleware are mounted on all of `/api/*` before any API route, so every
  * API route, those added later included, is behind them unless listed in
  * `publicApiPaths`.
  */
 export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment> {
   const app = new Hono<SignedInEnvironment>();
+  app.use("*", sendSecurityHeaders());
   if (options.acceptOnlyLoopbackHosts) {
     app.use("*", refuseHostsOtherThanLoopback());
   }
@@ -77,6 +81,7 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
     respondWithApiError(context, 404, "not_found", "There is no such API route."),
   );
   if (options.webClientDirectory !== undefined) {
+    app.use("/*", sendContentSecurityPolicy(describeWebClientPolicy(options)));
     // GitHub sends users back to this page of the web client, which has no
     // file of its own: the client reads the address and finishes the link.
     app.get(
@@ -86,4 +91,13 @@ export function createHttpApp(options: HttpAppOptions): Hono<SignedInEnvironment
     app.use("/*", serveStatic({ root: options.webClientDirectory }));
   }
   return app;
+}
+
+function describeWebClientPolicy(options: HttpAppOptions): string {
+  const { clientAuthentication } = options;
+  return describeWebClientContentSecurityPolicy({
+    allowedClientOrigins: options.allowedClientOrigins,
+    supabaseUrl:
+      clientAuthentication.method === "supabase" ? clientAuthentication.supabaseUrl : undefined,
+  });
 }
