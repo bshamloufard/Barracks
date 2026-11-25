@@ -1252,6 +1252,7 @@ Each entry records a decision, what the project plan said about it, what we actu
 - **What the plan said:** Version the wire protocol; bump it on a change.
 - **What we did:** `proxy_token` gains a required `access`, and four error kinds join `errorKind`; the protocol is version 7. The supervisor writes the plan's flags and restarts Pi between runs for a change of access. While doing so, a fault came to light: a credential Pi could not use without starting again was nonetheless recorded as the one it ran on, which hid the need to restart; only a credential usable in place is now recorded so.
 - **Why:** A supervisor of version 6 would refuse the new member of a strict schema, and one that ignored it would send key-shaped requests on a plan.
+- **Note (2026-11-25, after review):** Restarting Pi between runs for a change of access is still what the supervisor does, but it was not the whole of it: until the next run Pi shapes its requests for what it began with, which the proxy now spends for that run (see the note on "No OpenAI token reaches the sandbox").
 
 ## 2026-11-25: Stand-ins for OpenAI's sign-in and API, and what only a real sign-in can show
 

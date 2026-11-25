@@ -59,8 +59,12 @@ alter table chatgpt_plan_sign_ins enable row level security;
 -- its `state`, so reading this table gives no state to finish one with.
 -- The PKCE verifier and the ID token's nonce are sealed like the tokens
 -- above. `client_id` is the one sent: `dynamic_agent_client` for a first
--- sign-in, or the issued client. A finished one is kept until it expires,
--- marked, so an address used twice is told apart from one never seen.
+-- sign-in, or the issued client. One can be finished only before it
+-- expires, ten minutes after it began; a finished one is marked, so an
+-- address used twice is told apart from one never seen. Each, its sealed
+-- verifier and nonce with it, is removed when the user next begins a
+-- sign-in a day or more after it expired, so one is kept at least that
+-- day, and longer if they begin none.
 create table chatgpt_sign_in_attempts (
   state_digest bytea primary key check (octet_length(state_digest) = 32),
   user_id text not null references users (user_id) on delete cascade,

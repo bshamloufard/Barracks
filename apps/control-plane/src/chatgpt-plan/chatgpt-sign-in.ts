@@ -27,9 +27,12 @@ import {
  * The programme sends the browser back to `127.0.0.1`, the machine the
  * browser runs on, and has no flow without a browser, so the control plane
  * never receives that request: the user pastes the address their browser
- * ended on (`finish`). A sign-in begun is kept, its secrets sealed, for ten
- * minutes, and finishes once; the code in the address is spent within a
- * minute or so by OpenAI's rules, so the page asks for it at once.
+ * ended on (`finish`). A sign-in begun can be finished once, within ten
+ * minutes; the code in the address is spent within a minute or so by
+ * OpenAI's rules, so the page asks for it at once. Its record, the PKCE
+ * verifier and nonce sealed in it, stays until the user next begins a
+ * sign-in a day or more after it expired (`removeAttemptsExpiredBefore`),
+ * so an address pasted twice can be told apart from one never seen.
  *
  * The first sign-in of a user registers a client of OpenAI's
  * (`dynamic_agent_client`, with the app's name), which comes back with the
