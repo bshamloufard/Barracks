@@ -237,6 +237,11 @@ export class FakeChatGptSignIn {
     }
   }
 
+  /** Every access and refresh token issued so far, to look for where they must never be. */
+  get issuedTokens(): string[] {
+    return this.#grants.flatMap((grant) => [...grant.accessTokens.keys(), ...grant.refreshTokens]);
+  }
+
   /** The clients registered, by issued identifier, with their account and host. */
   get registeredClients(): readonly IssuedClient[] {
     return [...this.#clients.values()];
