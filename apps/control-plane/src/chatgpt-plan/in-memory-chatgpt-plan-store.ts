@@ -78,12 +78,16 @@ export class InMemoryChatGptPlanStore implements ChatGptPlanStore {
       return { kind: "expired" };
     }
     stored.finishedAt = at;
-    const { sealedSecrets, finishedAt: _finishedAt, ...attempt } = stored;
     return {
       kind: "taken",
       attempt: {
-        ...attempt,
-        secrets: openAttemptSecrets(this.#keyring, ownerUserId, sealedSecrets),
+        ownerUserId,
+        stateDigest: stored.stateDigest,
+        clientId: stored.clientId,
+        redirectUri: stored.redirectUri,
+        secrets: openAttemptSecrets(this.#keyring, ownerUserId, stored.sealedSecrets),
+        startedAt: stored.startedAt,
+        expiresAt: stored.expiresAt,
       },
     };
   }
@@ -168,14 +172,14 @@ export class InMemoryChatGptPlanStore implements ChatGptPlanStore {
     return { resealedCount: 0, unreadableCount: 0 };
   }
 
-  /** Runs `work` once every earlier turn of the user's has ended, however it ended. */
+  /**
+   * Runs `work` once every earlier turn of the user's has ended, however it
+   * ended: a turn that failed has given its error to its own caller.
+   */
   #inTurn<Result>(ownerUserId: string, work: () => Promise<Result>): Promise<Result> {
     const previous = this.#turns.get(ownerUserId) ?? Promise.resolve();
     const turn = previous.then(work, work);
-    this.#turns.set(
-      ownerUserId,
-      turn.catch(() => undefined),
-    );
+    this.#turns.set(ownerUserId, turn);
     return turn;
   }
 
