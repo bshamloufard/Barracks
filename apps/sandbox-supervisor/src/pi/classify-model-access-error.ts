@@ -32,6 +32,28 @@ const credentialMissingPattern = /provider is not configured|no api key found/i;
  */
 const usageCapReachedPattern = /model usage cap/i;
 
+/**
+ * On a ChatGPT plan, the refusals of OpenAI's "Sign in with ChatGPT"
+ * programme, by the codes its documentation lists, which come in the error
+ * body Pi reports: https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery
+ * The workplace limit's code is one OpenAI no longer documents but Pi still
+ * recognises (pi-ai's `api/openai-responses.js`).
+ *
+ * The sign-in is gone either when OpenAI no longer accepts the user
+ * (`subscription_sharing_invalid_user`) or when the control plane's model
+ * proxy says the plan is not connected, which it says once it has had to
+ * forget a sign-in OpenAI would not renew.
+ */
+const planSignInExpiredPattern =
+  /subscription_sharing_invalid_user|ChatGPT plan is not connected to Barrack/;
+
+const planLimitReachedPattern =
+  /subscription_sharing_usage_limit_exceeded|subscription_sharing_workplace_individual_usage_limit_exceeded/;
+
+const planNotEligiblePattern = /subscription_sharing_user_not_eligible/;
+
+const planCapabilityUnsupportedPattern = /subscription_sharing_unsupported_capability/;
+
 const quotaExhaustedPattern = new RegExp(
   [
     "insufficient_quota",
@@ -42,8 +64,6 @@ const quotaExhaustedPattern = new RegExp(
     "available balance",
     "usage limit reached",
     "UsageLimitError",
-    "subscription_sharing_usage_limit_exceeded",
-    "subscription_sharing_workplace_individual_usage_limit_exceeded",
     // Anthropic, from its documentation: "Your credit balance is too low…".
     "credit balance is too low",
   ].join("|"),
@@ -67,9 +87,21 @@ const credentialRejectedPattern = new RegExp(
 
 const rateLimitedPattern = /rate.?limit|too many requests|^\s*429\b|resource.?exhausted/i;
 
+/** The plan's own refusals come first: they are sent with the statuses the others use. */
+const planRefusals: ReadonlyArray<[RegExp, ModelAccessErrorKind]> = [
+  [planSignInExpiredPattern, "plan_sign_in_expired"],
+  [planLimitReachedPattern, "plan_limit_reached"],
+  [planNotEligiblePattern, "plan_not_eligible"],
+  [planCapabilityUnsupportedPattern, "plan_capability_unsupported"],
+];
+
 export function classifyModelAccessError(errorMessage: string): ModelAccessErrorKind | undefined {
   if (usageCapReachedPattern.test(errorMessage)) {
     return "usage_cap_reached";
+  }
+  const planRefusal = planRefusals.find(([pattern]) => pattern.test(errorMessage));
+  if (planRefusal !== undefined) {
+    return planRefusal[1];
   }
   if (credentialMissingPattern.test(errorMessage)) {
     return "credential_missing";

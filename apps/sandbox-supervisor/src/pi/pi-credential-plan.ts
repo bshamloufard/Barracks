@@ -19,8 +19,9 @@ export type PiCredentials = ReadonlyMap<string, ModelCredential>;
  * A credential for the running model's provider changes at once when it
  * can (a replaced key, read by Pi before its next request), and a removed
  * one is erased at once; one Pi could not use without starting again (a
- * key becoming a model proxy token, which needs another address) waits for
- * the run's end like a model switch.
+ * key becoming a model proxy token, which needs another address, or a
+ * token for the owner's API key becoming one for their ChatGPT plan) waits
+ * for the run's end like a model switch.
  */
 export function planPiCredentials(
   latest: ModelAccess | undefined,
@@ -66,14 +67,15 @@ function chooseRunningProviderCredential(
 /**
  * Whether a running Pi can switch from one credential to the other: Pi
  * rereads its credential file before each request, but learns where a
- * provider's requests go only when it starts.
+ * provider's requests go, and how to shape them for a ChatGPT plan, only
+ * when it starts.
  */
 export function isUsableWithoutRestart(
   running: ModelCredential,
   replacement: ModelCredential,
 ): boolean {
   if (running.kind === "proxy_token" && replacement.kind === "proxy_token") {
-    return running.baseUrl === replacement.baseUrl;
+    return running.baseUrl === replacement.baseUrl && running.access === replacement.access;
   }
   return running.kind === replacement.kind;
 }

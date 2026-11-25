@@ -77,6 +77,8 @@ export type ReceivedModelRequest = {
   target: string;
   credential: string | undefined;
   model: string;
+  /** The names of the body's top-level members, as sent. */
+  memberNames: string[];
   /** Every header, by lower-case name. */
   headers: Record<string, string | string[] | undefined>;
   conversation: ChatMessage[];
@@ -165,6 +167,7 @@ async function answerRequest(
     target: request.url ?? "",
     credential: readCredential(request),
     model: body.model,
+    memberNames: Object.keys(body),
     headers: { ...request.headers },
     conversation,
     usage: undefined,

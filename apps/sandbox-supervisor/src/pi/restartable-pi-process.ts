@@ -12,7 +12,12 @@ import type { AgentProcessLauncher } from "../agent-process/agent-process-launch
 import type { DesktopConfiguration } from "../configuration.js";
 import type { Logger } from "../logger.js";
 import type { UsableModelAccess } from "../missing-model-access.js";
-import { isPiOutOfStep, type PiCredentials, type PiRunningOn } from "./pi-credential-plan.js";
+import {
+  isPiOutOfStep,
+  isUsableWithoutRestart,
+  type PiCredentials,
+  type PiRunningOn,
+} from "./pi-credential-plan.js";
 import { buildPiEnvironment } from "./pi-environment.js";
 import {
   getPiDirectories,
@@ -82,14 +87,19 @@ export class RestartablePiProcess {
     return this.current === undefined ? undefined : this.#runningOn;
   }
 
-  /** A credential replaced in place for the running Pi's provider is the one it uses now. */
+  /**
+   * A credential replaced in place for the running Pi's provider is the one
+   * it uses now. One it cannot use without starting again (another address,
+   * or a ChatGPT plan in place of a key) is not, so that `ensureRunningOn`
+   * still finds Pi out of step and starts it again.
+   */
   noteCredentials(credentials: PiCredentials): void {
     const runningOn = this.#runningOn;
     if (runningOn === undefined) {
       return;
     }
     const replacement = credentials.get(parseModelReference(runningOn.model).providerId);
-    if (replacement !== undefined) {
+    if (replacement !== undefined && isUsableWithoutRestart(runningOn.credential, replacement)) {
       this.#runningOn = { ...runningOn, credential: replacement };
     }
   }

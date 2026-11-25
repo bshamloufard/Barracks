@@ -1,6 +1,7 @@
 import path from "node:path";
 import { type ModelCredential, modelProxyEndpointName } from "@barrack/protocol";
 import type { AgentProcessLauncher } from "../agent-process/agent-process-launcher.js";
+import { chatGptPlanPiCompat } from "./chatgpt-plan-compat.js";
 import type { PiCredentials } from "./pi-credential-plan.js";
 
 /**
@@ -16,8 +17,11 @@ import type { PiCredentials } from "./pi-credential-plan.js";
  *   before each request), so a replaced credential is used from the next
  *   request with no restart.
  * - `models.json` gives each relayed provider the model proxy's address as
- *   its `baseUrl`, in place of the provider's own; everything else in the
- *   file is left as it is. Pi reads it when it starts.
+ *   its `baseUrl`, in place of the provider's own, and, for one whose
+ *   requests run on the owner's ChatGPT plan, the `compat` flags that make
+ *   Pi shape them as the plan takes them (`chatgpt-plan-compat.ts`);
+ *   everything else in the file is left as it is. Pi reads it when it
+ *   starts.
  *
  * Both are written as the agent, because the agent owns that directory and
  * the supervisor may only pass through it (see the sandbox image's
@@ -54,18 +58,25 @@ export class PiCredentialFile {
       providerId,
       describeEntry(credential),
     ]);
-    const proxiedBaseUrls = [...credentials].flatMap(([providerId, credential]) =>
-      credential.kind === "proxy_token" ? [[providerId, credential.baseUrl]] : [],
+    const proxiedProviders = [...credentials].flatMap(([providerId, credential]) =>
+      credential.kind === "proxy_token"
+        ? [
+            [
+              providerId,
+              { baseUrl: credential.baseUrl, isOnPlan: credential.access === "chatgpt_plan" },
+            ],
+          ]
+        : [],
     );
     return this.#runAsAgent({
       credentials: entries.length === 0 ? null : Object.fromEntries(entries),
-      proxiedBaseUrls: Object.fromEntries(proxiedBaseUrls),
+      proxiedProviders: Object.fromEntries(proxiedProviders),
     });
   }
 
   /** Leaves Pi with no credential at all, and no provider pointed at the model proxy. */
   erase(): Promise<void> {
-    return this.#runAsAgent({ credentials: null, proxiedBaseUrls: {} });
+    return this.#runAsAgent({ credentials: null, proxiedProviders: {} });
   }
 
   #runAsAgent(instructions: FileInstructions): Promise<void> {
@@ -94,7 +105,9 @@ export class PiCredentialFile {
           ),
         );
       });
-      child.stdin.end(JSON.stringify({ ...instructions, proxyPathMarker }));
+      child.stdin.end(
+        JSON.stringify({ ...instructions, proxyPathMarker, planCompat: chatGptPlanPiCompat }),
+      );
     });
   }
 }
@@ -102,8 +115,8 @@ export class PiCredentialFile {
 type FileInstructions = {
   /** `auth.json`'s contents, or null to remove it. */
   credentials: Record<string, object> | null;
-  /** The model proxy's address for each relayed provider. */
-  proxiedBaseUrls: Record<string, string>;
+  /** For each relayed provider, the model proxy's address, and whether its requests run on a ChatGPT plan. */
+  proxiedProviders: Record<string, { baseUrl: string; isOnPlan: boolean }>;
 };
 
 /**
@@ -127,10 +140,12 @@ function describeEntry(credential: ModelCredential): object {
 /**
  * Writes `auth.json` from its standard input's `credentials` (removing it
  * for null), then sets `baseUrl` in `models.json` for each provider in
- * `proxiedBaseUrls`, and removes any earlier such address from providers
- * no longer listed. The agent can write `models.json` too, so it is read
- * as untrusted: anything that is not an object of providers is replaced.
- * New files are created exclusively beside the old and renamed over them.
+ * `proxiedProviders`, with `planCompat` as its `compat` for one on a
+ * ChatGPT plan, and removes any earlier such address, and those flags, from
+ * providers no longer listed so (flags are known as ours by being exactly
+ * `planCompat`). The agent can write `models.json` too, so it is read as
+ * untrusted: anything that is not an object of providers is replaced. New
+ * files are created exclusively beside the old and renamed over them.
  */
 const replaceFilesScript = `
 const fs = require("node:fs");
@@ -145,7 +160,7 @@ const isObject = (value) => typeof value === "object" && value !== null && !Arra
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", () => {
-  const { credentials, proxiedBaseUrls, proxyPathMarker } = JSON.parse(Buffer.concat(chunks).toString());
+  const { credentials, proxiedProviders, proxyPathMarker, planCompat } = JSON.parse(Buffer.concat(chunks).toString());
   const authPath = path.join(directory, "auth.json");
   if (credentials === null) {
     fs.rmSync(authPath, { force: true });
@@ -161,20 +176,23 @@ process.stdin.on("end", () => {
   } catch {}
   if (!isObject(models)) models = {};
   const providers = isObject(models.providers) ? models.providers : {};
-  let changed = false;
+  const before = JSON.stringify(providers);
+  const isOurCompat = (compat) => JSON.stringify(compat) === JSON.stringify(planCompat);
   for (const [providerId, entry] of Object.entries(providers)) {
-    const isOurs = isObject(entry) && typeof entry.baseUrl === "string" && entry.baseUrl.includes(proxyPathMarker);
-    if (isOurs && !(providerId in proxiedBaseUrls)) {
-      delete entry.baseUrl;
-      if (Object.keys(entry).length === 0) delete providers[providerId];
-      changed = true;
-    }
+    if (!isObject(entry)) continue;
+    const proxied = proxiedProviders[providerId];
+    const isOurAddress = typeof entry.baseUrl === "string" && entry.baseUrl.includes(proxyPathMarker);
+    const removesAddress = isOurAddress && proxied === undefined;
+    const removesCompat = isOurCompat(entry.compat) && !(proxied && proxied.isOnPlan);
+    if (removesAddress) delete entry.baseUrl;
+    if (removesCompat) delete entry.compat;
+    if ((removesAddress || removesCompat) && Object.keys(entry).length === 0) delete providers[providerId];
   }
-  for (const [providerId, baseUrl] of Object.entries(proxiedBaseUrls)) {
+  for (const [providerId, { baseUrl, isOnPlan }] of Object.entries(proxiedProviders)) {
     const entry = isObject(providers[providerId]) ? providers[providerId] : {};
-    if (entry.baseUrl !== baseUrl) changed = true;
-    providers[providerId] = { ...entry, baseUrl };
+    providers[providerId] = { ...entry, baseUrl, ...(isOnPlan ? { compat: planCompat } : {}) };
   }
+  const changed = JSON.stringify(providers) !== before;
   if (changed || (!existed && Object.keys(providers).length > 0)) {
     replace(modelsPath, JSON.stringify({ ...models, providers }, null, 2), 0o600);
   }

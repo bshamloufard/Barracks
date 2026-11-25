@@ -14,6 +14,7 @@ import { SameUserAgentLauncher } from "../agent-process/same-user-agent-launcher
 import { RecordingObserver } from "../test-support/recording-observer.js";
 import { createSilentLogger } from "../test-support/silent-logger.js";
 import { pause, waitUntil } from "../test-support/wait-until.js";
+import { chatGptPlanPiCompat } from "./chatgpt-plan-compat.js";
 import { PiAgentHarness } from "./pi-agent-harness.js";
 import { getPiDirectories } from "./pi-installation.js";
 
@@ -533,6 +534,43 @@ describe("PiAgentHarness with the real Pi", () => {
     );
     expect(modelsAfter.providers.anthropic).toBeUndefined();
     expect(modelsAfter.providers.mock).toMatchObject({ api: "openai-completions" });
+  });
+
+  it("shapes OpenAI's requests as a ChatGPT plan takes them when the proxy spends the plan, and as a key takes them when not", {
+    timeout: piTimeoutInMilliseconds,
+  }, async () => {
+    const proxyBaseUrl = `${modelServer.origin}/threads/integration-thread/model-proxy/openai`;
+    const onPlan = {
+      kind: "proxy_token",
+      secret: "proxy-token-for-the-thread",
+      baseUrl: proxyBaseUrl,
+      access: "chatgpt_plan",
+    } as const;
+    const harness = await startHarness({ model: "openai/gpt-6.1-sol", credential: onPlan });
+    harness.deliverUserMessage({ messageId: "user-1", text: "Say hello" });
+    await waitUntil(hasEnded(1), "the run on the plan settles", piTimeoutInMilliseconds);
+
+    const { agentDirectory } = getPiDirectories(path.join(temporaryDirectory, "state"));
+    const readModels = async () =>
+      JSON.parse(await readFile(path.join(agentDirectory, "models.json"), "utf8"));
+    expect((await readModels()).providers.openai).toEqual({
+      baseUrl: proxyBaseUrl,
+      compat: chatGptPlanPiCompat,
+    });
+    const [planRequest] = modelServer.receivedRequests;
+    expect(planRequest?.target).toBe("/threads/integration-thread/model-proxy/openai/responses");
+    expect(planRequest?.memberNames).not.toContain("max_output_tokens");
+    expect(planRequest?.memberNames).toEqual(expect.arrayContaining(["store", "stream"]));
+
+    harness.configureModelAccess({
+      model: "openai/gpt-6.1-sol",
+      credential: { ...onPlan, access: "api_key" },
+    });
+    harness.deliverUserMessage({ messageId: "user-2", text: "Say hello again" });
+    await waitUntil(hasEnded(2), "the run on the key settles", piTimeoutInMilliseconds);
+
+    expect((await readModels()).providers.openai).toEqual({ baseUrl: proxyBaseUrl });
+    expect(modelServer.receivedRequests[1]?.memberNames).toContain("max_output_tokens");
   });
 
   it("erases a withdrawn key at once, answers without the model until another comes, then carries on", {

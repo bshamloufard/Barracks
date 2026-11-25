@@ -9,7 +9,9 @@ import { classifyModelAccessError } from "./classify-model-access-error.js";
  * documentation, not from Pi. The control plane model proxy's own refusals
  * are shaped as Anthropic's and OpenAI's errors are; the cap's was seen
  * through the proxy with the pinned Pi in `tests/end-to-end`'s
- * `local-model-proxy.test.ts`.
+ * `local-model-proxy.test.ts`. The ChatGPT plan's are written as Pi
+ * reports OpenAI's errors, with the codes OpenAI's programme documents;
+ * `chatgpt-plan.test.ts` there sees them through the proxy.
  */
 describe("classifying the model provider's errors", () => {
   it.each([
@@ -42,6 +44,26 @@ describe("classifying the model provider's errors", () => {
     [
       `403: {"message":"No API key found for the provider \\"openai\\" among the thread owner's keys in Barrack.","type":"permission_error","code":null}`,
       "credential_missing",
+    ],
+    [
+      'OpenAI API error (429): 429 {"error":{"message":"Usage limit reached.","type":"usage_limit","code":"subscription_sharing_usage_limit_exceeded"}}\nCheck your ChatGPT usage: https://chatgpt.com/settings/usage',
+      "plan_limit_reached",
+    ],
+    [
+      'OpenAI API error (403): 403 {"error":{"message":"Not eligible.","type":"permission_error","code":"subscription_sharing_user_not_eligible"}}',
+      "plan_not_eligible",
+    ],
+    [
+      'OpenAI API error (400): 400 {"error":{"message":"Unsupported.","type":"invalid_request_error","param":"model","code":"subscription_sharing_unsupported_capability"}}',
+      "plan_capability_unsupported",
+    ],
+    [
+      'OpenAI API error (401): 401 {"error":{"message":"Invalid user.","type":"invalid_request_error","code":"subscription_sharing_invalid_user"}}',
+      "plan_sign_in_expired",
+    ],
+    [
+      `403: {"message":"Your ChatGPT plan is not connected to Barrack: its sign-in expired or was revoked. Connect your ChatGPT plan again in Settings, then send your message again.","type":"permission_error","code":null}`,
+      "plan_sign_in_expired",
     ],
   ])("recognises %s", (errorMessage, kind) => {
     expect(classifyModelAccessError(errorMessage)).toBe(kind);
