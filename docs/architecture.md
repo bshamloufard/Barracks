@@ -21,7 +21,7 @@ Clients are thin: all state lives on the server. The control plane never sleeps;
 
 ## Signing in, and who sees what
 
-A user signs in with **Supabase Auth**, by a six-digit code sent by email, in the web client through supabase-js. The client learns where to sign in from the control plane (`GET /api/client-configuration`, the one API route that needs no token), so one build of the client serves any installation. Supabase hands the client an access token, a JWT that supabase-js refreshes before it expires.
+A user signs in with **Supabase Auth**, by email, in the web client through supabase-js: by the link in the email, which under PKCE signs in only the browser that asked for it, or by a code of 6 to 10 digits where the project's email template shows one. The client learns where to sign in from the control plane (`GET /api/client-configuration`, the one API route that needs no token), so one build of the client serves any installation. Supabase hands the client an access token, a JWT that supabase-js refreshes before it expires.
 
 The **control plane verifies every token itself** ([`authentication/`](../apps/control-plane/src/authentication)): its signature against the project's published public keys (fetched and cached with jose, and fetched again for a key it has not seen, which is how a rotated key is picked up), the issuer, the audience `authenticated`, an asymmetric algorithm, the expiry with 30 seconds' tolerance, `role: authenticated` and not anonymous. The user is the token's `sub`. An installation admits only the email addresses it lists (`BARRACK_ALLOWED_USER_EMAILS`), confirmed by asking Supabase, unless it says `anyone-who-can-sign-in`. A user is recorded on their first authenticated request, and every thread records its owner.
 

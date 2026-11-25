@@ -2,7 +2,7 @@
 
 The Barrack web client. Before anything else it asks the control plane how this installation signs users in (`GET /api/client-configuration`), so one build serves any installation:
 
-- **Signing in** (Supabase): one screen asks for an email address, then for the six-digit code Supabase emails to it. supabase-js, loaded only for Supabase installations, keeps the session in the browser and refreshes its token. A signed-in user the installation does not admit is told so and can sign out; the control plane decides, not the page.
+- **Signing in** (Supabase): one screen asks for an email address, then says the email is on its way. Its link, opened in this browser, signs in: under PKCE it brings back to `/` a code that only the browser that asked can exchange, so the page says to open it there, and to ask again here if it was opened elsewhere. Where the project's template shows a code (6 to 10 digits), it can be typed instead. The page reads a link's return itself before anything renders, at `/` only, so GitHub's callback is never mistaken for it, and takes it out of the address at once, so a reload or a shared address cannot replay it; a link that expired, was used, came from an earlier email or was asked for in another browser is explained on the form that asks again ([`src/authentication/sign-in-link.ts`](src/authentication/sign-in-link.ts)). supabase-js, loaded only for Supabase installations, keeps the session in the browser and refreshes its token. A signed-in user the installation does not admit is told so and can sign out; the control plane decides, not the page.
 - **Development mode** (`pnpm dev`): no sign-in; the page uses the fixed token the control plane hands out.
 
 Then it has three pages, each showing only the signed-in user's own threads and settings, with who is signed in and **Sign out** in the header:
@@ -24,7 +24,7 @@ It is deliberately bare: React and a small hand-written stylesheet, no UI framew
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/page-address.ts` | Which page the address shows, and the address of each. Tested.                                                                                                                                                                                                       |
 | `src/api/`            | The client configuration, requests carrying the access token (retried once after a refresh; tested), and the threads, repositories and model access APIs, each answer checked against the protocol.                                                                  |
-| `src/authentication/` | The sign-in services (Supabase, development), the pure sign-in reducer (tested), and the page's session, which hands out tokens and hears refusals (tested).                                                                                                         |
+| `src/authentication/` | The sign-in services (Supabase, tested; development), reading a sign-in link's return from the address (tested), the pure sign-in reducer (tested), and the page's session, which hands out tokens and hears refusals (tested).                                      |
 | `src/thread-list/`    | The thread list page's pure reducer (tested) and the hook that loads the list and creates threads.                                                                                                                                                                   |
 | `src/model-access/`   | Loading the model catalogue and the user's keys, and the pure rules for offering providers and models and saying why one cannot run yet (tested).                                                                                                                    |
 | `src/thread-state/`   | The pure reducer that is the only code changing what a thread's page shows, and a small store around it. Tested.                                                                                                                                                     |
@@ -54,7 +54,7 @@ pnpm --filter @barrack/web dev
 
 and open <http://localhost:5173/>.
 
-Its tests cover the pure parts (the reducers, the connection's and the desktop viewer's state machines, the presentation helpers) and run with `pnpm test` from the root; the desktop is also driven in a real browser by an end-to-end test in Docker ([`docker-desktop.test.ts`](../../tests/end-to-end/src/docker-desktop.test.ts)). Sign-in has run only against the tests' stand-in for Supabase.
+Its tests cover the pure parts (the reducers, the connection's and the desktop viewer's state machines, the presentation helpers) and run with `pnpm test` from the root; the desktop is also driven in a real browser by an end-to-end test in Docker ([`docker-desktop.test.ts`](../../tests/end-to-end/src/docker-desktop.test.ts)). The sign-in tests run supabase-js's own code against a stand-in for Supabase's API; sign-in has not yet been seen working against a real project.
 
 To build the static files the control plane serves in production:
 
