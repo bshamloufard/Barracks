@@ -169,7 +169,9 @@ function CapSummary({
       </p>
       <p className="quiet-note">
         The cap is a best-effort limit on tokens through Barrack, not on your bill: it does not see
-        what each token costs, so set a spending limit with your provider as well.
+        what each token costs. An answer cut short is estimated, which can count less than the
+        provider bills, and requests already under way when the cap is reached can finish past it.
+        Set a spending limit with your provider as well.
       </p>
       {failure !== undefined && (
         <p className="error-notice" role="alert">
