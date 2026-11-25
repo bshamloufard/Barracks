@@ -18,8 +18,11 @@ function chatGptPlanOf(environment: Record<string, string>) {
 }
 
 describe("the ChatGPT plan setting", () => {
-  it("is off unless the operator turns it on", () => {
-    expect(chatGptPlanOf(supabaseEnvironment)).toEqual({ isOffered: false });
+  it("is off unless the operator turns it on, still knowing OpenAI's sign-in to revoke a kept one", () => {
+    expect(chatGptPlanOf(supabaseEnvironment)).toEqual({
+      isOffered: false,
+      issuer: "https://auth.openai.com",
+    });
   });
 
   it("signs in at OpenAI once turned on where the installation admits its one user", () => {

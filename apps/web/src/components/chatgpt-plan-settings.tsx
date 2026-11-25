@@ -112,7 +112,26 @@ export function ChatGptPlanSettings() {
         </p>
       )}
       {notice !== undefined && <p className="quiet-note">{notice}</p>}
-      {description.kind === "turned_off" && <p className="quiet-note">{description.explanation}</p>}
+      {description.kind === "turned_off" && (
+        <>
+          <p className="quiet-note">{description.explanation}</p>
+          {description.stillChosenNotice !== undefined && (
+            <>
+              <p className="sandbox-banner sandbox-banner-warning">
+                {description.stillChosenNotice}
+              </p>
+              <OpenAiAccessChoice isOnPlan={true} isBusy={isBusy} onChoose={chooseAccess} />
+            </>
+          )}
+          {description.isSignInKept && (
+            <DisconnectAction
+              explanation="A sign-in from when this installation offered ChatGPT plans is still kept. Disconnecting revokes it at OpenAI, if OpenAI can be reached, and forgets it here."
+              isBusy={isBusy}
+              onDisconnect={disconnect}
+            />
+          )}
+        </>
+      )}
       {description.kind === "not_connected" && (
         <PlanSignIn
           lossNotice={description.lossNotice}
@@ -147,15 +166,11 @@ export function ChatGptPlanSettings() {
             isBusy={isBusy}
             onChoose={chooseAccess}
           />
-          <p className="quiet-note">
-            Disconnecting revokes Barrack's sign-in at OpenAI and forgets it here; your OpenAI
-            models then run on your API key.
-          </p>
-          <div className="sandbox-actions">
-            <button type="button" className="danger-button" disabled={isBusy} onClick={disconnect}>
-              Disconnect
-            </button>
-          </div>
+          <DisconnectAction
+            explanation="Disconnecting revokes Barrack's sign-in at OpenAI, if OpenAI can be reached, and forgets it here; your OpenAI models then run on your API key."
+            isBusy={isBusy}
+            onDisconnect={disconnect}
+          />
         </>
       )}
       {description.kind === "not_connected" && view.status.openAiAccess === "chatgpt_plan" && (
@@ -244,6 +259,27 @@ function PlanSignIn({
           </div>
         </form>
       )}
+    </>
+  );
+}
+
+function DisconnectAction({
+  explanation,
+  isBusy,
+  onDisconnect,
+}: {
+  explanation: string;
+  isBusy: boolean;
+  onDisconnect: () => void;
+}) {
+  return (
+    <>
+      <p className="quiet-note">{explanation}</p>
+      <div className="sandbox-actions">
+        <button type="button" className="danger-button" disabled={isBusy} onClick={onDisconnect}>
+          Disconnect
+        </button>
+      </div>
     </>
   );
 }

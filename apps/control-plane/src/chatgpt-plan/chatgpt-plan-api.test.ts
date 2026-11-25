@@ -13,9 +13,12 @@ import {
   chatGptPlanStatusSchema,
 } from "@barrack/protocol";
 import { TestIdentityIssuer } from "@barrack/test-identity-issuer";
+import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialKeyring } from "../model-access/credential-keyring.js";
 import { TestControlPlane } from "../test-support/test-control-plane.js";
+import { ChatGptPlanAccess } from "./chatgpt-plan-access.js";
+import { ChatGptSignInClient } from "./chatgpt-sign-in-client.js";
 import { InMemoryChatGptPlanStore } from "./in-memory-chatgpt-plan-store.js";
 
 /**
@@ -360,5 +363,74 @@ describe("an installation that does not offer ChatGPT plans", () => {
       adaToken,
     );
     expect((await readRefusal(response)).code).toBe("chatgpt_plan_unavailable");
+  });
+});
+
+describe("an installation that turned ChatGPT plans off after a plan was connected", () => {
+  async function turnPlansOff(): Promise<void> {
+    await controlPlane.close();
+    controlPlane = await TestControlPlane.start({
+      authentication: { kind: "test-issuer", issuer: identityIssuer },
+      chatGptPlan: { signInIssuer: signInServer.issuer, isOffered: false },
+      chatGptPlanStore: store,
+      modelProxyUpstreamOrigin: modelServer.origin,
+    });
+  }
+
+  it("still revokes and forgets the sign-in it kept, when the user disconnects", async () => {
+    await connect(adaToken, "chatgpt-ada");
+    const signIn = await store.readSignIn(ada.userId);
+    await turnPlansOff();
+
+    expect(await readStatus(adaToken)).toMatchObject({
+      availability: "turned_off",
+      connection: { accountEmail: "ada@chatgpt.example" },
+    });
+    const response = await controlPlane.sendJson("DELETE", chatGptPlanApiPath, {}, adaToken);
+
+    expect(chatGptPlanDisconnectionSchema.parse(await response.json()).revocation).toBe("revoked");
+    expect(signInServer.revocations).toEqual([signIn?.tokens.refreshToken]);
+    expect(await store.readSignIn(ada.userId)).toBeUndefined();
+  });
+
+  it("keeps the user's OpenAI models off their API key until they choose it", async () => {
+    await connect(adaToken, "chatgpt-ada");
+    await controlPlane.saveModelCredential("openai", "fake-openai-key-of-ada-0001", adaToken);
+    await turnPlansOff();
+
+    const refused = await controlPlane.sendJson(
+      "POST",
+      "/api/threads",
+      { model: "openai/gpt-6.1-sol" },
+      adaToken,
+    );
+    expect(refused.status).toBe(409);
+    expect((await readRefusal(refused)).message).toContain("no longer offers");
+    expect(await controlPlane.chatGptPlan.findAccess(ada.userId, "openai")).toBe("chatgpt_plan");
+
+    const chosen = await controlPlane.sendJson(
+      "PUT",
+      chatGptPlanOpenAiAccessApiPath,
+      { access: "api_key" },
+      adaToken,
+    );
+    expect(chosen.status).toBe(200);
+    expect(await controlPlane.chatGptPlan.findAccess(ada.userId, "openai")).toBe("api_key");
+  });
+});
+
+describe("disconnecting when OpenAI's sign-in cannot be reached", () => {
+  it("forgets the sign-in and says the revocation is not confirmed, rather than failing", async () => {
+    await connect(adaToken, "chatgpt-ada");
+    const unreachable = new ChatGptPlanAccess({
+      settings: { isOffered: true, issuer: "http://127.0.0.1:9" },
+      store,
+      client: new ChatGptSignInClient("http://127.0.0.1:9"),
+      logger: pino({ level: "silent" }),
+      sleep: async () => undefined,
+    });
+
+    expect(await unreachable.disconnect(ada.userId)).toEqual({ revocation: "not_confirmed" });
+    expect(await store.readSignIn(ada.userId)).toBeUndefined();
   });
 });

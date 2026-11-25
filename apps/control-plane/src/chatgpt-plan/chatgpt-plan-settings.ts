@@ -17,13 +17,15 @@ import type { AuthenticationConfiguration } from "../authentication/authenticati
  * installation its ChatGPT account holder runs for themselves: turning it
  * on is refused unless the installation admits exactly one user.
  */
-export type ChatGptPlanSettings =
-  | { isOffered: false }
-  | {
-      isOffered: true;
-      /** OpenAI's sign-in, `https://auth.openai.com`, or a stand-in for it in tests. */
-      issuer: string;
-    };
+export type ChatGptPlanSettings = {
+  isOffered: boolean;
+  /**
+   * OpenAI's sign-in, `https://auth.openai.com`, or a stand-in for it in
+   * tests; known even where plans are not offered, so a sign-in kept from
+   * when they were can still be revoked.
+   */
+  issuer: string;
+};
 
 /** Where OpenAI's "Sign in with ChatGPT" programme signs users in. */
 export const openAiSignInIssuer = "https://auth.openai.com";
@@ -69,11 +71,9 @@ export function readChatGptPlanSettings(
     };
   }
   const variables = validation.data;
-  if (variables.BARRACK_CHATGPT_PLAN_SIGN_IN === "off") {
-    return { ok: true, settings: { isOffered: false } };
-  }
+  const isOffered = variables.BARRACK_CHATGPT_PLAN_SIGN_IN === "on";
   const problems = [
-    describeSeveralUsers(authentication),
+    isOffered ? describeSeveralUsers(authentication) : undefined,
     describeUnsafeIssuer(variables, authentication),
   ].filter((problem) => problem !== undefined);
   if (problems.length > 0) {
@@ -82,7 +82,7 @@ export function readChatGptPlanSettings(
   return {
     ok: true,
     settings: {
-      isOffered: true,
+      isOffered,
       issuer: variables.BARRACK_CHATGPT_SIGN_IN_ISSUER ?? openAiSignInIssuer,
     },
   };

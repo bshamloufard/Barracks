@@ -17,6 +17,7 @@ import { SupabaseAccessTokenVerifier } from "../authentication/supabase-access-t
 import type { UserAdmission } from "../authentication/user-admission.js";
 import { ChatGptPlanAccess } from "../chatgpt-plan/chatgpt-plan-access.js";
 import { ChatGptPlanModels } from "../chatgpt-plan/chatgpt-plan-models.js";
+import { openAiSignInIssuer } from "../chatgpt-plan/chatgpt-plan-settings.js";
 import type { ChatGptPlanStore } from "../chatgpt-plan/chatgpt-plan-store.js";
 import { ChatGptSignIn } from "../chatgpt-plan/chatgpt-sign-in.js";
 import { ChatGptSignInClient } from "../chatgpt-plan/chatgpt-sign-in-client.js";
@@ -137,10 +138,12 @@ export type TestControlPlaneOptions = {
   modelProxyUpstreamOrigin?: string;
   /**
    * Not offered by default. `signInIssuer` offers ChatGPT plans, signing in
-   * at that stand-in for OpenAI's sign-in; their models are listed where
-   * the model proxy sends OpenAI's requests.
+   * at that stand-in for OpenAI's sign-in, unless `isOffered` is false (an
+   * installation that turned them off, where a sign-in kept from before
+   * is still revoked there); their models are listed where the model proxy
+   * sends OpenAI's requests.
    */
-  chatGptPlan?: { signInIssuer: string };
+  chatGptPlan?: { signInIssuer: string; isOffered?: boolean };
   /** Defaults to an in-memory store, sealing under a key of its own. */
   chatGptPlanStore?: ChatGptPlanStore;
   /** Replaces some of the proxy's default limits. */
@@ -258,15 +261,13 @@ export class TestControlPlane {
     });
     const keyring = new CredentialKeyring(randomBytes(32));
     const chatGptPlanStore = options.chatGptPlanStore ?? new InMemoryChatGptPlanStore(keyring);
-    const signInClient =
-      options.chatGptPlan === undefined
-        ? undefined
-        : new ChatGptSignInClient(options.chatGptPlan.signInIssuer);
+    const chatGptPlanSettings = {
+      isOffered: options.chatGptPlan !== undefined && options.chatGptPlan.isOffered !== false,
+      issuer: options.chatGptPlan?.signInIssuer ?? openAiSignInIssuer,
+    };
+    const signInClient = new ChatGptSignInClient(chatGptPlanSettings.issuer);
     const chatGptPlan = new ChatGptPlanAccess({
-      settings:
-        options.chatGptPlan === undefined
-          ? { isOffered: false }
-          : { isOffered: true, issuer: options.chatGptPlan.signInIssuer },
+      settings: chatGptPlanSettings,
       store: chatGptPlanStore,
       client: signInClient,
       logger,
@@ -365,22 +366,20 @@ export class TestControlPlane {
       modelUsage,
       chatGptPlan: {
         access: chatGptPlan,
-        signIn:
-          signInClient === undefined
-            ? undefined
-            : new ChatGptSignIn({
-                store: chatGptPlanStore,
-                client: signInClient,
-                logger,
-                ...(options.clock === undefined ? {} : { clock: options.clock }),
-              }),
-        models:
-          signInClient === undefined
-            ? undefined
-            : new ChatGptPlanModels(
-                chatGptPlan,
-                `${options.modelProxyUpstreamOrigin ?? "https://api.openai.com"}/v1`,
-              ),
+        signIn: !chatGptPlanSettings.isOffered
+          ? undefined
+          : new ChatGptSignIn({
+              store: chatGptPlanStore,
+              client: signInClient,
+              logger,
+              ...(options.clock === undefined ? {} : { clock: options.clock }),
+            }),
+        models: !chatGptPlanSettings.isOffered
+          ? undefined
+          : new ChatGptPlanModels(
+              chatGptPlan,
+              `${options.modelProxyUpstreamOrigin ?? "https://api.openai.com"}/v1`,
+            ),
       },
       publisher: repositoryServices.createPublisher(threadServices.relays),
       ...authentication,

@@ -349,6 +349,8 @@ A user can run their threads' OpenAI models on the ChatGPT plan they already pay
 
 **What the control plane keeps, and where.** The plan's refresh token and current access token, sealed under `BARRACK_MODEL_CREDENTIAL_KEY` in `chatgpt_plan_sign_ins` (migration `0140`), so rotating that key reseals them too ([users' model keys](#users-model-keys-and-the-key-that-seals-them)). The control plane renews the access token (it lasts an hour) before it expires, one renewal at a time per user across both instances of a redeploy. No token reaches a sandbox: OpenAI's requests go through the [model proxy](architecture.md#the-model-proxy), which adds the access token. A plan unused for 30 days loses its sign-in (OpenAI's refresh tokens last that long), and the user connects again.
 
+**Turning it off again.** Setting `BARRACK_CHATGPT_PLAN_SIGN_IN` back to `off` stops plan requests, but keeps what users stored: a kept sign-in can still be disconnected in Settings, which revokes it at OpenAI (the control plane still knows where OpenAI's sign-in is), and a user whose OpenAI models were set to run on the plan keeps that choice, so their OpenAI threads wait with a reason until they choose their API key there. Barrack never moves them to the key on its own.
+
 **Usage.** Plan requests are measured like any relayed request and count towards the [usage cap](#model-usage-and-caps); OpenAI's own plan limits apply as well, and the user manages them at <https://chatgpt.com/settings/usage>.
 
 ## On one machine with Docker Compose

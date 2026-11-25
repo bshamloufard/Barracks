@@ -44,8 +44,8 @@ export class PlanRenewalUnavailableError extends Error {
 export type ChatGptPlanAccessOptions = {
   settings: ChatGptPlanSettings;
   store: ChatGptPlanStore;
-  /** Undefined where the plan is not offered. */
-  client: ChatGptSignInClient | undefined;
+  /** Present wherever a sign-in may be kept, offered or not, so it can be renewed or revoked. */
+  client: ChatGptSignInClient;
   clock?: () => Date;
   logger: Logger;
   /** Waits between revocation tries; tests make them short. */
@@ -68,7 +68,7 @@ export type ChatGptPlanAccessOptions = {
 export class ChatGptPlanAccess {
   readonly #settings: ChatGptPlanSettings;
   readonly #store: ChatGptPlanStore;
-  readonly #client: ChatGptSignInClient | undefined;
+  readonly #client: ChatGptSignInClient;
   readonly #clock: () => Date;
   readonly #logger: Logger;
   readonly #sleep: (milliseconds: number) => Promise<void>;
@@ -106,19 +106,20 @@ export class ChatGptPlanAccess {
         plan?.loss === undefined
           ? null
           : { reason: plan.loss.reason, at: plan.loss.at.toISOString() },
-      openAiAccess: this.isOffered ? (plan?.openAiAccess ?? "api_key") : "api_key",
+      openAiAccess: plan?.openAiAccess ?? "api_key",
     };
   }
 
   /**
-   * What the owner's threads spend on `providerId`'s models: their plan
-   * for OpenAI's when the installation offers it and they chose it, even
-   * while it is not connected, so a lost plan stops their threads with a
-   * reason rather than quietly spending their API key instead (OpenAI
-   * itself never moves plan requests to another way of paying).
+   * What the owner's threads spend on `providerId`'s models: their plan for
+   * OpenAI's when they chose it, even while it is not connected, and even
+   * where the installation no longer offers plans, so a plan they cannot
+   * use stops their threads with a reason rather than quietly spending
+   * their API key instead (OpenAI itself never moves plan requests to
+   * another way of paying). Only the user moves them to their key.
    */
   async findAccess(ownerUserId: string, providerId: string): Promise<ProviderAccess> {
-    if (!this.isOffered || providerId !== chatGptPlanProviderId) {
+    if (providerId !== chatGptPlanProviderId) {
       return "api_key";
     }
     return (await this.#store.findPlan(ownerUserId))?.openAiAccess ?? "api_key";
@@ -182,7 +183,9 @@ export class ChatGptPlanAccess {
 
   /**
    * Revokes the owner's sign-in at OpenAI and forgets it; their threads go
-   * back to their API key. Undefined when nothing was connected.
+   * back to their API key. Undefined when nothing was connected. Works
+   * where the installation no longer offers plans, so a sign-in kept from
+   * when it did can still be revoked and removed.
    */
   async disconnect(
     ownerUserId: string,
@@ -234,7 +237,7 @@ export class ChatGptPlanAccess {
    * every other renewal waiting may be holding a connection of its own.
    */
   async #renew(ownerUserId: string, signIn: PlanSignIn): Promise<Renewal> {
-    const outcome = await this.#requireClient().renew({
+    const outcome = await this.#client.renew({
       clientId: signIn.clientId,
       refreshToken: signIn.tokens.refreshToken,
     });
@@ -278,7 +281,7 @@ export class ChatGptPlanAccess {
   }
 
   async #revoke(signIn: PlanSignIn): Promise<boolean> {
-    const client = this.#requireClient();
+    const client = this.#client;
     const request = { clientId: signIn.clientId, refreshToken: signIn.tokens.refreshToken };
     for (const delay of [0, ...revocationRetryDelaysInMilliseconds]) {
       await this.#sleep(delay);
@@ -287,12 +290,5 @@ export class ChatGptPlanAccess {
       }
     }
     return false;
-  }
-
-  #requireClient(): ChatGptSignInClient {
-    if (this.#client === undefined) {
-      throw new Error("This installation does not offer ChatGPT plans.");
-    }
-    return this.#client;
   }
 }

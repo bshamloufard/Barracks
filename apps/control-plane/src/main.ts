@@ -64,9 +64,7 @@ async function main(): Promise<void> {
     storage.chatGptPlanStore,
   ]);
   await checkCredentialKeys(sealedStores, keyring, logger);
-  const signInClient = configuration.chatGptPlan.isOffered
-    ? new ChatGptSignInClient(configuration.chatGptPlan.issuer)
-    : undefined;
+  const signInClient = new ChatGptSignInClient(configuration.chatGptPlan.issuer);
   const chatGptPlan = new ChatGptPlanAccess({
     settings: configuration.chatGptPlan,
     store: storage.chatGptPlanStore,
@@ -158,14 +156,12 @@ async function main(): Promise<void> {
     modelUsage,
     chatGptPlan: {
       access: chatGptPlan,
-      signIn:
-        signInClient === undefined
-          ? undefined
-          : new ChatGptSignIn({ store: storage.chatGptPlanStore, client: signInClient, logger }),
-      models:
-        signInClient === undefined
-          ? undefined
-          : new ChatGptPlanModels(chatGptPlan, openAiApiBaseUrl(configuration)),
+      signIn: configuration.chatGptPlan.isOffered
+        ? new ChatGptSignIn({ store: storage.chatGptPlanStore, client: signInClient, logger })
+        : undefined,
+      models: configuration.chatGptPlan.isOffered
+        ? new ChatGptPlanModels(chatGptPlan, openAiApiBaseUrl(configuration))
+        : undefined,
     },
     publisher: repositoryServices.createPublisher(threadServices.relays),
     authenticator: authentication.authenticator,

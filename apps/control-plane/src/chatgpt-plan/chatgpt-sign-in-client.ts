@@ -194,11 +194,12 @@ export class ChatGptSignInClient {
   /**
    * Revokes the sign-in the refresh token belongs to. True once OpenAI
    * confirms it (an empty 200, even for a token already invalid); false
-   * when it could not be reached or failed.
+   * when it, or its discovery document, could not be reached or failed:
+   * the caller tells the user it is not confirmed, which is all it can do.
    */
   async revoke(request: { clientId: string; refreshToken: string }): Promise<boolean> {
-    const { revocationEndpoint } = await this.discover();
     try {
+      const { revocationEndpoint } = await this.discover();
       const response = await fetch(revocationEndpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },

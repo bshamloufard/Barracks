@@ -18,10 +18,30 @@ describe("describing the user's ChatGPT plan in Settings", () => {
       formatDate,
     );
 
-    expect(description.kind).toBe("turned_off");
-    expect(description.kind === "turned_off" && description.explanation).toContain(
-      "only on infrastructure the account holder controls",
+    expect(description).toEqual({
+      kind: "turned_off",
+      explanation: expect.stringContaining("Your OpenAI models run on your API key."),
+      stillChosenNotice: undefined,
+      isSignInKept: false,
+    });
+  });
+
+  it("where plans are turned off, offers to disconnect a sign-in kept from before and to choose the key", () => {
+    const description = describeChatGptPlan(
+      {
+        availability: "turned_off",
+        connection: { connectedAt: "2026-11-25T10:00:00.000Z", accountEmail: null },
+        loss: null,
+        openAiAccess: "chatgpt_plan",
+      },
+      formatDate,
     );
+
+    expect(description).toMatchObject({
+      kind: "turned_off",
+      stillChosenNotice: expect.stringContaining("does not move them to your API key"),
+      isSignInKept: true,
+    });
   });
 
   it("says a plan was lost, and when, so the user connects it again", () => {

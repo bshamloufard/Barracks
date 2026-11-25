@@ -7,7 +7,14 @@ import type { ChatGptPlanStatus } from "@barrack/protocol";
  * "Use your ChatGPT plan", the button "Continue with ChatGPT".
  */
 export type ChatGptPlanDescription =
-  | { kind: "turned_off"; explanation: string }
+  | {
+      kind: "turned_off";
+      explanation: string;
+      /** A notice for a user whose OpenAI models are still set to run on the plan. */
+      stillChosenNotice: string | undefined;
+      /** Whether a sign-in from before is still kept, which the user can disconnect. */
+      isSignInKept: boolean;
+    }
   | { kind: "not_connected"; lossNotice: string | undefined }
   | { kind: "connected"; account: string; since: string; isInUse: boolean };
 
@@ -28,10 +35,14 @@ export function describeChatGptPlan(
   formatDate: (isoDate: string) => string,
 ): ChatGptPlanDescription {
   if (status.availability === "turned_off") {
+    const isPlanChosen = status.openAiAccess === "chatgpt_plan";
     return {
       kind: "turned_off",
-      explanation:
-        "This installation does not offer ChatGPT plans. OpenAI's terms let an app keep a ChatGPT sign-in only on infrastructure the account holder controls, so Barrack offers it only where the person running an installation, for themselves alone, turns it on (BARRACK_CHATGPT_PLAN_SIGN_IN in the deployment guide). Your OpenAI models run on your API key.",
+      explanation: `This installation does not offer ChatGPT plans. OpenAI's terms let an app keep a ChatGPT sign-in only on infrastructure the account holder controls, so Barrack offers it only where the person running an installation, for themselves alone, turns it on (BARRACK_CHATGPT_PLAN_SIGN_IN in the deployment guide).${isPlanChosen ? "" : " Your OpenAI models run on your API key."}`,
+      stillChosenNotice: isPlanChosen
+        ? "Your OpenAI models are still set to run on your ChatGPT plan, so threads on them wait. Barrack does not move them to your API key without your choosing it: choose it below."
+        : undefined,
+      isSignInKept: status.connection !== null,
     };
   }
   if (status.connection === null) {

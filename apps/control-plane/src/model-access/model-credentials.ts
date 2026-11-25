@@ -130,12 +130,18 @@ export class ModelCredentials {
     if ((await this.#chatGptPlan.findAccess(ownerUserId, providerId)) === "chatgpt_plan") {
       return (await this.#chatGptPlan.isConnected(ownerUserId))
         ? undefined
-        : `${model} runs on your ChatGPT plan, which is not connected now. Connect it again in Settings, under ChatGPT plan, or switch OpenAI to your API key there, then ${nextStep}.`;
+        : this.#describeUnusablePlan(model, nextStep);
     }
     if (await this.#store.has(ownerUserId, providerId)) {
       return undefined;
     }
     return `${describeNeededKey(model)} Add it in Settings, under Model access, then ${nextStep}.`;
+  }
+
+  #describeUnusablePlan(model: string, nextStep: string): string {
+    return this.#chatGptPlan.isOffered
+      ? `${model} runs on your ChatGPT plan, which is not connected now. Connect it again in Settings, under ChatGPT plan, or switch OpenAI to your API key there, then ${nextStep}.`
+      : `${model} runs on your ChatGPT plan, which this installation no longer offers. Switch OpenAI to your API key in Settings, under ChatGPT plan, then ${nextStep}.`;
   }
 }
 
